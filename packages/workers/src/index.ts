@@ -178,6 +178,45 @@ export interface ProviderWorkerTask {
   extraInstructions?: string;
 }
 
+function buildProviderWorkerResult<TOutput>(
+  worker: WorkerSpec,
+  providerId: string,
+  execution: { command: string[]; stdout: string; stderr: string; exitCode: number; durationMs: number; costUsd?: number; rawStdout?: string; metadata?: Record<string, string> },
+  output: TOutput | undefined,
+): WorkerRun & { output?: TOutput } {
+  const passed = execution.exitCode === 0;
+  const meta = providerExecutionMetadata(execution, providerId);
+  const stdoutDisplay = (execution.rawStdout ?? execution.stdout).trim();
+  const stderrDisplay = execution.stderr.trim();
+
+  return {
+    worker,
+    summary: passed
+      ? `${worker.id} completed successfully`
+      : `${worker.id} exited with code ${execution.exitCode}`,
+    evidence: [
+      { kind: 'log', label: 'stdout', value: stdoutDisplay, metadata: meta },
+      { kind: 'log', label: 'stderr', value: stderrDisplay, metadata: meta },
+    ],
+    result: {
+      trackId: worker.id,
+      status: passed ? 'completed' : 'failed',
+      summary: passed ? `${worker.id} completed` : `${worker.id} failed`,
+      output,
+      evidence: [
+        { kind: 'log', label: 'command', value: execution.command.join(' '), metadata: meta },
+        { kind: 'log', label: 'stdout', value: stdoutDisplay, metadata: meta },
+        { kind: 'log', label: 'stderr', value: stderrDisplay, metadata: meta },
+      ],
+    },
+    output,
+    metrics: {
+      durationMs: execution.durationMs,
+      costUsd: execution.costUsd,
+    },
+  };
+}
+
 export class ProviderWorkerAdapter implements WorkerAdapter<ProviderWorkerTask, string> {
   constructor(
     public readonly worker: WorkerSpec,
@@ -195,64 +234,8 @@ export class ProviderWorkerAdapter implements WorkerAdapter<ProviderWorkerTask, 
     instructions?: string;
   }): Promise<WorkerRun & { output?: string }> {
     const prompt = this.promptBuilder(input);
-    const execution = await this.provider.run(prompt, {
-      cwd: input.task.repoPath,
-    });
-    const passed = execution.exitCode === 0;
-
-    return {
-      worker: this.worker,
-      summary: passed
-        ? `${this.worker.id} completed successfully`
-        : `${this.worker.id} exited with code ${execution.exitCode}`,
-      evidence: [
-        {
-          kind: 'log',
-          label: 'stdout',
-          value: (execution.rawStdout ?? execution.stdout).trim(),
-          metadata: providerExecutionMetadata(execution, this.provider.id),
-        },
-        {
-          kind: 'log',
-          label: 'stderr',
-          value: execution.stderr.trim(),
-          metadata: providerExecutionMetadata(execution, this.provider.id),
-        },
-      ],
-      result: {
-        trackId: this.worker.id,
-        status: passed ? 'completed' : 'failed',
-        summary: passed
-          ? `${this.worker.id} completed`
-          : `${this.worker.id} failed`,
-        output: execution.stdout.trim(),
-        evidence: [
-          {
-            kind: 'log',
-            label: 'command',
-            value: execution.command.join(' '),
-            metadata: providerExecutionMetadata(execution, this.provider.id),
-          },
-          {
-            kind: 'log',
-            label: 'stdout',
-            value: (execution.rawStdout ?? execution.stdout).trim(),
-            metadata: providerExecutionMetadata(execution, this.provider.id),
-          },
-          {
-            kind: 'log',
-            label: 'stderr',
-            value: execution.stderr.trim(),
-            metadata: providerExecutionMetadata(execution, this.provider.id),
-          },
-        ],
-      },
-      output: execution.stdout.trim(),
-      metrics: {
-        durationMs: execution.durationMs,
-        costUsd: execution.costUsd,
-      },
-    };
+    const execution = await this.provider.run(prompt, { cwd: input.task.repoPath });
+    return buildProviderWorkerResult(this.worker, this.provider.id, execution, execution.stdout.trim());
   }
 }
 
@@ -274,63 +257,9 @@ export class ParsedProviderWorkerAdapter<TParsed = unknown> implements WorkerAda
     instructions?: string;
   }): Promise<WorkerRun & { output?: TParsed }> {
     const prompt = this.promptBuilder(input);
-    const execution = await this.provider.run(prompt, {
-      cwd: input.task.repoPath,
-    });
-    const passed = execution.exitCode === 0;
-    const parsed = passed ? this.parser(execution.stdout) : undefined;
-
-    return {
-      worker: this.worker,
-      summary: passed
-        ? `${this.worker.id} completed successfully`
-        : `${this.worker.id} exited with code ${execution.exitCode}`,
-      evidence: [
-        {
-          kind: 'log',
-          label: 'stdout',
-          value: (execution.rawStdout ?? execution.stdout).trim(),
-          metadata: providerExecutionMetadata(execution, this.provider.id),
-        },
-        {
-          kind: 'log',
-          label: 'stderr',
-          value: execution.stderr.trim(),
-          metadata: providerExecutionMetadata(execution, this.provider.id),
-        },
-      ],
-      result: {
-        trackId: this.worker.id,
-        status: passed ? 'completed' : 'failed',
-        summary: passed ? `${this.worker.id} completed` : `${this.worker.id} failed`,
-        output: parsed,
-        evidence: [
-          {
-            kind: 'log',
-            label: 'command',
-            value: execution.command.join(' '),
-            metadata: providerExecutionMetadata(execution, this.provider.id),
-          },
-          {
-            kind: 'log',
-            label: 'stdout',
-            value: (execution.rawStdout ?? execution.stdout).trim(),
-            metadata: providerExecutionMetadata(execution, this.provider.id),
-          },
-          {
-            kind: 'log',
-            label: 'stderr',
-            value: execution.stderr.trim(),
-            metadata: providerExecutionMetadata(execution, this.provider.id),
-          },
-        ],
-      },
-      output: parsed,
-      metrics: {
-        durationMs: execution.durationMs,
-        costUsd: execution.costUsd,
-      },
-    };
+    const execution = await this.provider.run(prompt, { cwd: input.task.repoPath });
+    const parsed = execution.exitCode === 0 ? this.parser(execution.stdout) : undefined;
+    return buildProviderWorkerResult(this.worker, this.provider.id, execution, parsed);
   }
 }
 
@@ -594,109 +523,79 @@ export class ToolRegistry {
   }
 }
 
-export class ServiceWorkerAdapter implements WorkerAdapter<ServiceWorkerTask, unknown> {
-  constructor(public readonly worker: WorkerSpec) {}
+interface ServiceCallResult {
+  responseStatus: number;
+  responseText: string;
+  responseHeaders: Record<string, string>;
+  passed: boolean;
+  errorMessage: string;
+  durationMs: number;
+}
 
-  async run(input: {
-    task: ServiceWorkerTask;
-    context: WorkerContextSnapshot;
-    instructions?: string;
-  }): Promise<WorkerRun & { output?: unknown }> {
-    const controller = new AbortController();
-    const timeoutMs = input.task.timeoutMs ?? 60_000;
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    const startedAtMs = Date.now();
+async function runServiceCall(task: ServiceWorkerTask): Promise<ServiceCallResult> {
+  const controller = new AbortController();
+  const timeoutMs = task.timeoutMs ?? 60_000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAtMs = Date.now();
 
-    let responseStatus = 0;
-    let responseText = '';
-    let responseHeaders: Record<string, string> = {};
-    let passed = false;
-    let errorMessage = '';
+  let responseStatus = 0;
+  let responseText = '';
+  let responseHeaders: Record<string, string> = {};
+  let passed = false;
+  let errorMessage = '';
 
-    try {
-      const response = await fetch(input.task.url, {
-        method: input.task.method ?? 'POST',
-        headers: input.task.headers,
-        body: input.task.body,
-        signal: controller.signal,
-      });
-      responseStatus = response.status;
-      responseHeaders = Object.fromEntries(response.headers.entries());
-      responseText = await response.text();
-      passed = response.ok;
-    } catch (error) {
-      errorMessage = error instanceof Error ? error.message : String(error);
-      responseText = errorMessage;
-      passed = false;
-    } finally {
-      clearTimeout(timeout);
-    }
-
-    const durationMs = Date.now() - startedAtMs;
-    const summary = passed
-      ? `${this.worker.id} service call completed`
-      : `${this.worker.id} service call failed`;
-    const parsedOutput = parseServiceOutput(responseText, responseHeaders['content-type']);
-
-    return {
-      worker: this.worker,
-      summary,
-      evidence: [
-        {
-          kind: 'log',
-          label: 'request',
-          value: `${input.task.method ?? 'POST'} ${input.task.url}`,
-          metadata: {
-            durationMs: String(durationMs),
-            status: String(responseStatus),
-          },
-        },
-        {
-          kind: 'log',
-          label: 'response',
-          value: responseText.trim(),
-          metadata: {
-            durationMs: String(durationMs),
-            status: String(responseStatus),
-            contentType: responseHeaders['content-type'] ?? '',
-            error: errorMessage,
-          },
-        },
-      ],
-      result: {
-        trackId: this.worker.id,
-        status: passed ? 'completed' : 'failed',
-        summary,
-        output: parsedOutput,
-        evidence: [
-          {
-            kind: 'log',
-            label: 'request',
-            value: `${input.task.method ?? 'POST'} ${input.task.url}`,
-            metadata: {
-              durationMs: String(durationMs),
-              status: String(responseStatus),
-            },
-          },
-          {
-            kind: 'log',
-            label: 'response',
-            value: responseText.trim(),
-            metadata: {
-              durationMs: String(durationMs),
-              status: String(responseStatus),
-              contentType: responseHeaders['content-type'] ?? '',
-              error: errorMessage,
-            },
-          },
-        ],
-      },
-      output: parsedOutput,
-      metrics: {
-        durationMs,
-      },
-    };
+  try {
+    const response = await fetch(task.url, {
+      method: task.method ?? 'POST',
+      headers: task.headers,
+      body: task.body,
+      signal: controller.signal,
+    });
+    responseStatus = response.status;
+    responseHeaders = Object.fromEntries(response.headers.entries());
+    responseText = await response.text();
+    passed = response.ok;
+  } catch (error) {
+    errorMessage = error instanceof Error ? error.message : String(error);
+    responseText = errorMessage;
+    passed = false;
+  } finally {
+    clearTimeout(timeout);
   }
+
+  return {
+    responseStatus,
+    responseText,
+    responseHeaders,
+    passed,
+    errorMessage,
+    durationMs: Date.now() - startedAtMs,
+  };
+}
+
+function buildServiceEvidence(
+  task: ServiceWorkerTask,
+  call: ServiceCallResult,
+): WorkerTrackResult['evidence'] {
+  return [
+    {
+      kind: 'log',
+      label: 'request',
+      value: `${task.method ?? 'POST'} ${task.url}`,
+      metadata: { durationMs: String(call.durationMs), status: String(call.responseStatus) },
+    },
+    {
+      kind: 'log',
+      label: 'response',
+      value: call.responseText.trim(),
+      metadata: {
+        durationMs: String(call.durationMs),
+        status: String(call.responseStatus),
+        contentType: call.responseHeaders['content-type'] ?? '',
+        error: call.errorMessage,
+      },
+    },
+  ];
 }
 
 function parseServiceOutput(text: string, contentType?: string): unknown {
@@ -710,6 +609,38 @@ function parseServiceOutput(text: string, contentType?: string): unknown {
   return text;
 }
 
+export class ServiceWorkerAdapter implements WorkerAdapter<ServiceWorkerTask, unknown> {
+  constructor(public readonly worker: WorkerSpec) {}
+
+  async run(input: {
+    task: ServiceWorkerTask;
+    context: WorkerContextSnapshot;
+    instructions?: string;
+  }): Promise<WorkerRun & { output?: unknown }> {
+    const call = await runServiceCall(input.task);
+    const summary = call.passed
+      ? `${this.worker.id} service call completed`
+      : `${this.worker.id} service call failed`;
+    const evidence = buildServiceEvidence(input.task, call);
+    const parsedOutput = parseServiceOutput(call.responseText, call.responseHeaders['content-type']);
+
+    return {
+      worker: this.worker,
+      summary,
+      evidence,
+      result: {
+        trackId: this.worker.id,
+        status: call.passed ? 'completed' : 'failed',
+        summary,
+        output: parsedOutput,
+        evidence,
+      },
+      output: parsedOutput,
+      metrics: { durationMs: call.durationMs },
+    };
+  }
+}
+
 export class SupervisorServiceWorkerAdapter implements WorkerAdapter<ServiceWorkerTask, SupervisorWorkerOutput> {
   constructor(public readonly worker: WorkerSpec) {}
 
@@ -718,77 +649,97 @@ export class SupervisorServiceWorkerAdapter implements WorkerAdapter<ServiceWork
     context: WorkerContextSnapshot;
     instructions?: string;
   }): Promise<WorkerRun & { output?: SupervisorWorkerOutput }> {
-    const controller = new AbortController();
-    const timeoutMs = input.task.timeoutMs ?? 60_000;
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    const startedAtMs = Date.now();
-
-    let responseStatus = 0;
-    let responseText = '';
-    let responseHeaders: Record<string, string> = {};
-    let passed = false;
-    let errorMessage = '';
-
-    try {
-      const response = await fetch(input.task.url, {
-        method: input.task.method ?? 'POST',
-        headers: input.task.headers,
-        body: input.task.body,
-        signal: controller.signal,
-      });
-      responseStatus = response.status;
-      responseHeaders = Object.fromEntries(response.headers.entries());
-      responseText = await response.text();
-      passed = response.ok;
-    } catch (error) {
-      errorMessage = error instanceof Error ? error.message : String(error);
-      responseText = errorMessage;
-      passed = false;
-    } finally {
-      clearTimeout(timeout);
-    }
-
-    const durationMs = Date.now() - startedAtMs;
-    const parsed = passed ? tryParseSupervisorOutput(responseText) : undefined;
+    const call = await runServiceCall(input.task);
+    const parsed = call.passed ? tryParseSupervisorOutput(call.responseText) : undefined;
     const summary = parsed?.summary ?? (
-      passed
+      call.passed
         ? `${this.worker.id} orchestrator completed`
         : `${this.worker.id} orchestrator failed`
     );
+    const evidence = buildSupervisorEvidence({
+      requestLabel: `${input.task.method ?? 'POST'} ${input.task.url}`,
+      responseText: call.responseText,
+      durationMs: call.durationMs,
+      statusCode: call.responseStatus,
+      parsed,
+      errorMessage: call.errorMessage,
+      contentType: call.responseHeaders['content-type'],
+    });
 
     return {
       worker: this.worker,
       summary,
-      evidence: buildSupervisorEvidence({
-        requestLabel: `${input.task.method ?? 'POST'} ${input.task.url}`,
-        responseText,
-        durationMs,
-        statusCode: responseStatus,
-        parsed,
-        errorMessage,
-        contentType: responseHeaders['content-type'],
-      }),
+      evidence,
       result: {
         trackId: this.worker.id,
-        status: mapSupervisorTrackStatus(parsed?.status, passed),
+        status: mapSupervisorTrackStatus(parsed?.status, call.passed),
         summary,
         output: parsed,
-        evidence: buildSupervisorEvidence({
-          requestLabel: `${input.task.method ?? 'POST'} ${input.task.url}`,
-          responseText,
-          durationMs,
-          statusCode: responseStatus,
-          parsed,
-          errorMessage,
-          contentType: responseHeaders['content-type'],
-        }),
+        evidence,
       },
       output: parsed,
-      metrics: {
-        durationMs,
-      },
+      metrics: { durationMs: call.durationMs },
     };
   }
+}
+
+interface CommandExecResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  durationMs: number;
+  passed: boolean;
+}
+
+async function runCommandTask(task: CommandWorkerTask): Promise<CommandExecResult> {
+  if (!task.command.trim()) {
+    throw new Error('command worker received an empty command');
+  }
+
+  let stdout = '';
+  let stderr = '';
+  let exitCode = 0;
+  const startedAtMs = Date.now();
+  try {
+    const output = await execFileAsync('bash', ['-lc', task.command], {
+      cwd: task.cwd,
+      env: {
+        ...process.env,
+        ...task.env,
+      },
+      timeout: 10 * 60 * 1000,
+    });
+    stdout = output.stdout ?? '';
+    stderr = output.stderr ?? '';
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException & {
+      code?: number | string;
+      stdout?: string;
+      stderr?: string;
+    };
+    stdout = err.stdout ?? '';
+    stderr = err.stderr ?? String(error);
+    exitCode = typeof err.code === 'number' ? err.code : 1;
+  }
+
+  return {
+    stdout,
+    stderr,
+    exitCode,
+    durationMs: Date.now() - startedAtMs,
+    passed: exitCode === 0,
+  };
+}
+
+function buildCommandEvidence(
+  command: string,
+  exec: CommandExecResult,
+): WorkerTrackResult['evidence'] {
+  return [
+    { kind: 'log', label: 'command', value: command, metadata: { durationMs: String(exec.durationMs), exitCode: String(exec.exitCode) } },
+    { kind: 'log', label: 'stdout', value: exec.stdout.trim(), metadata: { durationMs: String(exec.durationMs) } },
+    { kind: 'log', label: 'stderr', value: exec.stderr.trim(), metadata: { durationMs: String(exec.durationMs) } },
+  ];
 }
 
 export class CommandWorkerAdapter implements WorkerAdapter<CommandWorkerTask, string> {
@@ -799,102 +750,25 @@ export class CommandWorkerAdapter implements WorkerAdapter<CommandWorkerTask, st
     context: WorkerContextSnapshot;
     instructions?: string;
   }): Promise<WorkerRun & { output?: string }> {
-    if (!input.task.command.trim()) {
-      throw new Error('command worker received an empty command');
-    }
-
-    let stdout = '';
-    let stderr = '';
-    let exitCode = 0;
-    const startedAtMs = Date.now();
-    try {
-      const output = await execFileAsync('bash', ['-lc', input.task.command], {
-        cwd: input.task.cwd,
-        env: {
-          ...process.env,
-          ...input.task.env,
-        },
-        timeout: 10 * 60 * 1000,
-      });
-      stdout = output.stdout ?? '';
-      stderr = output.stderr ?? '';
-    } catch (error) {
-      const err = error as NodeJS.ErrnoException & {
-        code?: number | string;
-        stdout?: string;
-        stderr?: string;
-      };
-      stdout = err.stdout ?? '';
-      stderr = err.stderr ?? String(error);
-      exitCode = typeof err.code === 'number' ? err.code : 1;
-    }
-
-    const passed = exitCode === 0;
-    const summary = passed
+    const exec = await runCommandTask(input.task);
+    const summary = exec.passed
       ? `${this.worker.id} command completed`
       : `${this.worker.id} command failed`;
-    const durationMs = Date.now() - startedAtMs;
+    const evidence = buildCommandEvidence(input.task.command, exec);
 
     return {
       worker: this.worker,
       summary,
-      evidence: [
-        {
-          kind: 'log',
-          label: 'stdout',
-          value: stdout.trim(),
-          metadata: {
-            durationMs: String(durationMs),
-            exitCode: String(exitCode),
-          },
-        },
-        {
-          kind: 'log',
-          label: 'stderr',
-          value: stderr.trim(),
-          metadata: {
-            durationMs: String(durationMs),
-            exitCode: String(exitCode),
-          },
-        },
-      ],
+      evidence: evidence.filter((e) => e.label !== 'command'),
       result: {
         trackId: this.worker.id,
-        status: passed ? 'completed' : 'failed',
+        status: exec.passed ? 'completed' : 'failed',
         summary,
-        output: stdout.trim(),
-        evidence: [
-          {
-            kind: 'log',
-            label: 'command',
-            value: input.task.command,
-            metadata: {
-              durationMs: String(durationMs),
-              exitCode: String(exitCode),
-            },
-          },
-          {
-            kind: 'log',
-            label: 'stdout',
-            value: stdout.trim(),
-            metadata: {
-              durationMs: String(durationMs),
-            },
-          },
-          {
-            kind: 'log',
-            label: 'stderr',
-            value: stderr.trim(),
-            metadata: {
-              durationMs: String(durationMs),
-            },
-          },
-        ],
+        output: exec.stdout.trim(),
+        evidence,
       },
-      output: stdout.trim(),
-      metrics: {
-        durationMs,
-      },
+      output: exec.stdout.trim(),
+      metrics: { durationMs: exec.durationMs },
     };
   }
 }
@@ -907,74 +781,36 @@ export class SupervisorCommandWorkerAdapter implements WorkerAdapter<CommandWork
     context: WorkerContextSnapshot;
     instructions?: string;
   }): Promise<WorkerRun & { output?: SupervisorWorkerOutput }> {
-    if (!input.task.command.trim()) {
-      throw new Error('supervisor command worker received an empty command');
-    }
-
-    let stdout = '';
-    let stderr = '';
-    let exitCode = 0;
-    const startedAtMs = Date.now();
-    try {
-      const output = await execFileAsync('bash', ['-lc', input.task.command], {
-        cwd: input.task.cwd,
-        env: {
-          ...process.env,
-          ...input.task.env,
-        },
-        timeout: 10 * 60 * 1000,
-      });
-      stdout = output.stdout ?? '';
-      stderr = output.stderr ?? '';
-    } catch (error) {
-      const err = error as NodeJS.ErrnoException & {
-        code?: number | string;
-        stdout?: string;
-        stderr?: string;
-      };
-      stdout = err.stdout ?? '';
-      stderr = err.stderr ?? String(error);
-      exitCode = typeof err.code === 'number' ? err.code : 1;
-    }
-
-    const durationMs = Date.now() - startedAtMs;
-    const passed = exitCode === 0;
-    const parsed = passed ? tryParseSupervisorOutput(stdout) : undefined;
+    const exec = await runCommandTask(input.task);
+    const parsed = exec.passed ? tryParseSupervisorOutput(exec.stdout) : undefined;
     const summary = parsed?.summary ?? (
-      passed
+      exec.passed
         ? `${this.worker.id} orchestrator completed`
         : `${this.worker.id} orchestrator failed`
     );
 
+    const evidence = buildSupervisorEvidence({
+      requestLabel: input.task.command,
+      responseText: exec.stdout,
+      stderrText: exec.stderr,
+      durationMs: exec.durationMs,
+      exitCode: exec.exitCode,
+      parsed,
+    });
+
     return {
       worker: this.worker,
       summary,
-      evidence: buildSupervisorEvidence({
-        requestLabel: input.task.command,
-        responseText: stdout,
-        stderrText: stderr,
-        durationMs,
-        exitCode,
-        parsed,
-      }),
+      evidence,
       result: {
         trackId: this.worker.id,
-        status: mapSupervisorTrackStatus(parsed?.status, passed),
+        status: mapSupervisorTrackStatus(parsed?.status, exec.passed),
         summary,
         output: parsed,
-        evidence: buildSupervisorEvidence({
-          requestLabel: input.task.command,
-          responseText: stdout,
-          stderrText: stderr,
-          durationMs,
-          exitCode,
-          parsed,
-        }),
+        evidence,
       },
       output: parsed,
-      metrics: {
-        durationMs,
-      },
+      metrics: { durationMs: exec.durationMs },
     };
   }
 }
