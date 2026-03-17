@@ -115,11 +115,25 @@ export class HeuristicTaskHardener implements TaskHardener {
       }
     }
     if (pyproject) {
-      checks.push('pytest');
+      if (await fileExists(join(repoPath!, 'setup.cfg')) || pyproject.includes('[tool.pytest')) {
+        checks.push('pytest');
+      }
+      if (pyproject.includes('[tool.ruff') || pyproject.includes('[tool.flake8')) {
+        checks.push('ruff check .');
+      }
+      if (pyproject.includes('[tool.mypy')) {
+        checks.push('mypy .');
+      }
     }
     if (cargo) {
-      checks.push('cargo test');
-      checks.push('cargo check');
+      checks.push('cargo fmt --check');
+      checks.push('cargo clippy --workspace');
+      checks.push('cargo test --workspace');
+    }
+
+    if (repoPath) {
+      const ciChecks = await inferCiCheckCommands(repoPath);
+      checks.push(...ciChecks);
     }
 
     return {
@@ -127,13 +141,14 @@ export class HeuristicTaskHardener implements TaskHardener {
       expandedGoal: [
         input.goal,
         repoPath ? `Work inside ${repoPath}.` : '',
-        'Prefer minimal, verifiable changes.',
-        'Treat review and validation as part of completion, not afterthoughts.',
+        'Complete the full scope to production quality.',
+        'Treat review, formatting, linting, and validation as part of completion.',
       ].filter(Boolean).join(' '),
       successCriteria: criteria,
       checkCommands: dedupe(checks),
       executionNotes: [
-        'If checks are missing, explain the gap explicitly.',
+        'Run ALL check commands before declaring done, including formatting and lint.',
+        'If checks fail, fix the issues — do not skip them.',
         'If the task is ambiguous, preserve the original goal and add inferred criteria separately.',
       ],
       inferred: true,
@@ -182,6 +197,56 @@ function buildDefaultHardenerPrompt(input: TaskHardenerInput): string {
       ? `Existing criteria:\n${input.successCriteria.map((criterion) => `- ${criterion}`).join('\n')}`
       : 'Existing criteria: (none)',
   ].filter(Boolean).join('\n');
+}
+
+async function inferCiCheckCommands(repoPath: string): Promise<string[]> {
+  const checks: string[] = [];
+  const ciPaths = [
+    join(repoPath, '.github', 'workflows', 'ci.yml'),
+    join(repoPath, '.github', 'workflows', 'ci.yaml'),
+    join(repoPath, '.github', 'workflows', 'check.yml'),
+    join(repoPath, '.github', 'workflows', 'test.yml'),
+  ];
+
+  for (const ciPath of ciPaths) {
+    const content = await maybeReadText(ciPath);
+    if (!content) {
+      continue;
+    }
+    if (content.includes('cargo fmt') && !checks.some((c) => c.includes('cargo fmt'))) {
+      checks.push('cargo fmt --check');
+    }
+    if (content.includes('cargo clippy') && !checks.some((c) => c.includes('cargo clippy'))) {
+      checks.push('cargo clippy --workspace');
+    }
+    if (content.includes('cargo audit') && !checks.some((c) => c.includes('cargo audit'))) {
+      // cargo audit failures in upstream deps are not actionable, skip
+    }
+    if (content.includes('npm run lint') && !checks.some((c) => c.includes('npm run lint'))) {
+      checks.push('npm run lint');
+    }
+    if (content.includes('pnpm run lint') && !checks.some((c) => c.includes('pnpm run lint'))) {
+      checks.push('pnpm run lint');
+    }
+    if (content.includes('eslint') && !checks.some((c) => c.includes('eslint'))) {
+      checks.push('npx eslint .');
+    }
+    if (content.includes('tsc') && !checks.some((c) => c.includes('tsc'))) {
+      checks.push('npx tsc --noEmit');
+    }
+    break;
+  }
+
+  return checks;
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await readFile(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function dedupe(items: string[]): string[] {
