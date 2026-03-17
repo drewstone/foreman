@@ -1819,27 +1819,7 @@ function toCoreEvidence(
     metadata?: Record<string, string>;
   }>,
 ): Evidence[] {
-  return evidence.map((item) => ({
-    kind: toCoreEvidenceKind(item.kind),
-    label: item.label,
-    value: item.value,
-    uri: item.uri,
-    metadata: item.metadata,
-  }));
-}
-
-function toCoreEvidenceKind(kind: string): Evidence['kind'] {
-  switch (kind) {
-    case 'metric':
-    case 'screenshot':
-    case 'diff':
-    case 'test':
-    case 'note':
-    case 'artifact':
-      return kind;
-    default:
-      return 'log';
-  }
+  return evidence as Evidence[];
 }
 
 function toCoreFinding(finding: {
@@ -1857,27 +1837,9 @@ function toCoreFinding(finding: {
 }
 
 function toEvaluationEvidence(
-  evidence: Array<{
-    kind: string;
-    label: string;
-    value: string;
-    uri?: string;
-    metadata?: Record<string, string>;
-  }>,
-): Array<{
-  kind: string;
-  label: string;
-  value: string;
-  uri?: string;
-  metadata?: Record<string, string>;
-}> {
-  return evidence.map((item) => ({
-    kind: item.kind,
-    label: item.label,
-    value: item.value,
-    uri: item.uri,
-    metadata: item.metadata,
-  }));
+  evidence: Array<{ kind: string; label: string; value: string; uri?: string; metadata?: Record<string, string> }>,
+): Evidence[] {
+  return evidence as Evidence[];
 }
 
 function dedupeEvidence(

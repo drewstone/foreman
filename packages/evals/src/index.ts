@@ -9,13 +9,9 @@ export interface EvaluationFinding {
   evidence?: string;
 }
 
-export interface EvaluationEvidence {
-  kind: string;
-  label: string;
-  value: string;
-  uri?: string;
-  metadata?: Record<string, string>;
-}
+import type { Evidence } from '@drew/foreman-core';
+
+export type EvaluationEvidence = Evidence;
 
 export interface EvaluationResult {
   layer: EvaluationLayer;

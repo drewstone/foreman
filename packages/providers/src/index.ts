@@ -125,76 +125,10 @@ export class CommandTextProvider implements TextProvider {
     },
   ): Promise<ProviderExecution> {
     const command = this.commandBuilder(prompt);
-    const [bin, ...args] = command;
-
-    if (!bin) {
+    if (!command[0]) {
       throw new Error(`provider ${this.id} built an empty command`);
     }
-
-    return new Promise<ProviderExecution>((resolve, reject) => {
-      const startedAt = new Date().toISOString();
-      const startedAtMs = Date.now();
-      const child = spawn(bin, args, {
-        cwd: options?.cwd,
-        env: {
-          ...process.env,
-          ...options?.env,
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-
-      let stdout = '';
-      let stderr = '';
-      let settled = false;
-      const timeoutMs = options?.timeoutMs ?? 15 * 60 * 1000;
-      const maxOutputBytes = 10 * 1024 * 1024;
-
-      const timer = setTimeout(() => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        child.kill('SIGTERM');
-        setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
-        reject(new Error(`provider ${this.id} timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-
-      child.stdout.on('data', (chunk) => {
-        if (stdout.length < maxOutputBytes) {
-          stdout += String(chunk);
-        }
-      });
-      child.stderr.on('data', (chunk) => {
-        if (stderr.length < maxOutputBytes) {
-          stderr += String(chunk);
-        }
-      });
-      child.on('error', (error) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timer);
-        reject(error);
-      });
-      child.on('close', (exitCode) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timer);
-        const finishedAt = new Date().toISOString();
-        resolve({
-          command,
-          stdout,
-          stderr,
-          exitCode: exitCode ?? -1,
-          startedAt,
-          finishedAt,
-          durationMs: Date.now() - startedAtMs,
-        });
-      });
-    });
+    return runProviderCommand(command, options);
   }
 }
 

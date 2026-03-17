@@ -31,3 +31,13 @@ export type {
 
 export { createFilesystemArtifacts } from './artifacts.js';
 export { runTaskLoop } from './runtime.js';
+export {
+  dedupe,
+  isRecord,
+  numberValue,
+  optionalString,
+  recordStringMap,
+  stringArray,
+  stringValue,
+  truncate,
+} from './utils.js';

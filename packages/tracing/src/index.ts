@@ -4,13 +4,9 @@ import { dirname, join, resolve } from 'node:path';
 
 import { Pool, type PoolConfig } from 'pg';
 
-export interface TraceEvidence {
-  kind: string;
-  label: string;
-  value: string;
-  uri?: string;
-  metadata?: Record<string, string>;
-}
+import type { Evidence } from '@drew/foreman-core';
+
+export type TraceEvidence = Evidence;
 
 export interface TraceTaskRef {
   id: string;

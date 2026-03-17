@@ -4,13 +4,9 @@ export interface EnvironmentRef {
   metadata?: Record<string, string>;
 }
 
-export interface EnvironmentEvidence {
-  kind: string;
-  label: string;
-  value: string;
-  uri?: string;
-  metadata?: Record<string, string>;
-}
+import type { Evidence } from '@drew/foreman-core';
+
+export type EnvironmentEvidence = Evidence;
 
 export interface Observation {
   summary: string;
