@@ -121,6 +121,7 @@ export class CommandTextProvider implements TextProvider {
       let stderr = '';
       let settled = false;
       const timeoutMs = options?.timeoutMs ?? 15 * 60 * 1000;
+      const maxOutputBytes = 10 * 1024 * 1024;
 
       const timer = setTimeout(() => {
         if (settled) {
@@ -128,14 +129,19 @@ export class CommandTextProvider implements TextProvider {
         }
         settled = true;
         child.kill('SIGTERM');
+        setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
         reject(new Error(`provider ${this.id} timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
       child.stdout.on('data', (chunk) => {
-        stdout += String(chunk);
+        if (stdout.length < maxOutputBytes) {
+          stdout += String(chunk);
+        }
       });
       child.stderr.on('data', (chunk) => {
-        stderr += String(chunk);
+        if (stderr.length < maxOutputBytes) {
+          stderr += String(chunk);
+        }
       });
       child.on('error', (error) => {
         if (settled) {
@@ -627,6 +633,7 @@ async function runProviderCommand(
     let stderr = '';
     let settled = false;
     const timeoutMs = options?.timeoutMs ?? 15 * 60 * 1000;
+    const maxOutputBytes = 10 * 1024 * 1024;
 
     const timer = setTimeout(() => {
       if (settled) {
@@ -634,14 +641,19 @@ async function runProviderCommand(
       }
       settled = true;
       child.kill('SIGTERM');
+      setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
       reject(new Error(`provider session driver timed out after ${timeoutMs}ms`));
     }, timeoutMs);
 
     child.stdout.on('data', (chunk) => {
-      stdout += String(chunk);
+      if (stdout.length < maxOutputBytes) {
+        stdout += String(chunk);
+      }
     });
     child.stderr.on('data', (chunk) => {
-      stderr += String(chunk);
+      if (stderr.length < maxOutputBytes) {
+        stderr += String(chunk);
+      }
     });
     child.on('error', (error) => {
       if (settled) {

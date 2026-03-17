@@ -473,8 +473,8 @@ function selectProvider(
   if (explicit) {
     return explicit;
   }
-  const codexScore = (memories.codex?.successRate ?? 0) - (memories.codex?.medianCostUsd ?? 0);
-  const claudeScore = (memories.claude?.successRate ?? 0) - (memories.claude?.medianCostUsd ?? 0);
+  const codexScore = (memories.codex?.successRate ?? 0) - (memories.codex?.avgCostUsd ?? 0);
+  const claudeScore = (memories.claude?.successRate ?? 0) - (memories.claude?.avgCostUsd ?? 0);
   return codexScore > claudeScore ? 'codex' : 'claude';
 }
 

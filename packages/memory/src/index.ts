@@ -9,8 +9,8 @@ export interface WorkerPerformanceMemory {
   workerId: string;
   sampleCount?: number;
   successRate?: number;
-  medianCostUsd?: number;
-  medianRuntimeSec?: number;
+  avgCostUsd?: number;
+  avgRuntimeSec?: number;
   commonFailureClasses?: string[];
 }
 
@@ -84,8 +84,8 @@ export function recordWorkerRun(
     workerId: existing?.workerId ?? 'unknown-worker',
     sampleCount: nextSamples,
     successRate: weightedAverage(existing?.successRate, previousSamples, update.succeeded ? 1 : 0, nextSamples),
-    medianCostUsd: weightedAverage(existing?.medianCostUsd, previousSamples, update.costUsd, nextSamples),
-    medianRuntimeSec: weightedAverage(existing?.medianRuntimeSec, previousSamples, runtimeSec, nextSamples),
+    avgCostUsd: weightedAverage(existing?.avgCostUsd, previousSamples, update.costUsd, nextSamples),
+    avgRuntimeSec: weightedAverage(existing?.avgRuntimeSec, previousSamples, runtimeSec, nextSamples),
     commonFailureClasses: dedupeStrings(
       [
         ...(existing?.commonFailureClasses ?? []),

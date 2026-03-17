@@ -49,23 +49,37 @@ async function mapLimit<T, TResult>(
   items: T[],
   limit: number,
   worker: (item: T, index: number) => Promise<TResult>,
+  signal?: AbortSignal,
 ): Promise<TResult[]> {
   const results = new Array<TResult>(items.length);
   let cursor = 0;
+  let firstError: unknown;
 
   async function runWorker(): Promise<void> {
     for (;;) {
-      const index = cursor;
+      if (firstError || signal?.aborted) {
+        return;
+      }
+      const index = cursor++;
       if (index >= items.length) {
         return;
       }
-      cursor += 1;
-      results[index] = await worker(items[index] as T, index);
+      try {
+        results[index] = await worker(items[index] as T, index);
+      } catch (error) {
+        if (!firstError) {
+          firstError = error;
+        }
+        return;
+      }
     }
   }
 
   const width = Math.max(1, Math.min(limit, items.length || 1));
-  await Promise.all(Array.from({ length: width }, () => runWorker()));
+  await Promise.allSettled(Array.from({ length: width }, () => runWorker()));
+  if (firstError) {
+    throw firstError;
+  }
   return results;
 }
 
@@ -177,7 +191,7 @@ export async function runTaskLoop<TContext = unknown, TTrackInput = unknown, TTr
           }),
         );
         return result;
-      });
+      }, options.signal);
       await options.artifacts.writeJson(`rounds/${round}/track-results.json`, trackResults);
 
       const validation = await options.validate({
@@ -322,15 +336,19 @@ export async function runTaskLoop<TContext = unknown, TTrackInput = unknown, TTr
         summary: state.outcome.summary,
       }),
     );
-    await options.artifacts.writeJson('final-summary.json', {
-      task: options.task,
-      status: state.status,
-      finishedAt: state.finishedAt,
-      rounds: state.rounds.length,
-      outcome: state.outcome,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    await options.artifacts.writeJson('trace.json', state.trace);
+    try {
+      await options.artifacts.writeJson('final-summary.json', {
+        task: options.task,
+        status: state.status,
+        finishedAt: state.finishedAt,
+        rounds: state.rounds.length,
+        outcome: state.outcome,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      await options.artifacts.writeJson('trace.json', state.trace);
+    } catch {
+      // Artifact write failed during error handling — preserve original error.
+    }
     throw error;
   }
 }

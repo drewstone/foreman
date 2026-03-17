@@ -605,14 +605,31 @@ export async function runEngineeringForeman(
       const memorySummary = compactMemorySummary(envMemory, profileMemory, strategyMemory);
       const priorRoundSummary = summarizePriorRound(loop.rounds.at(-1));
 
+      const isFirstRound = loop.rounds.length === 0;
+      let productContext = '';
+      let productEvidence: Evidence[] = [];
+      if (isFirstRound) {
+        const discovered = await environment.discoverProductContext();
+        if (discovered.docs.length > 0) {
+          productContext = discovered.docs
+            .map((doc) => `--- ${doc.path} ---\n${doc.content}`)
+            .join('\n\n');
+          productEvidence = toCoreEvidence(discovered.evidence);
+        }
+      }
+
       return {
         summary: [
           observation.summary,
+          productContext ? `Product documentation:\n${productContext}` : '',
           memorySummary ? `Known memory:\n${memorySummary}` : '',
           priorRoundSummary ? `Prior round:\n${priorRoundSummary}` : '',
         ].filter(Boolean).join('\n\n'),
         state: observation.state,
-        evidence: toCoreEvidence(observation.evidence ?? []),
+        evidence: [
+          ...toCoreEvidence(observation.evidence ?? []),
+          ...productEvidence,
+        ],
         metadata: {
           repoPath,
           reviewWorkerId,

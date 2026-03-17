@@ -144,6 +144,89 @@ export class GitCodeEnvironment implements EnvironmentAdapter<CodeEnvironmentSta
     return results;
   }
 
+  async discoverProductContext(options?: {
+    maxFileBytes?: number;
+    maxFiles?: number;
+  }): Promise<{ summary: string; docs: Array<{ path: string; content: string }>; evidence: EnvironmentEvidence[] }> {
+    const maxBytes = options?.maxFileBytes ?? 8000;
+    const maxFiles = options?.maxFiles ?? 10;
+    const docCandidates = [
+      'CLAUDE.md',
+      'README.md',
+      'ARCHITECTURE.md',
+      'CONTRIBUTING.md',
+      'SPEC.md',
+      'docs/ARCHITECTURE.md',
+      'docs/SPEC.md',
+      'docs/DESIGN.md',
+      'docs/UI_INTEGRATION_SPEC.md',
+    ];
+
+    const docs: Array<{ path: string; content: string }> = [];
+    for (const candidate of docCandidates) {
+      if (docs.length >= maxFiles) {
+        break;
+      }
+      try {
+        const content = await readFile(joinPath(this.repoPath, candidate), 'utf8');
+        if (content.trim()) {
+          docs.push({
+            path: candidate,
+            content: content.length > maxBytes ? content.slice(0, maxBytes) + '\n...(truncated)' : content,
+          });
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    const ciPaths = ['.github/workflows/ci.yml', '.github/workflows/ci.yaml'];
+    for (const ciPath of ciPaths) {
+      if (docs.length >= maxFiles) {
+        break;
+      }
+      try {
+        const content = await readFile(joinPath(this.repoPath, ciPath), 'utf8');
+        if (content.trim()) {
+          docs.push({ path: ciPath, content: content.length > maxBytes ? content.slice(0, maxBytes) + '\n...(truncated)' : content });
+          break;
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    const configFiles = ['package.json', 'Cargo.toml', 'pyproject.toml'];
+    for (const configFile of configFiles) {
+      if (docs.length >= maxFiles) {
+        break;
+      }
+      try {
+        const content = await readFile(joinPath(this.repoPath, configFile), 'utf8');
+        if (content.trim()) {
+          docs.push({
+            path: configFile,
+            content: content.length > 2000 ? content.slice(0, 2000) + '\n...(truncated)' : content,
+          });
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    const summary = docs.length > 0
+      ? `Product context from ${docs.length} file(s): ${docs.map((d) => d.path).join(', ')}`
+      : 'No product documentation found in repository.';
+
+    const evidence: EnvironmentEvidence[] = docs.map((doc) => ({
+      kind: 'artifact',
+      label: `doc:${doc.path}`,
+      value: doc.content,
+    }));
+
+    return { summary, docs, evidence };
+  }
+
   async collectRepoEvidence(): Promise<EnvironmentEvidence[]> {
     const status = await this.git(['status', '--porcelain'], true);
     const diffStat = await this.git(['diff', '--stat'], true);
