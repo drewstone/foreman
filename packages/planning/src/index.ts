@@ -200,44 +200,127 @@ function buildDefaultHardenerPrompt(input: TaskHardenerInput): string {
 }
 
 async function inferCiCheckCommands(repoPath: string): Promise<string[]> {
-  const checks: string[] = [];
   const ciPaths = [
     join(repoPath, '.github', 'workflows', 'ci.yml'),
     join(repoPath, '.github', 'workflows', 'ci.yaml'),
     join(repoPath, '.github', 'workflows', 'check.yml'),
     join(repoPath, '.github', 'workflows', 'test.yml'),
+    join(repoPath, '.github', 'workflows', 'lint.yml'),
   ];
 
+  const checks: string[] = [];
   for (const ciPath of ciPaths) {
     const content = await maybeReadText(ciPath);
     if (!content) {
       continue;
     }
-    if (content.includes('cargo fmt') && !checks.some((c) => c.includes('cargo fmt'))) {
-      checks.push('cargo fmt --check');
-    }
-    if (content.includes('cargo clippy') && !checks.some((c) => c.includes('cargo clippy'))) {
-      checks.push('cargo clippy --workspace');
-    }
-    if (content.includes('cargo audit') && !checks.some((c) => c.includes('cargo audit'))) {
-      // cargo audit failures in upstream deps are not actionable, skip
-    }
-    if (content.includes('npm run lint') && !checks.some((c) => c.includes('npm run lint'))) {
-      checks.push('npm run lint');
-    }
-    if (content.includes('pnpm run lint') && !checks.some((c) => c.includes('pnpm run lint'))) {
-      checks.push('pnpm run lint');
-    }
-    if (content.includes('eslint') && !checks.some((c) => c.includes('eslint'))) {
-      checks.push('npx eslint .');
-    }
-    if (content.includes('tsc') && !checks.some((c) => c.includes('tsc'))) {
-      checks.push('npx tsc --noEmit');
-    }
-    break;
+    checks.push(...extractRunCommands(content, repoPath));
   }
 
   return checks;
+}
+
+const CI_SKIP_PATTERNS = [
+  /^(sudo\s+)?apt-get\b/,
+  /^(sudo\s+)?apt\b/,
+  /^(sudo\s+)?brew\b/,
+  /^(sudo\s+)?yum\b/,
+  /^ln\s+-/,
+  /^mkdir\b/,
+  /^cp\b/,
+  /^mv\b/,
+  /^echo\b/,
+  /^export\b/,
+  /^cd\b/,
+  /^cat\b/,
+  /^chmod\b/,
+  /^docker\s+(login|push|build|tag)\b/,
+  /^gh\s/,
+  /^git\s+(push|fetch|remote|clone)\b/,
+  /deploy/i,
+  /^curl\b/,
+  /^wget\b/,
+  /^pip\s+install\b/,
+  /^npm\s+(ci|install)\b/,
+  /^pnpm\s+install\b/,
+  /^yarn\s+install\b/,
+  /^cargo\s+install\b/,
+  /^rustup\b/,
+];
+
+const CI_AUDIT_PATTERNS = [
+  /cargo\s+audit/,
+  /npm\s+audit/,
+  /snyk\b/,
+];
+
+function extractRunCommands(yamlContent: string, repoPath: string): string[] {
+  const commands: string[] = [];
+  const lines = yamlContent.split('\n');
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const runMatch = line.match(/^\s+-?\s*run:\s*(.+)/);
+    if (!runMatch) {
+      const blockRunMatch = line.match(/^\s+-?\s*run:\s*[|>]-?\s*$/);
+      if (blockRunMatch) {
+        const indent = line.search(/\S/);
+        const blockLines: string[] = [];
+        for (let j = i + 1; j < lines.length; j++) {
+          const nextLine = lines[j]!;
+          if (nextLine.trim() === '') {
+            blockLines.push('');
+            continue;
+          }
+          const nextIndent = nextLine.search(/\S/);
+          if (nextIndent <= indent) {
+            break;
+          }
+          blockLines.push(nextLine.trim());
+        }
+        const blockCommand = blockLines
+          .filter(Boolean)
+          .join(' && ');
+        if (blockCommand) {
+          const resolved = resolveCommand(blockCommand, repoPath);
+          if (resolved) {
+            commands.push(resolved);
+          }
+        }
+      }
+      continue;
+    }
+
+    const rawCommand = runMatch[1]!.trim();
+    const resolved = resolveCommand(rawCommand, repoPath);
+    if (resolved) {
+      commands.push(resolved);
+    }
+  }
+
+  return commands;
+}
+
+function resolveCommand(raw: string, repoPath: string): string | null {
+  let command = raw
+    .replace(/\$\{\{[^}]*\}\}/g, '')
+    .replace(/\$[A-Z_]+/g, '')
+    .trim();
+
+  if (!command || command.length < 3) {
+    return null;
+  }
+  if (CI_SKIP_PATTERNS.some((pattern) => pattern.test(command))) {
+    return null;
+  }
+  if (CI_AUDIT_PATTERNS.some((pattern) => pattern.test(command))) {
+    return null;
+  }
+  if (command.startsWith('./')) {
+    command = `cd ${repoPath} && ${command}`;
+  }
+
+  return command;
 }
 
 async function fileExists(path: string): Promise<boolean> {
