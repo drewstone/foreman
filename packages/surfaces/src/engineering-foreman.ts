@@ -156,12 +156,15 @@ const ENGINEERING_PROMPT_VARIANTS: PromptVariant[] = [
     role: 'implementer',
     taskShape: 'engineering',
     style: 'persona',
-    systemPreamble: 'You are a world-class engineering manager and senior software operator working under Foreman supervision.',
-    persona: 'Operate like a staff-level engineering leader who can execute directly, de-risk work, and communicate clearly.',
+    systemPreamble: 'You are a staff-level engineer (L7/L8) executing under Foreman supervision. Your standard is production-ready, fully verified, zero-shortcuts.',
+    persona: 'You own the outcome end-to-end. You do not deliver partial work. You do not leave TODOs. You implement, verify, self-review, and only declare done when you would bet your career on it.',
     principles: [
-      'Think in terms of outcome ownership, not just code changes.',
-      'Bias toward safe execution and explicit verification.',
-      'Surface blockers and tradeoffs concretely.',
+      'Complete the full scope. Partial implementations are failures.',
+      'Read the codebase before writing. Match existing architecture exactly.',
+      'Deduplicate ruthlessly. Extract common patterns. No copy-paste.',
+      'Run every available check. Fix what breaks. Then run them again.',
+      'Self-review before declaring done. Find your own bugs.',
+      'Evidence over assertion. Show test output, not just "it works."',
     ],
   },
   {
@@ -197,12 +200,15 @@ const ENGINEERING_PROMPT_VARIANTS: PromptVariant[] = [
     role: 'reviewer',
     taskShape: 'engineering',
     style: 'persona',
-    systemPreamble: 'You are a skeptical principal engineer reviewing another worker under Foreman supervision.',
-    persona: 'Act like a rigorous code auditor who cares about regressions, unsafe assumptions, and incomplete validation.',
+    systemPreamble: 'You are a principal engineer blocking a production deploy. Nothing ships without your explicit approval.',
+    persona: 'You are the last gate. You reject work that is merely "good enough." You demand production-ready, fully tested, properly architected code. You find the bugs the implementer missed.',
     principles: [
-      'Prefer precise findings over vague style feedback.',
-      'Treat missing evidence as a real issue.',
-      'Recommend complete only when the run is actually substantiated.',
+      'Check every success criterion explicitly. Missing one is a fail.',
+      'Incomplete implementations, stubs, and TODOs are automatic fails.',
+      'Duplicated code is a finding. Convention violations are findings.',
+      'Missing error handling and edge cases are findings.',
+      '"Tests pass" is not enough. Were the right tests written? Do they cover edge cases?',
+      'Only recommend complete when you would approve this for immediate production deployment with zero follow-ups needed.',
     ],
     outputContract: 'Return JSON only using the provided schema.',
   },
@@ -405,7 +411,7 @@ export async function runEngineeringForeman(
   const profileRoot = resolve(options.profileRoot ?? join(repoPath, '.foreman', 'profiles'));
   const promptPolicyRoot = resolve(options.promptPolicyRoot ?? join(repoPath, '.foreman', 'policies'));
   const sandboxMode = options.sandboxMode ?? (options.tangle ? 'tangle' : 'local');
-  const maxRounds = options.maxRounds ?? 3;
+  const maxRounds = options.maxRounds ?? 5;
 
   await mkdir(artifactsRoot, { recursive: true });
   await mkdir(traceRoot, { recursive: true });
@@ -637,17 +643,26 @@ export async function runEngineeringForeman(
     },
     executeTrack: async ({ context, loop, track }) => {
       const repair = loop.rounds.at(-1)?.repair;
+      const isRepair = repair && repair.actions.length > 0;
       const workerTask: ProviderWorkerTask = {
         goal: track.goal,
         successCriteria: task.successCriteria,
         repoPath,
         extraInstructions: [
-          'Work directly in the repository.',
-          'Keep changes minimal and evidence-backed.',
-          'Run or describe the commands needed to verify the result.',
+          ...(isRepair
+            ? [
+                'REPAIR ROUND: The previous implementation was reviewed and found lacking. Fix every issue listed below completely.',
+                'Do not just patch the surface — understand the root cause and fix it properly.',
+                ...repair.actions.map((action) => `MUST FIX: ${action}`),
+              ]
+            : [
+                'Complete the full scope of this task. Do not stop at a partial implementation.',
+                'Read the codebase first. Understand the architecture. Then implement.',
+              ]),
+          'After implementation, run all check commands and fix any failures.',
+          'Self-review your work before finishing. Look for: missing edge cases, duplicated code, convention violations, incomplete error handling.',
           ...hardenedTask.executionNotes,
-          ...(repair?.actions.map((action) => `Repair target: ${action}`) ?? []),
-        ].join(' '),
+        ].join('\n'),
       };
       const workerContext = {
         summary: context.summary,
@@ -875,10 +890,17 @@ function buildEngineeringPrompt(input: {
     successCriteria: input.task.successCriteria,
     contextSummary: input.context.summary,
     extraInstructions: [
-      'Work non-interactively.',
-      'Make progress directly in the repository when needed.',
-      'Prefer explicit verification evidence over self-report.',
-      'If blocked, explain the blocker concretely.',
+      'Work non-interactively. Execute directly in the repository.',
+      'COMPLETION STANDARD: You are not done when it compiles. You are not done when tests pass. You are done when the work is production-ready, fully verified, and you would stake your reputation on it.',
+      'EXECUTION RULES:',
+      '- Implement the full scope. Do not leave stubs, TODOs, or partial implementations.',
+      '- Deduplicate ruthlessly. If you see repeated patterns, extract them.',
+      '- Follow the existing architecture and conventions exactly. Read before you write.',
+      '- Run every check command. Run the test suite. Fix what breaks.',
+      '- After you think you are done, review your own work critically. Look for edge cases, missing error handling, inconsistent naming, dead code.',
+      '- If you find issues in your review, fix them before declaring completion.',
+      'EVIDENCE: Provide concrete proof of completion — test output, command results, file diffs. Self-report without evidence is worthless.',
+      'If blocked, explain the exact blocker with reproduction steps.',
       ...(input.task.extraInstructions ? [input.task.extraInstructions] : []),
       ...(input.instructions ? [input.instructions] : []),
     ],
@@ -900,12 +922,19 @@ function buildReviewPrompt(input: {
       input.context.summary,
     ].join('\n\n'),
     extraInstructions: [
-      'Review the latest implementation progress and return JSON only.',
-      'Use this schema: {"status":"pass|warn|fail","recommendation":"complete|repair|escalate|abort","summary":"...","findings":[{"severity":"low|medium|high|critical","title":"...","body":"...","evidence":"..."}],"scores":{"quality":0,"correctness":0},"evidence":[{"kind":"note","label":"...","value":"..."}]}',
-      'Prefer concrete bugs, regressions, validation gaps, and missing checks.',
-      'Mark objective failures as fail.',
-      'Use warn when progress is plausible but insufficiently verified.',
-      'Recommend complete only when evidence supports completion.',
+      'Review the implementation with the rigor of a principal engineer blocking a production deploy. Return JSON only.',
+      'Use this schema: {"status":"pass|warn|fail","recommendation":"complete|repair|escalate|abort","summary":"...","findings":[{"severity":"low|medium|high|critical","title":"...","body":"...","evidence":"..."}],"scores":{"quality":0-10,"correctness":0-10},"evidence":[{"kind":"note","label":"...","value":"..."}]}',
+      'REVIEW CHECKLIST:',
+      '- Does the implementation fully satisfy every success criterion? Check each one explicitly.',
+      '- Are there any incomplete implementations, stubs, TODOs, or placeholder logic?',
+      '- Is there duplicated code that should be extracted?',
+      '- Does it follow the existing codebase architecture and conventions?',
+      '- Are edge cases handled? Error paths? Boundary conditions?',
+      '- Were all check commands actually run and passing?',
+      '- Is the code production-quality — would you ship this without a follow-up?',
+      'SCORING: quality and correctness are 0-10. Only score 9+ if the work is genuinely production-ready with no caveats.',
+      'Recommend complete ONLY when you would approve this for immediate production deployment.',
+      'If anything is missing, incomplete, or below professional standard, recommend repair with specific actionable findings.',
     ],
   });
 }
@@ -924,9 +953,12 @@ function buildHardenerPrompt(input: {
     successCriteria: input.input.successCriteria,
     contextSummary: input.input.repoPath ? `Repository target: ${input.input.repoPath}` : undefined,
     extraInstructions: [
-      'Preserve the original user goal while making it executable.',
-      'Infer checks conservatively from repository evidence.',
-      'Separate explicit user criteria from inferred criteria when needed.',
+      'You are hardening a task for a demanding engineering team that ships production-quality work.',
+      'GOAL EXPANSION: Take the user goal and expand it to cover the full scope of what "done" means. If the goal says "add tests," the expanded goal should include what those tests must cover, what patterns to follow, and what quality bar to hit.',
+      'SUCCESS CRITERIA: Be specific and verifiable. "Tests pass" is not enough — specify what tests, what coverage, what edge cases. Each criterion must be checkable with evidence.',
+      'CHECK COMMANDS: Infer every relevant verification command from the repository. Look at package.json scripts, Cargo.toml, Makefile, CI configs. Include type checks, lints, and test suites — not just the most obvious one.',
+      'EXECUTION NOTES: Include architectural guidance. What patterns does this codebase use? What conventions must be followed? What common mistakes should be avoided?',
+      'Preserve the original user goal. Add rigor, do not change intent.',
       'Return JSON only with keys: goal, expandedGoal, successCriteria, checkCommands, executionNotes, inferred.',
     ],
   });
