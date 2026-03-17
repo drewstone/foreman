@@ -76,12 +76,38 @@ export function parseJsonOutput(raw: string): unknown {
     if (fenced?.[1]) {
       return JSON.parse(fenced[1].trim());
     }
-    const objectMatch = text.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
-    if (objectMatch?.[1]) {
-      return JSON.parse(objectMatch[1]);
+    // Try to find the last valid JSON object/array by scanning from the end.
+    const lastBrace = text.lastIndexOf('}');
+    const lastBracket = text.lastIndexOf(']');
+    if (lastBrace >= 0) {
+      const candidate = extractBalancedJson(text, '{', '}', lastBrace);
+      if (candidate) {
+        try { return JSON.parse(candidate); } catch { /* try next */ }
+      }
+    }
+    if (lastBracket >= 0) {
+      const candidate = extractBalancedJson(text, '[', ']', lastBracket);
+      if (candidate) {
+        try { return JSON.parse(candidate); } catch { /* try next */ }
+      }
     }
     throw new Error('provider output did not contain valid JSON');
   }
+}
+
+function extractBalancedJson(text: string, open: string, close: string, closeIndex: number): string | undefined {
+  let depth = 0;
+  for (let i = closeIndex; i >= 0; i--) {
+    if (text[i] === close) {
+      depth++;
+    } else if (text[i] === open) {
+      depth--;
+    }
+    if (depth === 0) {
+      return text.slice(i, closeIndex + 1);
+    }
+  }
+  return undefined;
 }
 
 export class CommandTextProvider implements TextProvider {

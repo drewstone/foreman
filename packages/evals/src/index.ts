@@ -58,8 +58,11 @@ const RECOMMENDATION_ORDER: Array<EvaluationResult['recommendation']> = [
 
 const STATUS_ORDER: Array<EvaluationResult['status']> = ['pass', 'warn', 'fail'];
 
-function maxByOrder<T extends string>(values: T[], order: T[]): T {
-  let best = values[0] as T;
+function maxByOrder<T extends string>(values: T[], order: T[], fallback: T): T {
+  if (values.length === 0) {
+    return fallback;
+  }
+  let best = values[0]!;
   for (const value of values) {
     if (order.indexOf(value) > order.indexOf(best)) {
       best = value;
@@ -110,10 +113,9 @@ export class EvaluationPipeline<TInput = unknown> {
       scores[key] = values.reduce((sum, value) => sum + value, 0) / values.length;
     }
 
-    const status = results.length > 0 ? maxByOrder(results.map((r) => r.status), STATUS_ORDER) : 'pass';
-    const recommendation =
-      results.length > 0
-        ? maxByOrder(results.map((r) => r.recommendation), RECOMMENDATION_ORDER)
+    const status = maxByOrder(results.map((r) => r.status), STATUS_ORDER, 'pass');
+    const recommendation = results.length > 0
+        ? maxByOrder(results.map((r) => r.recommendation), RECOMMENDATION_ORDER, 'complete')
         : 'complete';
 
     const summary = results.length > 0

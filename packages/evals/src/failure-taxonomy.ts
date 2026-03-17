@@ -3,6 +3,10 @@ export type FailureClass =
   | 'provider-runtime'
   | 'provider-model-resolution'
   | 'provider-timeout'
+  | 'provider-rate-limited'
+  | 'provider-auth'
+  | 'context-overflow'
+  | 'cancelled'
   | 'session-not-found'
   | 'contract-invalid'
   | 'child-run-failed'
@@ -20,17 +24,30 @@ export function classifySessionFailure(input: {
   const classes = new Set<FailureClass>();
   const stderr = input.stderr ?? '';
   const reason = input.detectedFailureReason ?? '';
+  const combined = `${reason}\n${stderr}`;
 
-  if (reason || input.exitCode && input.exitCode !== 0) {
+  if (reason || (input.exitCode != null && input.exitCode !== 0)) {
     classes.add('provider-runtime');
   }
-  if (/ProviderModelNotFoundError|ModelNotFoundError|provider or model resolution failed/i.test(`${reason}\n${stderr}`)) {
+  if (/ProviderModelNotFoundError|ModelNotFoundError|provider or model resolution failed/i.test(combined)) {
     classes.add('provider-model-resolution');
   }
-  if (/timeout|timed out/i.test(`${reason}\n${stderr}`)) {
+  if (/timeout|timed out/i.test(combined)) {
     classes.add('provider-timeout');
   }
-  if (/session not found|no recent .* found|run not found|unknown session/i.test(stderr)) {
+  if (/rate.?limit|429|quota|usage.?limit|insufficient.?quota|too many requests/i.test(combined)) {
+    classes.add('provider-rate-limited');
+  }
+  if (/401|403|unauthorized|forbidden|authentication|auth.?failed/i.test(combined)) {
+    classes.add('provider-auth');
+  }
+  if (/context.?overflow|context.?length|token.?limit|max.?tokens|context.?window/i.test(combined)) {
+    classes.add('context-overflow');
+  }
+  if (/cancel|abort|interrupt|user.?stopped/i.test(combined)) {
+    classes.add('cancelled');
+  }
+  if (/session not found|no recent .* found|run not found|unknown session/i.test(combined)) {
     classes.add('session-not-found');
   }
 
