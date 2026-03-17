@@ -1,0 +1,111 @@
+{
+  "jobs": [
+    {
+      "id": "daily-operator-sync",
+      "kind": "sync-operator",
+      "profileId": "daily-operator",
+      "userId": "drew",
+      "profileRoot": "/home/drew/code/some-repo/.foreman/profiles",
+      "memoryRoot": "/home/drew/code/some-repo/.foreman/memory",
+      "traceRoots": [
+        "/home/drew/code/some-repo/.foreman/traces"
+      ],
+      "transcriptRoots": [
+        "/home/drew/exports/agent-sessions"
+      ],
+      "repoPaths": [
+        "/home/drew/code/some-repo"
+      ],
+      "sessionProviders": [
+        "claude",
+        "codex",
+        "opencode",
+        "openclaw",
+        "browser"
+      ],
+      "sessionCwd": "/home/drew/code",
+      "lookbackDays": 2,
+      "provider": "claude",
+      "outputPath": "/home/drew/code/some-repo/.foreman/reports/sync-operator.json",
+      "markdownPath": "/home/drew/code/some-repo/.foreman/reports/sync-operator.md"
+    },
+    {
+      "id": "engineering-prompt-optimizer",
+      "kind": "prompt-optimizer",
+      "traceRoot": "/home/drew/code/some-repo/.foreman/traces",
+      "outputRoot": "/home/drew/code/some-repo/.foreman/optimizer",
+      "policyRoot": "/home/drew/code/some-repo/.foreman/policies",
+      "taskShape": "engineering",
+      "minimumRunsPerVariant": 3,
+      "exportDatasetJsonl": true,
+      "autoPromoteShadows": false
+    },
+    {
+      "id": "engineering-shadow-replay",
+      "kind": "engineering-replay",
+      "traceRoot": "/home/drew/code/some-repo/.foreman/traces",
+      "traceId": "REPLACE_WITH_TRACE_ID",
+      "promptPolicyMode": "shadow",
+      "maxRounds": 2
+    },
+    {
+      "id": "daily-session-review",
+      "kind": "session-review",
+      "profileId": "daily-operator",
+      "userId": "drew",
+      "profileRoot": "/home/drew/code/some-repo/.foreman/profiles",
+      "memoryRoot": "/home/drew/code/some-repo/.foreman/memory",
+      "traceRoots": [
+        "/home/drew/code/some-repo/.foreman/traces"
+      ],
+      "transcriptRoots": [
+        "/home/drew/exports/agent-sessions"
+      ],
+      "lookbackDays": 2,
+      "provider": "claude",
+      "outputPath": "/home/drew/code/some-repo/.foreman/reports/session-review.json",
+      "markdownPath": "/home/drew/code/some-repo/.foreman/reports/session-review.md",
+      "applyMemoryUpdates": true
+    },
+    {
+      "id": "resume-codex-session",
+      "kind": "session-run",
+      "provider": "codex",
+      "action": "continue",
+      "sessionId": "REPLACE_WITH_SESSION_ID",
+      "prompt": "Continue the work and drive it toward completion.",
+      "traceRoot": "/home/drew/code/some-repo/.foreman/traces",
+      "outputPath": "/home/drew/code/some-repo/.foreman/reports/session-run.json"
+    },
+    {
+      "id": "daily-work-continuation",
+      "kind": "work-continuation",
+      "profileId": "daily-operator",
+      "userId": "drew",
+      "profileRoot": "/home/drew/code/some-repo/.foreman/profiles",
+      "memoryRoot": "/home/drew/code/some-repo/.foreman/memory",
+      "traceRoots": [
+        "/home/drew/code/some-repo/.foreman/traces"
+      ],
+      "transcriptRoots": [
+        "/home/drew/exports/agent-sessions"
+      ],
+      "lookbackDays": 2,
+      "provider": "claude",
+      "sessionReviewProvider": "claude",
+      "outputPath": "/home/drew/code/some-repo/.foreman/reports/work-continuation.json",
+      "markdownPath": "/home/drew/code/some-repo/.foreman/reports/work-continuation.md",
+      "applyMemoryUpdates": true,
+      "executeTopEngineeringProposal": false
+    },
+    {
+      "id": "nightly-supervisor-audit",
+      "kind": "supervisor-run",
+      "command": "~/tools/some-audit-tool --json",
+      "cwd": "/home/drew/code/some-repo",
+      "label": "nightly-audit",
+      "outputPath": "/home/drew/code/some-repo/.foreman/reports/nightly-audit.json",
+      "markdownPath": "/home/drew/code/some-repo/.foreman/reports/nightly-audit.md"
+    }
+  ]
+}

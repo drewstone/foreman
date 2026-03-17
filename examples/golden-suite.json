@@ -1,0 +1,24 @@
+{
+  "id": "foreman-golden-demo",
+  "summary": "Minimal golden suite over replayable traces.",
+  "cases": [
+    {
+      "id": "supervisor-child-run-demo",
+      "surface": "supervisor",
+      "traceRoot": "/tmp/foreman-supervisor-children",
+      "traceId": "053f4875-badf-45de-99a5-b4213efb0dbe",
+      "expected": {
+        "outcomeStatus": "completed",
+        "validated": false,
+        "failureClasses": [
+          "child-run-failed",
+          "high-severity-findings",
+          "validation-failed"
+        ],
+        "childRunCount": 2,
+        "failedChildRunCount": 1,
+        "highSeverityFindingCount": 1
+      }
+    }
+  ]
+}

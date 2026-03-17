@@ -1,0 +1,55 @@
+{
+  "name": "@drew/foreman-repo",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Foreman monorepo.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.18.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  },
+  "scripts": {
+    "check": "npm run check:types && npm run check:sync",
+    "check:types": "npm run check --workspaces --if-present",
+    "check:sync": "tsx scripts/check-sync.ts",
+    "engineering": "tsx packages/surfaces/src/cli.ts",
+    "benchmark-engineering": "tsx packages/surfaces/src/engineering-benchmark-cli.ts",
+    "bootstrap-profile": "tsx packages/surfaces/src/profile-bootstrap-cli.ts",
+    "benchmark-traces": "tsx packages/surfaces/src/trace-benchmark-cli.ts",
+    "calibrate-judge": "tsx packages/surfaces/src/judge-calibration-cli.ts",
+    "continue-work": "tsx packages/surfaces/src/work-continuation-cli.ts",
+    "discover-work": "tsx packages/surfaces/src/work-discovery-cli.ts",
+    "document-foreman": "tsx packages/surfaces/src/document-foreman-cli.ts",
+    "hybrid-foreman": "tsx packages/surfaces/src/hybrid-foreman-cli.ts",
+    "observe-environment": "tsx packages/surfaces/src/environment-observe-cli.ts",
+    "eval-operator-learning": "tsx packages/surfaces/src/operator-learning-eval-cli.ts",
+    "golden-suite": "tsx packages/surfaces/src/golden-suite-cli.ts",
+    "learn-operator": "tsx packages/surfaces/src/learn-operator-cli.ts",
+    "optimize-prompts": "tsx packages/surfaces/src/prompt-optimizer-cli.ts",
+    "provider-session": "tsx packages/surfaces/src/provider-session-cli.ts",
+    "retrieve-traces": "tsx packages/surfaces/src/retrieve-traces-cli.ts",
+    "research-foreman": "tsx packages/surfaces/src/research-foreman-cli.ts",
+    "session-run": "tsx packages/surfaces/src/session-run-cli.ts",
+    "replay-session": "tsx packages/surfaces/src/session-replay-cli.ts",
+    "benchmark-session": "tsx packages/surfaces/src/session-benchmark-cli.ts",
+    "replay-browser": "tsx packages/surfaces/src/browser-replay-cli.ts",
+    "benchmark-browser": "tsx packages/surfaces/src/browser-benchmark-cli.ts",
+    "ops-foreman": "tsx packages/surfaces/src/ops-foreman-cli.ts",
+    "supervise-browser": "tsx packages/surfaces/src/browser-supervision-cli.ts",
+    "sync-operator": "tsx packages/surfaces/src/sync-operator-cli.ts",
+    "session-registry": "tsx packages/surfaces/src/session-registry-cli.ts",
+    "supervisor-run": "tsx packages/surfaces/src/supervisor-run-cli.ts",
+    "replay-supervisor": "tsx packages/surfaces/src/supervisor-replay-cli.ts",
+    "benchmark-supervisor": "tsx packages/surfaces/src/supervisor-benchmark-cli.ts",
+    "review-sessions": "tsx packages/surfaces/src/session-review-cli.ts",
+    "replay-engineering": "tsx packages/surfaces/src/engineering-replay-cli.ts",
+    "run-schedule": "tsx packages/surfaces/src/schedule-cli.ts"
+  },
+  "dependencies": {
+    "@ax-llm/ax": "^19.0.17"
+  }
+}

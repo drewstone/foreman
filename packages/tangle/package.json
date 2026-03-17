@@ -1,0 +1,17 @@
+{
+  "name": "@drew/foreman-tangle",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Tangle Sandbox adapters for Foreman.",
+  "exports": "./src/index.ts",
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@drew/foreman-sandbox": "0.0.1",
+    "@drew/foreman-workers": "0.0.1",
+    "@tangle-network/sandbox": "file:/home/drew/code/agent-dev-container/products/sandbox/sdk"
+  },
+  "scripts": {
+    "check": "tsc --noEmit"
+  }
+}

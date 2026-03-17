@@ -1,0 +1,37 @@
+{
+  "id": "foreman-judge-demo",
+  "summary": "Synthetic examples for judge calibration.",
+  "cases": [
+    {
+      "id": "clean-pass",
+      "input": {
+        "task": "Review a task with no findings and passing checks.",
+        "evidence": [
+          "All deterministic checks passed.",
+          "No review findings were reported."
+        ]
+      },
+      "expected": {
+        "status": "pass",
+        "recommendation": "complete"
+      }
+    },
+    {
+      "id": "blocking-fail",
+      "input": {
+        "task": "Review a task with a high severity finding.",
+        "findings": [
+          {
+            "severity": "high",
+            "title": "Security regression",
+            "body": "A child run failed and the issue blocks completion."
+          }
+        ]
+      },
+      "expected": {
+        "status": "fail",
+        "recommendation": "repair"
+      }
+    }
+  ]
+}

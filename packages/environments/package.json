@@ -1,0 +1,12 @@
+{
+  "name": "@drew/foreman-environments",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Foreman environment contracts.",
+  "exports": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "check": "tsc --noEmit"
+  }
+}

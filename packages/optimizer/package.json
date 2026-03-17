@@ -1,0 +1,17 @@
+{
+  "name": "@drew/foreman-optimizer",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Foreman prompt-optimization sidecar utilities.",
+  "exports": "./src/index.ts",
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@ax-llm/ax": "^19.0.17",
+    "@drew/foreman-planning": "0.0.1",
+    "@drew/foreman-tracing": "0.0.1"
+  },
+  "scripts": {
+    "check": "tsc --noEmit"
+  }
+}

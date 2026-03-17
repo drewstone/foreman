@@ -1,0 +1,12 @@
+{
+  "name": "@drew/foreman-providers",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Foreman provider adapters.",
+  "exports": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "check": "tsc --noEmit"
+  }
+}
