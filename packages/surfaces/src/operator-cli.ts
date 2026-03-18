@@ -21,9 +21,13 @@ import {
 } from './operator-loop.js';
 import { checkCI, readCILogs } from './ci-tools.js';
 import { createMemoryStore } from '@drew/foreman-memory';
+import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { readdir, readFile } from 'node:fs/promises';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 // ─── Config ──────────────────────────────────────────────────────────
 
@@ -270,13 +274,112 @@ async function main(): Promise<void> {
       log(`${sessionId}: ${action}`);
     },
     onQuestion: async (question) => {
-      // In heartbeat mode, log questions but don't block
       log(`Question: ${question.question}`);
       if (question.options) {
         log(`  Options: ${question.options.join(', ')}`);
       }
       log(`  Context: ${question.context.slice(0, 200)}`);
       return undefined;
+    },
+    onReview: async ({ recentHeartbeats, sessions }) => {
+      // Build a comprehensive review prompt from accumulated state
+      const ranked = sessions
+        .filter((s) => s.status !== 'completed')
+        .sort((a, b) => b.priority - a.priority);
+
+      const blockedSessions = ranked.filter((s) => s.status === 'blocked');
+      const activeSessions = ranked.filter((s) => s.status === 'active');
+      const staleSessions = ranked.filter((s) => s.status === 'stale');
+
+      const heartbeatSummary = recentHeartbeats.slice(-5).map((hb) => {
+        const actions = hb.actions.map((a) => `  ${a.action} → ${a.result}`).join('\n');
+        const blocked = hb.blockedSessions.map((b) => `  ${b.repo}/${b.reason} (conf: ${b.confidence})`).join('\n');
+        return `[${hb.at}] checked:${hb.checked} resumed:${hb.resumed}\n${actions}\n${blocked}`.trim();
+      }).join('\n\n');
+
+      const sessionPortfolio = ranked.slice(0, 15).map((s) => {
+        const ci = s.ciStatus ? ` CI:${s.ciStatus}` : '';
+        const pr = s.prNumber ? ` PR#${s.prNumber}` : '';
+        const age = s.metadata?.daysOld ? ` ${s.metadata.daysOld}d` : '';
+        const commit = s.metadata?.lastCommit ? ` "${s.metadata.lastCommit.slice(0, 60)}"` : '';
+        return `[${s.status}] ${s.repoPath.split('/').pop()}/${s.branch}${pr}${ci}${age}${commit}`;
+      }).join('\n');
+
+      const prompt = [
+        'You are Foreman, an autonomous engineering operator reviewing your heartbeat trace history.',
+        '',
+        'Your job: analyze the accumulated state and decide what matters, what to act on, and what to surface to the operator.',
+        '',
+        '## Current session portfolio',
+        sessionPortfolio,
+        '',
+        `## Summary: ${ranked.length} total, ${blockedSessions.length} blocked, ${activeSessions.length} active, ${staleSessions.length} stale`,
+        '',
+        '## Recent heartbeat history',
+        heartbeatSummary || '(no prior heartbeats)',
+        '',
+        '## Your analysis should cover:',
+        '1. PERSISTENT BLOCKERS: Any session blocked for multiple heartbeats? Escalate with specific reason.',
+        '2. CROSS-REPO PATTERNS: Same failure across repos? Identify the shared root cause.',
+        '3. PRIORITY ASSESSMENT: What should the operator focus on RIGHT NOW? Not everything — the top 1-3 items.',
+        '4. STALE WORK: Anything abandoned that should be either resumed or closed?',
+        '5. OPERATOR FOCUS: Based on recent Claude/Codex session activity, what is the operator actually working on? Is Foreman aligned with that?',
+        '6. REPAIR RECIPES: Any CI failure you\'ve seen fixed before? What was the fix? Store as a recipe.',
+        '',
+        'Return JSON: {"discoveries":["insight1","insight2"],"actions":[{"sessionId":"id","action":"what to do","result":"proposed"}],"recipes":[{"pattern":"failure pattern","fix":"how to fix it"}]}',
+        '',
+        'Be specific. Be concise. Only surface what matters.',
+      ].join('\n');
+
+      if (args.dryRun) {
+        log('[review] Would dispatch review agent with:');
+        log(`  Sessions: ${ranked.length} (${blockedSessions.length} blocked, ${staleSessions.length} stale)`);
+        log(`  Heartbeat history: ${recentHeartbeats.length} entries`);
+        return undefined;
+      }
+
+      // Dispatch to Claude for review
+      try {
+        const { stdout, stderr } = await execFileAsync('claude', [
+          '--dangerously-skip-permissions',
+          '-p',
+          '--output-format', 'json',
+          '--max-turns', '1',
+          prompt,
+        ], {
+          timeout: 60_000,
+          maxBuffer: 10 * 1024 * 1024,
+        });
+
+        // Parse the response
+        try {
+          const parsed = JSON.parse(stdout.trim());
+          const result = parsed?.result ?? stdout;
+          const jsonMatch = String(result).match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            const review = JSON.parse(jsonMatch[0]) as {
+              discoveries?: string[];
+              actions?: Array<{ sessionId: string; action: string; result: string }>;
+              recipes?: Array<{ pattern: string; fix: string }>;
+            };
+            // Store recipes in memory
+            if (review.recipes?.length) {
+              for (const recipe of review.recipes) {
+                log(`[review] Learned recipe: ${recipe.pattern} → ${recipe.fix}`);
+              }
+            }
+            return {
+              discoveries: (review.discoveries ?? []).map((d) => `[REVIEW] ${d}`),
+              actions: review.actions,
+            };
+          }
+        } catch { /* parse failed, that's ok */ }
+
+        return { discoveries: [`[REVIEW] Agent responded but output was not parseable`] };
+      } catch (error) {
+        log(`[review] Agent dispatch failed: ${error instanceof Error ? error.message : String(error)}`);
+        return undefined;
+      }
     },
   });
 
