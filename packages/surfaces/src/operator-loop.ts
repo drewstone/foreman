@@ -53,10 +53,21 @@ export interface OperatorQuestion {
   answer?: string;
 }
 
+export interface HeartbeatLog {
+  at: string;
+  checked: number;
+  resumed: number;
+  discoveries: string[];
+  actions: Array<{ sessionId: string; action: string; result: string }>;
+  sessionInsights: string[];
+  blockedSessions: Array<{ id: string; repo: string; reason: string; confidence: number }>;
+}
+
 export interface OperatorState {
   sessions: ManagedSession[];
   questions: OperatorQuestion[];
   lastHeartbeatAt?: string;
+  heartbeatHistory: HeartbeatLog[];
   claudeMdCache: Record<string, string>;
 }
 
@@ -81,7 +92,7 @@ export async function loadOperatorState(root: string): Promise<OperatorState> {
   try {
     return JSON.parse(await readFile(path, 'utf8')) as OperatorState;
   } catch {
-    return { sessions: [], questions: [], claudeMdCache: {} };
+    return { sessions: [], questions: [], heartbeatHistory: [], claudeMdCache: {} };
   }
 }
 
@@ -724,6 +735,7 @@ export async function runHeartbeat(options: {
   minConfidence?: number;
   maxResumes?: number;
   extractSessionInsights?: boolean;
+  traceRoot?: string;
 }): Promise<HeartbeatResult> {
   const result: HeartbeatResult = {
     checked: 0,
@@ -860,6 +872,48 @@ export async function runHeartbeat(options: {
     }
   }
 
+  // Persist heartbeat as a trace for learning
+  if (!options.state.heartbeatHistory) {
+    options.state.heartbeatHistory = [];
+  }
+  const heartbeatLog: HeartbeatLog = {
+    at: new Date().toISOString(),
+    checked: result.checked,
+    resumed: result.resumed,
+    discoveries: result.discoveries.slice(0, 20),
+    actions: result.actions,
+    sessionInsights: result.discoveries.filter((d) => d.startsWith('Recent ')).slice(0, 10),
+    blockedSessions: options.state.sessions
+      .filter((s) => s.status === 'blocked')
+      .map((s) => ({ id: s.id, repo: s.repoPath.split('/').pop() ?? '', reason: s.blockerReason ?? '', confidence: 0 })),
+  };
+  options.state.heartbeatHistory.push(heartbeatLog);
+
+  // Write to trace store if available
+  if (options.traceRoot) {
+    try {
+      const tracePath = join(options.traceRoot, 'heartbeats');
+      await mkdir(tracePath, { recursive: true });
+      const traceFile = join(tracePath, `${heartbeatLog.at.replace(/[:.]/g, '-')}.json`);
+      await writeFile(traceFile, JSON.stringify({
+        kind: 'heartbeat',
+        ...heartbeatLog,
+        sessions: options.state.sessions.map((s) => ({
+          id: s.id,
+          repo: s.repoPath.split('/').pop(),
+          branch: s.branch,
+          status: s.status,
+          ciStatus: s.ciStatus,
+          priority: s.priority,
+          prNumber: s.prNumber,
+          daysOld: s.metadata?.daysOld,
+          lastCommit: s.metadata?.lastCommit?.slice(0, 80),
+          hasClaudeSession: Boolean(s.metadata?.claudeSessionId),
+        })),
+      }, null, 2) + '\n', 'utf8');
+    } catch { /* trace write is best-effort */ }
+  }
+
   // Prune state to prevent unbounded growth
   const maxSessions = 100;
   const maxQuestions = 50;
@@ -877,6 +931,8 @@ export async function runHeartbeat(options: {
   options.state.questions = options.state.questions
     .filter((q) => new Date(q.askedAt).getTime() > pruneTime)
     .slice(0, maxQuestions);
+  const maxHeartbeats = 200;
+  options.state.heartbeatHistory = (options.state.heartbeatHistory ?? []).slice(-maxHeartbeats);
 
   options.state.lastHeartbeatAt = new Date().toISOString();
   return result;

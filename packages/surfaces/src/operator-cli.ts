@@ -265,6 +265,7 @@ async function main(): Promise<void> {
     dryRun: args.dryRun,
     minConfidence: 0.7,
     maxResumes: 2,
+    traceRoot: join(FOREMAN_HOME, 'traces'),
     onAction: (sessionId, action) => {
       log(`${sessionId}: ${action}`);
     },
