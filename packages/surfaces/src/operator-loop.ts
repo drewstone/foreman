@@ -108,7 +108,11 @@ export async function discoverActiveSessions(repoPaths: string[]): Promise<Manag
         goal: branch.inferredGoal || `Work on ${branch.name}`,
         status: branch.hasUncommitted ? 'active' : 'waiting',
         provider: 'claude',
-        priority: branch.hasUncommitted ? 8 : 5,
+        priority: branch.priority ?? (branch.hasUncommitted ? 8 : 5),
+        metadata: {
+          daysOld: String(branch.daysOld),
+          ...(branch.lastCommitMessage ? { lastCommit: branch.lastCommitMessage } : {}),
+        },
       });
     }
 
@@ -135,11 +139,14 @@ async function getBranchesWithWork(repoPath: string): Promise<Array<{
   name: string;
   hasUncommitted: boolean;
   lastCommitDate: string;
+  lastCommitMessage?: string;
+  daysOld: number;
+  priority: number;
   inferredGoal?: string;
 }>> {
   try {
     const { stdout: branchOutput } = await execFileAsync(
-      'git', ['for-each-ref', '--sort=-committerdate', '--format=%(refname:short)|%(committerdate:iso)', 'refs/heads/'],
+      'git', ['for-each-ref', '--sort=-committerdate', '--format=%(refname:short)|%(committerdate:iso)|%(subject)', 'refs/heads/'],
       { cwd: repoPath },
     );
 
@@ -154,28 +161,43 @@ async function getBranchesWithWork(repoPath: string): Promise<Array<{
       { cwd: repoPath },
     ).catch(() => ({ stdout: '' }));
 
+    const now = Date.now();
     return branchOutput
       .trim()
       .split('\n')
       .filter(Boolean)
-      .slice(0, 10)
+      .slice(0, 15)
       .map((line) => {
-        const [name, date] = line.split('|');
-        const branchName = name?.trim() ?? '';
+        const parts = line.split('|');
+        const branchName = parts[0]?.trim() ?? '';
+        const date = parts[1]?.trim() ?? '';
+        const commitMsg = parts.slice(2).join('|').trim();
         const isCurrent = branchName === currentBranch.trim();
-        // Infer goal from branch name
-        const inferredGoal = branchName
+        const daysOld = date ? Math.floor((now - new Date(date).getTime()) / 86400000) : 999;
+
+        // Infer goal: prefer commit message, fall back to branch name
+        const branchGoal = branchName
           .replace(/^(feat|fix|chore|refactor|test|docs)\//i, '')
           .replace(/[-_]/g, ' ')
           .trim();
+        const inferredGoal = commitMsg && commitMsg.length > 10
+          ? commitMsg.slice(0, 120)
+          : branchGoal !== branchName ? branchGoal : undefined;
+
+        // Priority based on recency: <1 day = 7, <3 days = 5, <7 days = 3, else 1
+        const agePriority = daysOld < 1 ? 7 : daysOld < 3 ? 5 : daysOld < 7 ? 3 : 1;
+
         return {
           name: branchName,
           hasUncommitted: isCurrent && currentHasUncommitted,
-          lastCommitDate: date?.trim() ?? '',
-          inferredGoal: inferredGoal !== branchName ? inferredGoal : undefined,
+          lastCommitDate: date,
+          lastCommitMessage: commitMsg || undefined,
+          daysOld,
+          inferredGoal,
+          priority: isCurrent && currentHasUncommitted ? 8 : agePriority,
         };
       })
-      .filter((b) => b.name !== 'main' && b.name !== 'master');
+      .filter((b) => b.name !== 'main' && b.name !== 'master' && b.daysOld < 30);
   } catch {
     return [];
   }
@@ -415,6 +437,7 @@ interface SessionScanResult {
 
 async function scanRecentClaudeSessions(hoursBack: number): Promise<SessionScanResult[]> {
   const { homedir: getHomedir } = await import('node:os');
+  const { stat } = await import('node:fs/promises');
   const root = join(getHomedir(), '.claude', 'projects');
   const cutoff = Date.now() - (hoursBack * 60 * 60 * 1000);
   const results: SessionScanResult[] = [];
@@ -437,18 +460,40 @@ async function scanRecentClaudeSessions(hoursBack: number): Promise<SessionScanR
           projectPath?: string;
           modified?: string;
           fileMtime?: number;
+          fullPath?: string;
         }>;
       };
 
       for (const entry of parsed.entries ?? []) {
-        const mtime = entry.fileMtime ?? (entry.modified ? new Date(entry.modified).getTime() : 0);
+        // Try multiple sources for the timestamp: fileMtime, modified field, actual file mtime
+        let mtime = entry.fileMtime ?? (entry.modified ? new Date(entry.modified).getTime() : 0);
+        if (!mtime && entry.fullPath) {
+          try {
+            const fileStat = await stat(entry.fullPath);
+            mtime = fileStat.mtimeMs;
+          } catch { /* file may not exist */ }
+        }
+        if (!mtime && entry.sessionId) {
+          // Try to find the JSONL file by session ID in the project directory
+          const sessionDir = join(dir, entry.sessionId);
+          try {
+            const sessionFiles = await readdir(sessionDir);
+            for (const sf of sessionFiles) {
+              if (sf.endsWith('.jsonl')) {
+                const fileStat = await stat(join(sessionDir, sf));
+                mtime = Math.max(mtime, fileStat.mtimeMs);
+              }
+            }
+          } catch { /* no session dir */ }
+        }
+
         if (mtime > cutoff && entry.sessionId) {
           results.push({
             sessionId: entry.sessionId,
             title: entry.summary ?? 'Claude session',
             summary: entry.summary,
             cwd: entry.projectPath,
-            updatedAt: entry.modified ?? new Date(mtime).toISOString(),
+            updatedAt: new Date(mtime).toISOString(),
           });
         }
       }
@@ -667,6 +712,7 @@ export function formatSessionSummary(sessions: ManagedSession[]): string {
     const ci = s.ciStatus ? ` [CI: ${s.ciStatus}]` : '';
     const pr = s.prNumber ? ` PR #${s.prNumber}` : '';
     const blocker = s.blockerReason ? ` ⚠ ${s.blockerReason}` : '';
-    return `${i + 1}. [${s.status}] ${s.repoPath.split('/').pop()}/${s.branch}${pr}${ci}${blocker}\n   ${s.goal}`;
+    const age = s.metadata?.daysOld ? ` (${s.metadata.daysOld}d ago)` : '';
+    return `${i + 1}. [${s.status}] ${s.repoPath.split('/').pop()}/${s.branch}${pr}${ci}${blocker}${age}\n   ${s.goal}`;
   }).join('\n');
 }
