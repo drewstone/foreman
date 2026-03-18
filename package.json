@@ -16,6 +16,7 @@
     "check": "npm run check:types && npm run check:sync",
     "check:types": "npm run check --workspaces --if-present",
     "check:sync": "tsx scripts/check-sync.ts",
+    "test": "node --import tsx --test packages/*/src/*.test.ts",
     "engineering": "tsx packages/surfaces/src/cli.ts",
     "benchmark-engineering": "tsx packages/surfaces/src/engineering-benchmark-cli.ts",
     "bootstrap-profile": "tsx packages/surfaces/src/profile-bootstrap-cli.ts",

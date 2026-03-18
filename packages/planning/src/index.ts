@@ -260,41 +260,40 @@ function extractRunCommands(yamlContent: string, repoPath: string): string[] {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
-    const runMatch = line.match(/^\s+-?\s*run:\s*(.+)/);
-    if (!runMatch) {
-      const blockRunMatch = line.match(/^\s+-?\s*run:\s*[|>]-?\s*$/);
-      if (blockRunMatch) {
-        const indent = line.search(/\S/);
-        const blockLines: string[] = [];
-        for (let j = i + 1; j < lines.length; j++) {
-          const nextLine = lines[j]!;
-          if (nextLine.trim() === '') {
-            blockLines.push('');
-            continue;
-          }
-          const nextIndent = nextLine.search(/\S/);
-          if (nextIndent <= indent) {
-            break;
-          }
-          blockLines.push(nextLine.trim());
+
+    // Check for block scalar first: run: | or run: >
+    const blockRunMatch = line.match(/^\s+-?\s*run:\s*[|>]-?\s*$/);
+    if (blockRunMatch) {
+      const indent = line.search(/\S/);
+      const blockLines: string[] = [];
+      for (let j = i + 1; j < lines.length; j++) {
+        const nextLine = lines[j]!;
+        if (nextLine.trim() === '') {
+          blockLines.push('');
+          continue;
         }
-        const blockCommand = blockLines
-          .filter(Boolean)
-          .join(' && ');
-        if (blockCommand) {
-          const resolved = resolveCommand(blockCommand, repoPath);
-          if (resolved) {
-            commands.push(resolved);
-          }
+        const nextIndent = nextLine.search(/\S/);
+        if (nextIndent <= indent) {
+          break;
+        }
+        blockLines.push(nextLine.trim());
+      }
+      for (const blockLine of blockLines.filter(Boolean)) {
+        const resolved = resolveCommand(blockLine, repoPath);
+        if (resolved) {
+          commands.push(resolved);
         }
       }
       continue;
     }
 
-    const rawCommand = runMatch[1]!.trim();
-    const resolved = resolveCommand(rawCommand, repoPath);
-    if (resolved) {
-      commands.push(resolved);
+    // Check for inline run: command
+    const runMatch = line.match(/^\s+-?\s*run:\s*(.+)/);
+    if (runMatch) {
+      const resolved = resolveCommand(runMatch[1]!.trim(), repoPath);
+      if (resolved) {
+        commands.push(resolved);
+      }
     }
   }
 
