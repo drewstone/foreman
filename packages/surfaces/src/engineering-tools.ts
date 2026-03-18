@@ -291,49 +291,72 @@ export async function updateMemory(options: {
   validation?: ValidationResult;
   checkCommands: string[];
   toolCommands: string[];
+  productContext?: { docs: Array<{ path: string }> };
+  ciFailures?: string[];
 }): Promise<void> {
   const existingEnv = await options.memoryStore.getEnvironmentMemory(options.repoPath);
+  const succeeded = options.validation?.status === 'pass'
+    || (options.validation?.status === 'warn' && options.validation.findings.every((f) => f.severity === 'low'));
+
+  // Store atomic, verifiable facts — not raw goal text
+  const newFacts: string[] = [
+    ...options.checkCommands.map((cmd) => `check-command: ${cmd}`),
+    ...options.toolCommands.map((cmd) => `tool-command: ${cmd}`),
+    ...(options.productContext?.docs.map((d) => `has-doc: ${d.path}`) ?? []),
+  ];
+  // Learn CI requirements from failures
+  if (options.ciFailures?.length) {
+    newFacts.push(...options.ciFailures.map((f) => `ci-requirement: ${f}`));
+  }
+
   const environmentMemory: EnvironmentMemory = {
     target: options.repoPath,
     facts: dedupe([
-      ...(existingEnv?.facts ?? []),
-      `latest goal: ${options.goal}`,
-      `expanded goal: ${options.expandedGoal}`,
-      ...options.successCriteria.map((criterion) => `criterion: ${criterion}`),
-      ...options.checkCommands.map((command) => `check: ${command}`),
-      ...options.toolCommands.map((command) => `tool: ${command}`),
-    ]),
-    invariants: dedupe(existingEnv?.invariants ?? []),
+      ...(existingEnv?.facts ?? []).filter((f) =>
+        // Keep structured facts, drop old raw goal text
+        f.startsWith('check-command:')
+        || f.startsWith('tool-command:')
+        || f.startsWith('has-doc:')
+        || f.startsWith('ci-requirement:')
+        || f.startsWith('uses-dep:')
+        || f.startsWith('lang:')
+        || f.startsWith('build-system:')
+      ),
+      ...newFacts,
+    ]).slice(0, 50),
+    invariants: dedupe(existingEnv?.invariants ?? []).slice(0, 20),
     failureModes: dedupe([
       ...(existingEnv?.failureModes ?? []),
-      ...(options.validation?.findings.map((finding) => finding.title) ?? []),
-    ]),
+      ...(options.validation?.findings
+        .filter((f) => f.severity === 'high' || f.severity === 'critical')
+        .map((f) => f.title) ?? []),
+    ]).slice(0, 20),
   };
   await options.memoryStore.putEnvironmentMemory(environmentMemory);
 
+  // Only record worker performance for the implementation worker, not reviewer
   await putWorkerMemory(options.memoryStore, options.implementationWorkerId, options.validation);
-  await putWorkerMemory(options.memoryStore, options.reviewWorkerId, options.validation);
 
   const existingStrategy = await options.memoryStore.getStrategyMemory('engineering');
   const strategyMemory: StrategyMemory = {
     taskShape: 'engineering',
     successfulPatterns: dedupe([
       ...(existingStrategy?.successfulPatterns ?? []),
-      ...(options.validation?.status === 'pass'
-        ? [
-            ...options.checkCommands.map((command) => `validated by ${command}`),
-            ...options.toolCommands.map((command) => `audited by ${command}`),
-          ]
+      ...(succeeded
+        ? options.checkCommands.slice(0, 5).map((cmd) => `validated-by: ${cmd}`)
         : []),
-    ]),
+    ]).slice(0, 20),
     badPatterns: dedupe([
       ...(existingStrategy?.badPatterns ?? []),
-      ...(options.validation?.status !== 'pass' ? ['missing or failing validation gates'] : []),
-    ]),
+      ...(options.ciFailures?.length ? ['ci-failed-after-local-pass'] : []),
+    ]).slice(0, 10),
     repairRecipes: dedupe([
       ...(existingStrategy?.repairRecipes ?? []),
-      ...(options.validation?.findings.map((finding) => `repair ${finding.title}`) ?? []),
-    ]),
+      ...(options.ciFailures?.map((f) => `ci-fix: ${f}`) ?? []),
+      ...(options.validation?.findings
+        .filter((f) => f.severity === 'high' || f.severity === 'critical')
+        .map((f) => `repair: ${f.title}`) ?? []),
+    ]).slice(0, 20),
   };
   await options.memoryStore.putStrategyMemory(strategyMemory);
 
@@ -350,11 +373,6 @@ export async function updateMemory(options: {
       'judge-after-grounded-checks',
     ]),
     memoryScopes: ['profile', 'project', 'environment'],
-    operatorPatterns: existingEnv?.facts?.filter((fact) => fact.startsWith('latest goal:')).slice(-3),
-    workflowImprovements: dedupe([
-      ...(options.validation?.status === 'pass' ? ['prefer validation-backed completion'] : []),
-      ...(options.toolCommands.length > 0 ? ['use tool-backed audits when available'] : []),
-    ]),
   });
 }
 
@@ -1022,7 +1040,9 @@ async function putWorkerMemory(
     ...recordWorkerRun(
       existingWorker ? { ...existingWorker, workerId } : { workerId },
       {
-        succeeded: hasInfraFailureOnly ? true : validation?.status === 'pass',
+        succeeded: hasInfraFailureOnly
+          || validation?.status === 'pass'
+          || (validation?.status === 'warn' && workerFindings.every((f) => f.severity === 'low')),
         failureClasses: workerFindings.map((finding) => finding.title || finding.severity || 'validation-failed'),
       },
     ),
