@@ -16,6 +16,7 @@
 
 import { execFile } from 'node:child_process';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -147,12 +148,12 @@ async function getBranchesWithWork(repoPath: string): Promise<Array<{
   try {
     const { stdout: branchOutput } = await execFileAsync(
       'git', ['for-each-ref', '--sort=-committerdate', '--format=%(refname:short)|%(committerdate:iso)|%(subject)', 'refs/heads/'],
-      { cwd: repoPath },
+      { cwd: repoPath, maxBuffer: 10 * 1024 * 1024 },
     );
 
     const { stdout: statusOutput } = await execFileAsync(
       'git', ['status', '--porcelain'],
-      { cwd: repoPath },
+      { cwd: repoPath, maxBuffer: 10 * 1024 * 1024 },
     );
     const currentHasUncommitted = statusOutput.trim().length > 0;
 
@@ -212,7 +213,7 @@ async function getOpenPRs(repoPath: string): Promise<Array<{
   try {
     const { stdout } = await execFileAsync(
       'gh', ['pr', 'list', '--json', 'number,headRefName,title,statusCheckRollup', '--limit', '10'],
-      { cwd: repoPath },
+      { cwd: repoPath, maxBuffer: 10 * 1024 * 1024 },
     );
     const prs = JSON.parse(stdout) as Array<{
       number: number;
@@ -538,9 +539,8 @@ interface SessionScanResult {
 }
 
 async function scanRecentClaudeSessions(hoursBack: number): Promise<SessionScanResult[]> {
-  const { homedir: getHomedir } = await import('node:os');
   const { stat } = await import('node:fs/promises');
-  const root = join(getHomedir(), '.claude', 'projects');
+  const root = join(homedir(), '.claude', 'projects');
   const cutoff = Date.now() - (hoursBack * 60 * 60 * 1000);
   const results: SessionScanResult[] = [];
 
@@ -599,8 +599,11 @@ async function scanRecentClaudeSessions(hoursBack: number): Promise<SessionScanR
         if (mtime < cutoff) continue;
 
         const indexed = indexData.get(sessionId);
-        const projectName = dir.split('/').pop()?.replace(/^-home-drew-code-/, '') ?? '';
-        const inferredCwd = indexed?.projectPath ?? `/home/drew/code/${projectName}`;
+        const dirName = dir.split('/').pop() ?? '';
+        // Claude stores projects as -home-user-code-reponame → extract repo name generically
+        const pathParts = dirName.replace(/^-/, '').split('-');
+        const projectName = pathParts.length >= 3 ? pathParts.slice(2).join('-') : dirName;
+        const inferredCwd = indexed?.projectPath ?? join(homedir(), 'code', projectName);
 
         // Extract first user message from JSONL for context (read first 5 lines only)
         let firstPrompt = indexed?.firstPrompt;
@@ -629,16 +632,22 @@ async function scanRecentClaudeSessions(hoursBack: number): Promise<SessionScanR
 }
 
 async function extractFirstPrompt(jsonlPath: string): Promise<string | undefined> {
+  const { createReadStream } = await import('node:fs');
+  const { createInterface } = await import('node:readline');
   try {
-    const content = await readFile(jsonlPath, 'utf8');
-    const lines = content.split('\n').slice(0, 20);
-    for (const line of lines) {
+    const stream = createReadStream(jsonlPath, { encoding: 'utf8', highWaterMark: 16 * 1024 });
+    const rl = createInterface({ input: stream, crlfDelay: Infinity });
+    let lineCount = 0;
+    for await (const line of rl) {
+      if (++lineCount > 30) break;
       if (!line.trim()) continue;
       try {
         const entry = JSON.parse(line) as Record<string, unknown>;
         if (entry.type === 'user') {
           const msg = entry.message as { content?: string } | undefined;
           if (typeof msg?.content === 'string' && msg.content.trim()) {
+            rl.close();
+            stream.destroy();
             return msg.content.trim().slice(0, 200);
           }
         }
@@ -649,8 +658,7 @@ async function extractFirstPrompt(jsonlPath: string): Promise<string | undefined
 }
 
 async function scanRecentCodexSessions(hoursBack: number): Promise<SessionScanResult[]> {
-  const { homedir: getHomedir } = await import('node:os');
-  const historyPath = join(getHomedir(), '.codex', 'history.jsonl');
+  const historyPath = join(homedir(), '.codex', 'history.jsonl');
   const cutoff = Date.now() - (hoursBack * 60 * 60 * 1000);
   const results: SessionScanResult[] = [];
 
@@ -816,6 +824,24 @@ export async function runHeartbeat(options: {
       result.questionsAsked++;
     }
   }
+
+  // Prune state to prevent unbounded growth
+  const maxSessions = 100;
+  const maxQuestions = 50;
+  const pruneAgeMs = 14 * 24 * 60 * 60 * 1000; // 14 days
+  const pruneTime = now - pruneAgeMs;
+  options.state.sessions = options.state.sessions
+    .filter((s) => {
+      if (s.status === 'completed') {
+        const checked = s.lastCheckedAt ? new Date(s.lastCheckedAt).getTime() : 0;
+        return checked > pruneTime;
+      }
+      return true;
+    })
+    .slice(0, maxSessions);
+  options.state.questions = options.state.questions
+    .filter((q) => new Date(q.askedAt).getTime() > pruneTime)
+    .slice(0, maxQuestions);
 
   options.state.lastHeartbeatAt = new Date().toISOString();
   return result;
