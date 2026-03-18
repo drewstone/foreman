@@ -197,16 +197,21 @@ async function main(): Promise<void> {
   // ── Fix CI on all blocked sessions ───────────────────────────────
 
   if (args.fixCi) {
-    const blocked = state.sessions.filter((s) => s.ciStatus === 'fail' && s.prNumber);
+    let blocked = state.sessions.filter((s) => s.ciStatus === 'fail' && s.prNumber);
     if (blocked.length === 0) {
-      // Discover fresh
+      // Discover fresh and merge into state so mutations persist
       const discovered = await discoverActiveSessions(repoPaths);
       const freshBlocked = discovered.filter((s) => s.ciStatus === 'fail');
       if (freshBlocked.length === 0) {
         log('No sessions with failing CI found.');
         return;
       }
-      blocked.push(...freshBlocked);
+      for (const s of freshBlocked) {
+        if (!state.sessions.find((existing) => existing.id === s.id)) {
+          state.sessions.push(s);
+        }
+      }
+      blocked = state.sessions.filter((s) => s.ciStatus === 'fail' && s.prNumber);
     }
 
     log(`${blocked.length} session(s) with failing CI`);
@@ -214,9 +219,14 @@ async function main(): Promise<void> {
     for (const session of blocked) {
       log(`Fixing: ${session.repoPath} (${session.branch}) PR #${session.prNumber}`);
 
-      // Read CI failure logs
-      const logs = await readCILogs({ repoPath: session.repoPath });
-      const failureSummary = logs.failedJobs.map((j) => `${j.name}: ${j.log.slice(0, 500)}`).join('\n\n');
+      // Read CI failure logs (gh may not be available)
+      let failureSummary = '';
+      try {
+        const logs = await readCILogs({ repoPath: session.repoPath });
+        failureSummary = logs.failedJobs.map((j) => `${j.name}: ${j.log.slice(0, 500)}`).join('\n\n');
+      } catch {
+        log('  (could not read CI logs — gh CLI may not be available)');
+      }
 
       const goal = [
         `CI is failing on this branch. Fix all failures and push.`,

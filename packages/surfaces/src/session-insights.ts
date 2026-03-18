@@ -78,7 +78,9 @@ export async function extractDeepSessionInsights(options: {
   }
 
   for (const dir of projectDirs) {
-    const projectName = dir.split('/').pop()?.replace(/^-home-drew-code-/, '') ?? '';
+    const dirName = dir.split('/').pop() ?? '';
+    const pathParts = dirName.replace(/^-/, '').split('-');
+    const projectName = pathParts.length >= 3 ? pathParts.slice(2).join('-') : dirName;
     const inferredRepoPath = join(homedir(), 'code', projectName);
     if (!repoSet.has(resolve(inferredRepoPath))) continue;
 
@@ -210,33 +212,39 @@ async function parseSessionContent(jsonlPath: string): Promise<{
   const goals: string[] = [];
   let messageCount = 0;
 
+  const maxCommands = 500;
+  const maxFiles = 200;
+  const maxGoals = 50;
+
   try {
-    const content = await readFile(jsonlPath, 'utf8');
-    for (const line of content.split('\n')) {
+    const { createReadStream } = await import('node:fs');
+    const { createInterface } = await import('node:readline');
+    const stream = createReadStream(jsonlPath, { encoding: 'utf8', highWaterMark: 64 * 1024 });
+    const rl = createInterface({ input: stream, crlfDelay: Infinity });
+
+    for await (const line of rl) {
       if (!line.trim()) continue;
       try {
         const entry = JSON.parse(line) as Record<string, unknown>;
         messageCount++;
 
-        // Extract user prompts as goals
-        if (entry.type === 'user') {
+        if (entry.type === 'user' && goals.length < maxGoals) {
           const msg = entry.message as { content?: string } | undefined;
           if (typeof msg?.content === 'string' && msg.content.length > 10 && msg.content.length < 500) {
             goals.push(msg.content.trim().slice(0, 150));
           }
         }
 
-        // Extract tool calls for commands and file reads
-        if (entry.type === 'assistant') {
+        if (entry.type === 'assistant' && (commands.length < maxCommands || filesRead.length < maxFiles)) {
           const msg = entry.message as { content?: unknown[] } | undefined;
           if (Array.isArray(msg?.content)) {
             for (const block of msg.content) {
               const b = block as Record<string, unknown>;
-              if (b.type === 'tool_use' && b.name === 'Bash') {
+              if (b.type === 'tool_use' && b.name === 'Bash' && commands.length < maxCommands) {
                 const input = b.input as { command?: string } | undefined;
                 if (input?.command) commands.push(input.command);
               }
-              if (b.type === 'tool_use' && (b.name === 'Read' || b.name === 'Glob')) {
+              if (b.type === 'tool_use' && (b.name === 'Read' || b.name === 'Glob') && filesRead.length < maxFiles) {
                 const input = b.input as { file_path?: string; pattern?: string } | undefined;
                 if (input?.file_path) filesRead.push(basename(input.file_path));
                 if (input?.pattern) filesRead.push(input.pattern);
