@@ -26,6 +26,7 @@ interface CliArgs {
   maxRounds?: number;
   sandboxMode?: 'local' | 'tangle';
   tangle?: CliTangleOptions;
+  verbose?: boolean;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -41,6 +42,7 @@ function parseArgs(argv: string[]): CliArgs {
   const promptVariantIds: Partial<Record<'hardener' | 'implementer' | 'reviewer', string>> = {};
   let maxRounds: number | undefined;
   let sandboxMode: 'local' | 'tangle' | undefined;
+  let verbose = false;
   const tangle: CliTangleOptions = {};
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -157,6 +159,10 @@ function parseArgs(argv: string[]): CliArgs {
         }
         i += 1;
         break;
+      case '--verbose':
+      case '-v':
+        verbose = true;
+        break;
       case '--help':
       case '-h':
         printHelp();
@@ -185,6 +191,7 @@ function parseArgs(argv: string[]): CliArgs {
     maxRounds,
     sandboxMode,
     tangle: Object.keys(tangle).length > 0 ? tangle : undefined,
+    verbose,
   };
 }
 
@@ -217,13 +224,19 @@ Options:
   --prompt-implementer ID
   --prompt-reviewer ID
   --max-rounds N        Maximum rounds (default 3)
+  -v, --verbose         Stream trace events to stderr as they happen
   -h, --help            Show this help
 `);
 }
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const result = await runEngineeringForeman(args);
+  const onEvent = args.verbose
+    ? (event: import('@drew/foreman-core').TraceEvent) => {
+        process.stderr.write(`[${event.at}] ${event.kind}: ${event.summary}\n`);
+      }
+    : undefined;
+  const result = await runEngineeringForeman({ ...args, onEvent });
   console.log(JSON.stringify(result, null, 2));
 }
 

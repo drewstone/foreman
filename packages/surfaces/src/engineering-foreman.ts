@@ -6,6 +6,7 @@ import {
   type Finding,
   type Recommendation,
   type TaskSpec,
+  type TraceEvent,
   type TrackResult,
   type ValidationResult,
   type ValidationStatus,
@@ -82,6 +83,7 @@ export interface EngineeringForemanOptions {
   promptPolicyMode?: 'active' | 'shadow' | 'explicit';
   sandboxMode?: 'local' | 'tangle';
   tangle?: TangleEngineeringOptions;
+  onEvent?(event: TraceEvent): void;
 }
 
 export interface TangleEngineeringOptions {
@@ -596,6 +598,7 @@ export async function runEngineeringForeman(
     task,
     maxRounds,
     artifacts,
+    onEvent: options.onEvent,
     context: async ({ loop }) => {
       const observation = await environment.observe();
       const envMemory = await memoryStore.getEnvironmentMemory(repoPath);

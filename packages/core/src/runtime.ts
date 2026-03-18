@@ -117,7 +117,13 @@ export async function runTaskLoop<TContext = unknown, TTrackInput = unknown, TTr
     rounds: [],
     trace: [],
   };
-  state.trace.push(
+
+  function emit(event: TraceEvent): void {
+    state.trace.push(event);
+    options.onEvent?.(event);
+  }
+
+  emit(
     makeEvent({
       kind: 'task.started',
       summary: `task ${options.task.id} started`,
@@ -143,7 +149,7 @@ export async function runTaskLoop<TContext = unknown, TTrackInput = unknown, TTr
         loop: state,
         signal: options.signal,
       });
-      state.trace.push(
+      emit(
         makeEvent({
           kind: 'context.built',
           summary: `round ${round} context built`,
@@ -158,7 +164,7 @@ export async function runTaskLoop<TContext = unknown, TTrackInput = unknown, TTr
         context,
         signal: options.signal,
       });
-      state.trace.push(
+      emit(
         makeEvent({
           kind: 'plan.created',
           summary: `round ${round} plan created with ${plan.tracks.length} track(s)`,
@@ -167,7 +173,7 @@ export async function runTaskLoop<TContext = unknown, TTrackInput = unknown, TTr
       await options.artifacts.writeJson(`rounds/${round}/plan.json`, plan);
 
       const trackResults = await mapLimit(plan.tracks, concurrency, async (track) => {
-        state.trace.push(
+        emit(
           makeEvent({
             kind: 'track.started',
             trackId: track.id,
@@ -183,7 +189,7 @@ export async function runTaskLoop<TContext = unknown, TTrackInput = unknown, TTr
           track,
           signal: options.signal,
         });
-        state.trace.push(
+        emit(
           makeEvent({
             kind: 'track.completed',
             trackId: track.id,
@@ -203,7 +209,7 @@ export async function runTaskLoop<TContext = unknown, TTrackInput = unknown, TTr
         trackResults,
         signal: options.signal,
       });
-      state.trace.push(
+      emit(
         makeEvent({
           kind: 'validation.completed',
           summary: `round ${round} validation ${validation.status}`,
@@ -227,7 +233,7 @@ export async function runTaskLoop<TContext = unknown, TTrackInput = unknown, TTr
           })
         : undefined;
       if (repair) {
-        state.trace.push(
+        emit(
           makeEvent({
             kind: 'repair.created',
             summary: `round ${round} repair created`,
@@ -259,7 +265,7 @@ export async function runTaskLoop<TContext = unknown, TTrackInput = unknown, TTr
             signal: options.signal,
           })
         : await defaultShouldStop({ round, maxRounds, validation, repair });
-      state.trace.push(
+      emit(
         makeEvent({
           kind: 'decision.made',
           summary: `round ${round} decision: ${stop.status}`,
@@ -280,7 +286,7 @@ export async function runTaskLoop<TContext = unknown, TTrackInput = unknown, TTr
           validation,
           reason: stop.reason,
         });
-        state.trace.push(
+        emit(
           makeEvent({
             kind: 'run.completed',
             summary: `run finished with status ${state.status}`,
@@ -307,7 +313,7 @@ export async function runTaskLoop<TContext = unknown, TTrackInput = unknown, TTr
       summary: 'maximum rounds reached',
       validated: false,
     };
-    state.trace.push(
+    emit(
       makeEvent({
         kind: 'run.completed',
         summary: 'run finished at max rounds',
@@ -330,7 +336,7 @@ export async function runTaskLoop<TContext = unknown, TTrackInput = unknown, TTr
       summary: error instanceof Error ? error.message : String(error),
       validated: false,
     };
-    state.trace.push(
+    emit(
       makeEvent({
         kind: 'run.failed',
         summary: state.outcome.summary,

@@ -171,6 +171,7 @@ export interface LoopOptions<TContext = unknown, TTrackInput = unknown, TTrackOu
   concurrency?: number;
   artifacts: ArtifactStore;
   signal?: AbortSignal;
+  onEvent?(event: TraceEvent): void;
   context(input: StageContext<TContext, TTrackInput, TTrackOutput>): Promise<ContextSnapshot<TContext>>;
   plan(input: StageContext<TContext, TTrackInput, TTrackOutput> & { context: ContextSnapshot<TContext> }): Promise<Plan<TTrackInput>>;
   executeTrack(input: StageContext<TContext, TTrackInput, TTrackOutput> & {
