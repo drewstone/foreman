@@ -29,6 +29,7 @@ export interface PublicationSurface {
 
 export { createEngineeringForemanProfile, runEngineeringForeman } from './engineering-foreman.js';
 export { dispatchWorker, hardenTask, observeEnvironment, updateMemory, validateWork } from './engineering-tools.js';
+export type { PriorRoundState } from './engineering-tools.js';
 export { runEngineeringBenchmarkSuite } from './engineering-benchmark.js';
 export { runEngineeringReplay } from './engineering-replay.js';
 export { runObserveEnvironment } from './environment-observe.js';

@@ -815,7 +815,7 @@ export class SupervisorCommandWorkerAdapter implements WorkerAdapter<CommandWork
   }
 }
 
-function tryParseSupervisorOutput(stdout: string): SupervisorWorkerOutput | undefined {
+export function tryParseSupervisorOutput(stdout: string): SupervisorWorkerOutput | undefined {
   if (!stdout.trim()) {
     return undefined;
   }
@@ -826,7 +826,7 @@ function tryParseSupervisorOutput(stdout: string): SupervisorWorkerOutput | unde
   }
 }
 
-function normalizeSupervisorOutput(value: unknown): SupervisorWorkerOutput {
+export function normalizeSupervisorOutput(value: unknown): SupervisorWorkerOutput {
   const record = isRecord(value) ? value : {};
   return {
     status: normalizeSupervisorOutputStatus(record.status),

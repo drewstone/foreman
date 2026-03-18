@@ -116,7 +116,7 @@ export async function hardenTask(options: {
 // observeEnvironment
 // ---------------------------------------------------------------------------
 
-export interface RoundState {
+export interface PriorRoundState {
   trackResults: Array<TrackResult<unknown>>;
   validation: ValidationResult;
   repair?: { actions: string[] };
@@ -127,7 +127,7 @@ export async function observeEnvironment(options: {
   memoryStore?: MemoryStore;
   profileId?: string;
   round?: number;
-  priorRound?: RoundState;
+  priorRound?: PriorRoundState;
 }): Promise<ContextSnapshot> {
   const environment = new GitCodeEnvironment(options.repoPath);
   const observation = await environment.observe();
