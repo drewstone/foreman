@@ -720,6 +720,8 @@ export async function runHeartbeat(options: {
   onQuestion?: (question: OperatorQuestion) => Promise<string | undefined>;
   onAction?: (sessionId: string, action: string) => void;
   autoResume?: boolean;
+  dryRun?: boolean;
+  minConfidence?: number;
   maxResumes?: number;
   extractSessionInsights?: boolean;
 }): Promise<HeartbeatResult> {
@@ -775,30 +777,63 @@ export async function runHeartbeat(options: {
     }
   }
 
-  // Auto-resume blocked sessions (CI failures)
+  // Auto-resume blocked sessions (CI failures) with confidence scoring
   if (options.autoResume) {
+    const minConfidence = options.minConfidence ?? 0.7;
+    const dryRun = options.dryRun ?? false;
     const toResume = options.state.sessions
       .filter((s) => s.status === 'blocked' && s.ciStatus === 'fail')
       .slice(0, options.maxResumes ?? 3);
 
     for (const session of toResume) {
-      options.onAction?.(session.id, `Resuming to fix CI: ${session.blockerReason}`);
+      // Load strategy memory to check for known repair recipes
+      let confidence = 0;
+      let matchedRecipe: string | undefined;
+      try {
+        const { createMemoryStore: loadMem } = await import('@drew/foreman-memory');
+        const memStore = await loadMem({ rootDir: join(session.repoPath, '.foreman', 'memory') });
+        const strategy = await memStore.getStrategyMemory('engineering');
+        if (strategy?.scoredRecipes && session.blockerReason) {
+          const { findMatchingRecipe } = await import('@drew/foreman-memory');
+          const recipe = findMatchingRecipe(strategy.scoredRecipes, session.blockerReason);
+          if (recipe) {
+            confidence = recipe.confidence;
+            matchedRecipe = recipe.pattern;
+          }
+        }
+      } catch { /* no memory available */ }
 
-      const spawnResult = await spawnSession({
-        repoPath: session.repoPath,
-        goal: `CI is failing on PR #${session.prNumber}. Read the CI logs with \`gh run view --log-failed\` and fix the failures. Push the fix.`,
-        sessionId: session.sessionId,
-        resume: Boolean(session.sessionId),
-        provider: session.provider as 'claude' | 'codex',
-      });
+      const action = confidence >= minConfidence
+        ? `AUTO-FIX (confidence ${(confidence * 100).toFixed(0)}%): ${matchedRecipe ?? session.blockerReason}`
+        : confidence > 0
+          ? `SKIP (confidence ${(confidence * 100).toFixed(0)}% < ${(minConfidence * 100).toFixed(0)}% threshold): ${session.blockerReason}`
+          : `SKIP (no known recipe): ${session.blockerReason}`;
 
-      session.lastResumedAt = new Date().toISOString();
-      result.resumed++;
-      result.actions.push({
-        sessionId: session.id,
-        action: 'resume-ci-fix',
-        result: spawnResult.exitCode === 0 ? 'success' : 'failed',
-      });
+      options.onAction?.(session.id, dryRun ? `[DRY RUN] ${action}` : action);
+
+      if (confidence >= minConfidence && !dryRun) {
+        const spawnResult = await spawnSession({
+          repoPath: session.repoPath,
+          goal: `CI is failing on PR #${session.prNumber}. Read the CI logs with \`gh run view --log-failed\` and fix the failures. Push the fix.\n\nKnown fix pattern: ${matchedRecipe ?? 'none'}`,
+          sessionId: session.sessionId,
+          resume: Boolean(session.sessionId),
+          provider: session.provider as 'claude' | 'codex',
+        });
+
+        session.lastResumedAt = new Date().toISOString();
+        result.resumed++;
+        result.actions.push({
+          sessionId: session.id,
+          action: `resume-ci-fix (confidence: ${(confidence * 100).toFixed(0)}%)`,
+          result: spawnResult.exitCode === 0 ? 'success' : 'failed',
+        });
+      } else {
+        result.actions.push({
+          sessionId: session.id,
+          action: dryRun ? `dry-run: ${action}` : `skipped: ${action}`,
+          result: 'not-attempted',
+        });
+      }
     }
   }
 

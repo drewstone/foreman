@@ -21,11 +21,20 @@ export interface WorkerRunObservation {
   failureClasses?: string[];
 }
 
+export interface RepairRecipe {
+  pattern: string;
+  confidence: number;
+  successCount: number;
+  failCount: number;
+  lastUsed?: string;
+}
+
 export interface StrategyMemory {
   taskShape: string;
   successfulPatterns: string[];
   badPatterns?: string[];
   repairRecipes?: string[];
+  scoredRecipes?: RepairRecipe[];
 }
 
 export interface UserMemory {
@@ -297,6 +306,45 @@ export async function createMemoryStore(
     throw new Error('createMemoryStore requires rootDir when no memory database URL is configured');
   }
   return new FilesystemMemoryStore(options.rootDir);
+}
+
+export function recordRepairOutcome(
+  existing: RepairRecipe[],
+  pattern: string,
+  succeeded: boolean,
+): RepairRecipe[] {
+  const recipes = [...existing];
+  const idx = recipes.findIndex((r) => r.pattern === pattern);
+  if (idx >= 0) {
+    const recipe = recipes[idx]!;
+    recipes[idx] = {
+      ...recipe,
+      successCount: recipe.successCount + (succeeded ? 1 : 0),
+      failCount: recipe.failCount + (succeeded ? 0 : 1),
+      confidence: (recipe.successCount + (succeeded ? 1 : 0)) /
+        (recipe.successCount + recipe.failCount + 1),
+      lastUsed: new Date().toISOString(),
+    };
+  } else {
+    recipes.push({
+      pattern,
+      confidence: succeeded ? 1 : 0,
+      successCount: succeeded ? 1 : 0,
+      failCount: succeeded ? 0 : 1,
+      lastUsed: new Date().toISOString(),
+    });
+  }
+  return recipes.slice(0, 50);
+}
+
+export function findMatchingRecipe(
+  recipes: RepairRecipe[],
+  failureText: string,
+): RepairRecipe | undefined {
+  const lower = failureText.toLowerCase();
+  return recipes
+    .filter((r) => r.confidence >= 0.5 && lower.includes(r.pattern.toLowerCase().split(':').pop()?.trim() ?? ''))
+    .sort((a, b) => b.confidence - a.confidence)[0];
 }
 
 function sanitize(value: string): string {

@@ -66,14 +66,18 @@ async function loadRepoPaths(): Promise<string[]> {
 interface CliArgs {
   heartbeat: boolean;
   fixCi: boolean;
+  dryRun: boolean;
   resume?: string;
   verbose: boolean;
 }
 
 function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = { heartbeat: false, fixCi: false, verbose: false };
+  const args: CliArgs = { heartbeat: false, fixCi: false, dryRun: false, verbose: false };
   for (let i = 0; i < argv.length; i++) {
     switch (argv[i]) {
+      case '--dry-run':
+        args.dryRun = true;
+        break;
       case '--heartbeat':
         args.heartbeat = true;
         break;
@@ -258,6 +262,8 @@ async function main(): Promise<void> {
     state,
     repoPaths,
     autoResume: args.heartbeat,
+    dryRun: args.dryRun,
+    minConfidence: 0.7,
     maxResumes: 2,
     onAction: (sessionId, action) => {
       log(`${sessionId}: ${action}`);
