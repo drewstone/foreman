@@ -752,8 +752,8 @@ export async function runHeartbeat(options: {
     actions: [],
   };
 
-  // ── Extract insights from recent harness sessions ────────────────
-  if (options.extractSessionInsights !== false) {
+  // ── Extract insights from recent harness sessions (opt-in, slow) ──
+  if (options.extractSessionInsights) {
     const insights = await extractRecentSessionInsights(options.repoPaths, options.state);
     result.discoveries.push(...insights);
   }
