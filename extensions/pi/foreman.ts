@@ -1,451 +1,289 @@
 /**
  * Foreman extension for Pi Mono.
  *
- * Registers Foreman's supervision tools as Pi tools so an agent can
- * orchestrate work through conversation: harden goals, dispatch workers,
- * validate outcomes, and persist learnings — all as tool calls visible
- * in the TUI.
+ * Thin wrapper — calls Foreman CLI via bash, reads state files directly.
+ * No Foreman library imports needed. Pi provides bash, read, write.
  *
- * Install: symlink or copy to ~/.pi/agent/extensions/foreman.ts
+ * Install:
+ *   ln -s ~/code/foreman/extensions/pi/foreman.ts ~/.pi/agent/extensions/foreman.ts
  *
- * Usage: the agent decides when to call each tool based on conversation.
- * Typical flow:
- *   1. User says "finish the openclaw blueprint"
- *   2. Agent calls foreman_harden to expand the goal
- *   3. Agent calls foreman_observe to read the repo + docs
- *   4. Agent calls foreman_dispatch to send work to a provider
- *   5. Agent calls foreman_validate to check the result
- *   6. If validation fails, agent uses bash to fix, then re-validates
- *   7. Agent uses bash for git push, gh pr create, gh pr checks
- *   8. Agent calls foreman_memory to persist learnings
+ * Tools registered:
+ *   foreman_status   — show session portfolio across all repos
+ *   foreman_resume   — resume a session by ID or repo/branch
+ *   foreman_harden   — expand a goal into task envelope with checks
+ *   foreman_validate — run CI checks + review on current work
+ *   foreman_insights — deep analysis of recent session patterns
+ *   foreman_memory   — read/write Foreman memory for a repo
  *
- * The agent has full control over ordering, retries, and decisions.
- * Foreman tools provide supervision intelligence; Pi provides the UX.
+ * Commands:
+ *   /foreman         — show status dashboard
+ *   /heartbeat       — run a heartbeat scan now
  */
-
-// NOTE: This file defines the extension shape. To actually run inside Pi,
-// it needs to be compiled/bundled with Foreman's dependencies or Pi needs
-// to resolve the @drew/foreman-* imports. For development, symlink the
-// built output into ~/.pi/agent/extensions/.
 
 import { Type } from '@mariozechner/pi-ai';
 import type { ExtensionAPI } from '@mariozechner/pi-coding-agent';
+import { execSync } from 'node:child_process';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 
-import {
-  hardenTask,
-  observeEnvironment,
-  dispatchWorker,
-  validateWork,
-  updateMemory,
-} from './engineering-tools.js';
-import {
-  createClaudeProvider,
-  createCodexProvider,
-} from '@drew/foreman-providers';
-import { createMemoryStore } from '@drew/foreman-memory';
-import { GitCodeEnvironment } from '@drew/foreman-environments';
-import {
-  ProviderWorkerAdapter,
-  type ProviderWorkerTask,
-} from '@drew/foreman-workers';
-import type { PromptVariant } from '@drew/foreman-planning';
+const FOREMAN_DIR = process.env.FOREMAN_DIR ?? join(homedir(), 'code', 'foreman');
+const FOREMAN_HOME = process.env.FOREMAN_HOME ?? join(homedir(), '.foreman');
+const FOREMAN_STATE = join(FOREMAN_HOME, 'operator-state.json');
 
-// Default prompt variant for dispatch — can be overridden via Pi settings
-const DEFAULT_VARIANT: PromptVariant = {
-  id: 'pi-foreman:operator-v1',
-  label: 'Pi Foreman Operator',
-  role: 'implementer',
-  taskShape: 'engineering',
-  style: 'persona',
-  systemPreamble: 'You are a staff-level engineer executing under Foreman supervision via Pi.',
-  principles: [
-    'Complete the full scope. No partial implementations.',
-    'Run every check. Fix what breaks.',
-    'Evidence over assertion.',
-  ],
-};
+function run(cmd: string, timeoutMs = 30_000): string {
+  try {
+    return execSync(cmd, {
+      encoding: 'utf8',
+      timeout: timeoutMs,
+      maxBuffer: 10 * 1024 * 1024,
+      cwd: FOREMAN_DIR,
+      env: { ...process.env, PATH: process.env.PATH },
+    }).trim();
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string; message?: string };
+    return err.stdout?.trim() || err.stderr?.trim() || err.message || 'command failed';
+  }
+}
 
-const REVIEWER_VARIANT: PromptVariant = {
-  id: 'pi-foreman:reviewer-v1',
-  label: 'Pi Foreman Reviewer',
-  role: 'reviewer',
-  taskShape: 'engineering',
-  style: 'persona',
-  systemPreamble: 'You are a principal engineer reviewing work under Foreman supervision.',
-  principles: [
-    'Only approve production-ready work.',
-    'Check every criterion explicitly.',
-    'Incomplete implementations are automatic fails.',
-  ],
-};
+function loadState(): Record<string, unknown> | null {
+  try {
+    return JSON.parse(readFileSync(FOREMAN_STATE, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function formatSessions(state: Record<string, unknown> | null): string {
+  if (!state) return 'No Foreman state found. Run /heartbeat first.';
+  const sessions = (state.sessions ?? []) as Array<Record<string, unknown>>;
+  if (sessions.length === 0) return 'No active sessions discovered.';
+
+  const sorted = [...sessions]
+    .filter((s) => s.status !== 'completed')
+    .sort((a, b) => (b.priority as number ?? 0) - (a.priority as number ?? 0));
+
+  return sorted.slice(0, 20).map((s, i) => {
+    const ci = s.ciStatus ? ` [CI:${s.ciStatus}]` : '';
+    const pr = s.prNumber ? ` PR#${s.prNumber}` : '';
+    const blocker = s.blockerReason ? ` ⚠ ${s.blockerReason}` : '';
+    const repo = String(s.repoPath ?? '').split('/').pop();
+    return `${i + 1}. [${s.status}] ${repo}/${s.branch}${pr}${ci}${blocker}\n   ${s.goal}`;
+  }).join('\n');
+}
 
 export default function foremanExtension(pi: ExtensionAPI) {
-  // ── Status widget ──────────────────────────────────────────────────
 
-  let lastStatus = '';
-  function setStatus(text: string) {
-    lastStatus = text;
-    try {
-      pi.sendMessage({
-        customType: 'foreman-status',
-        content: text,
-        display: false,
-      });
-    } catch {
-      // Ignore if UI not available
-    }
-  }
+  // ── Tool: foreman_status ─────────────────────────────────────────
 
-  // ── Tool: foreman_harden ───────────────────────────────────────────
+  pi.registerTool({
+    name: 'foreman_status',
+    label: 'Foreman: Session Status',
+    description: 'Show the current session portfolio across all managed repos. Shows branches, CI status, PRs, blockers, and priorities.',
+    promptSnippet: 'foreman_status — show all active sessions across repos with CI status',
+    parameters: Type.Object({}),
+
+    async execute(_id, _params, _signal, onUpdate) {
+      const state = loadState();
+      const text = formatSessions(state);
+      const lastHeartbeat = state?.lastHeartbeatAt ? `Last heartbeat: ${state.lastHeartbeatAt}` : '';
+      const result = [text, '', lastHeartbeat].filter(Boolean).join('\n');
+      onUpdate?.({ content: [{ type: 'text', text: result }] });
+      return { content: [{ type: 'text', text: result }] };
+    },
+  });
+
+  // ── Tool: foreman_resume ─────────────────────────────────────────
+
+  pi.registerTool({
+    name: 'foreman_resume',
+    label: 'Foreman: Resume Session',
+    description: 'Resume a discovered session by ID (repo:branch format) or partial match. Spawns a Claude session with Foreman-generated CLAUDE.md context.',
+    promptSnippet: 'foreman_resume — resume a session with full Foreman context',
+    parameters: Type.Object({
+      sessionId: Type.String({ description: 'Session ID (repo/branch) or partial match' }),
+      goal: Type.Optional(Type.String({ description: 'Override the session goal' })),
+    }),
+
+    async execute(_id, params, _signal, onUpdate) {
+      const { sessionId, goal } = params as { sessionId: string; goal?: string };
+      onUpdate?.({ content: [{ type: 'text', text: `Resuming session: ${sessionId}...` }] });
+      const goalFlag = goal ? `--goal "${goal.replace(/"/g, '\\"')}"` : '';
+      const output = run(
+        `npx tsx packages/surfaces/src/operator-cli.ts --resume "${sessionId}" ${goalFlag} -v`,
+        5 * 60_000,
+      );
+      return { content: [{ type: 'text', text: output }] };
+    },
+  });
+
+  // ── Tool: foreman_harden ─────────────────────────────────────────
 
   pi.registerTool({
     name: 'foreman_harden',
     label: 'Foreman: Harden Task',
-    description: 'Expand a vague goal into an executable task envelope with success criteria, check commands, and execution notes. Reads repo structure, CI config, and package manifests to infer verification gates.',
-    promptSnippet: 'foreman_harden - expand a goal into a hardened task with checks and criteria',
+    description: 'Expand a vague goal into an executable task envelope. Reads repo CI config, package manifests, and product docs to infer success criteria and check commands.',
+    promptSnippet: 'foreman_harden — expand goal into task with checks and criteria',
     parameters: Type.Object({
-      goal: Type.String({ description: 'The task goal to harden' }),
-      repoPath: Type.String({ description: 'Absolute path to the repository' }),
-      successCriteria: Type.Optional(Type.Array(Type.String(), { description: 'Explicit success criteria' })),
+      goal: Type.String({ description: 'The goal to harden' }),
+      repoPath: Type.String({ description: 'Absolute path to the repo' }),
     }),
 
     async execute(_id, params, _signal, onUpdate) {
-      const { goal, repoPath, successCriteria } = params as {
-        goal: string;
-        repoPath: string;
-        successCriteria?: string[];
-      };
-      setStatus(`Hardening: ${goal.slice(0, 60)}...`);
-
-      const provider = createClaudeProvider();
-      const result = await hardenTask({
-        goal,
-        repoPath,
-        successCriteria,
-        provider,
-      });
-
-      const summary = [
-        `**Goal:** ${result.expandedGoal}`,
-        '',
-        `**Success criteria:** ${result.successCriteria.length}`,
-        ...result.successCriteria.map((c) => `- ${c}`),
-        '',
-        `**Check commands:** ${result.checkCommands.length}`,
-        ...result.checkCommands.map((c) => `- \`${c}\``),
-        '',
-        `**Execution notes:** ${result.executionNotes.length}`,
-        ...result.executionNotes.map((n) => `- ${n}`),
-      ].join('\n');
-
-      onUpdate?.({ content: [{ type: 'text', text: summary }] });
-      setStatus('');
-      return {
-        content: [{ type: 'text', text: summary }],
-        details: result,
-      };
+      const { goal, repoPath } = params as { goal: string; repoPath: string };
+      onUpdate?.({ content: [{ type: 'text', text: `Hardening: ${goal.slice(0, 80)}...` }] });
+      const escaped = JSON.stringify({ goal, repoPath });
+      const output = run(
+        `npx tsx -e "
+const { hardenTask } = require('./packages/surfaces/src/engineering-tools.ts');
+const { createClaudeProvider } = require('./packages/providers/src/index.ts');
+const opts = ${escaped};
+hardenTask({ ...opts, provider: createClaudeProvider() }).then(r => console.log(JSON.stringify(r, null, 2)));
+"`,
+        2 * 60_000,
+      );
+      return { content: [{ type: 'text', text: output }] };
     },
   });
 
-  // ── Tool: foreman_observe ──────────────────────────────────────────
-
-  pi.registerTool({
-    name: 'foreman_observe',
-    label: 'Foreman: Observe Environment',
-    description: 'Read repository state, product documentation (CLAUDE.md, README, ARCHITECTURE.md, CI configs), and memory from prior runs. Returns a context snapshot for planning.',
-    promptSnippet: 'foreman_observe - read repo state, docs, and memory for context',
-    parameters: Type.Object({
-      repoPath: Type.String({ description: 'Absolute path to the repository' }),
-      profileId: Type.Optional(Type.String({ description: 'Foreman profile ID' })),
-    }),
-
-    async execute(_id, params, _signal, onUpdate) {
-      const { repoPath, profileId } = params as { repoPath: string; profileId?: string };
-      setStatus('Observing environment...');
-
-      const memoryStore = await createMemoryStore({ rootDir: `${repoPath}/.foreman/memory` }).catch(() => undefined);
-      const result = await observeEnvironment({
-        repoPath,
-        memoryStore,
-        profileId,
-      });
-
-      const text = `**Environment:** ${result.summary}\n\n**Evidence:** ${(result.evidence ?? []).length} item(s)`;
-      onUpdate?.({ content: [{ type: 'text', text }] });
-      setStatus('');
-      return {
-        content: [{ type: 'text', text: result.summary }],
-        details: { evidenceCount: (result.evidence ?? []).length },
-      };
-    },
-  });
-
-  // ── Tool: foreman_dispatch ─────────────────────────────────────────
-
-  pi.registerTool({
-    name: 'foreman_dispatch',
-    label: 'Foreman: Dispatch Worker',
-    description: 'Send a task to Claude or Codex worker for implementation. Includes automatic fallback if the primary worker is unavailable (rate limited, quota exceeded). Returns the worker output and evidence.',
-    promptSnippet: 'foreman_dispatch - send implementation task to a worker (claude/codex) with fallback',
-    parameters: Type.Object({
-      goal: Type.String({ description: 'What the worker should accomplish' }),
-      repoPath: Type.String({ description: 'Absolute path to the repository' }),
-      worker: Type.Optional(Type.String({ description: 'Worker ID: claude or codex (default: claude)' })),
-      successCriteria: Type.Optional(Type.Array(Type.String())),
-      extraInstructions: Type.Optional(Type.String({ description: 'Additional instructions for the worker' })),
-    }),
-
-    async execute(_id, params, _signal, onUpdate) {
-      const {
-        goal,
-        repoPath,
-        worker: workerId = 'claude',
-        successCriteria,
-        extraInstructions,
-      } = params as {
-        goal: string;
-        repoPath: string;
-        worker?: string;
-        successCriteria?: string[];
-        extraInstructions?: string;
-      };
-      setStatus(`Dispatching to ${workerId}...`);
-
-      const providers = {
-        claude: createClaudeProvider(),
-        codex: createCodexProvider(),
-      };
-      const primaryId = workerId === 'codex' ? 'codex' : 'claude';
-      const fallbackId = primaryId === 'claude' ? 'codex' : 'claude';
-
-      const makeAdapter = (id: string) =>
-        new ProviderWorkerAdapter(
-          { id, name: id, capabilities: ['code', 'review'] },
-          providers[id as 'claude' | 'codex'],
-          ({ task, context }) =>
-            [
-              DEFAULT_VARIANT.systemPreamble,
-              `Goal: ${task.goal}`,
-              successCriteria?.length ? `Criteria:\n${successCriteria.map((c) => `- ${c}`).join('\n')}` : '',
-              `Context: ${context.summary}`,
-              task.extraInstructions || '',
-            ].filter(Boolean).join('\n\n'),
-        );
-
-      const result = await dispatchWorker({
-        worker: makeAdapter(primaryId),
-        fallbackWorker: makeAdapter(fallbackId),
-        task: {
-          goal,
-          repoPath,
-          successCriteria,
-          extraInstructions,
-        },
-        context: { summary: `Working in ${repoPath}` },
-      });
-
-      const text = `**${result.status}**: ${result.summary}`;
-      onUpdate?.({ content: [{ type: 'text', text }] });
-      setStatus('');
-      return {
-        content: [{ type: 'text', text }],
-        details: {
-          status: result.status,
-          workerId: result.metadata?.workerId,
-          fallbackFrom: result.metadata?.fallbackFrom,
-          evidenceCount: result.evidence.length,
-        },
-      };
-    },
-  });
-
-  // ── Tool: foreman_validate ─────────────────────────────────────────
+  // ── Tool: foreman_validate ───────────────────────────────────────
 
   pi.registerTool({
     name: 'foreman_validate',
     label: 'Foreman: Validate Work',
-    description: 'Run the full validation pipeline: deterministic checks (cargo test, clippy, fmt), tool commands, and LLM judge review with provider fallback. Returns pass/warn/fail with findings.',
-    promptSnippet: 'foreman_validate - run checks + LLM review to validate work quality',
+    description: 'Run the full validation pipeline: deterministic checks from CI config, then LLM review. Returns pass/warn/fail with specific findings.',
+    promptSnippet: 'foreman_validate — run CI checks + LLM review on current repo',
     parameters: Type.Object({
-      repoPath: Type.String({ description: 'Absolute path to the repository' }),
-      goal: Type.String({ description: 'The task goal being validated' }),
-      checkCommands: Type.Array(Type.String(), { description: 'Commands to run as deterministic checks' }),
-      successCriteria: Type.Optional(Type.Array(Type.String())),
-      trackSummary: Type.Optional(Type.String({ description: 'Summary of what was implemented' })),
+      repoPath: Type.String({ description: 'Absolute path to the repo' }),
+      goal: Type.String({ description: 'What was being implemented' }),
     }),
 
     async execute(_id, params, _signal, onUpdate) {
-      const {
-        repoPath,
-        goal,
-        checkCommands,
-        successCriteria,
-        trackSummary,
-      } = params as {
-        repoPath: string;
-        goal: string;
-        checkCommands: string[];
-        successCriteria?: string[];
-        trackSummary?: string;
-      };
-      setStatus('Validating...');
-
-      const environment = new GitCodeEnvironment(repoPath);
-      const providers = {
-        claude: createClaudeProvider(),
-        codex: createCodexProvider(),
-      };
-
-      const task = {
-        id: 'pi-foreman-validate',
-        goal,
-        successCriteria: successCriteria ?? [],
-        environment: { kind: 'code' as const, target: repoPath },
-      };
-
-      const context = {
-        summary: trackSummary ?? 'Validation requested',
-        evidence: [],
-      };
-
-      const trackResults = [{
-        trackId: 'implement',
-        status: 'completed' as const,
-        summary: trackSummary ?? 'Implementation complete',
-        evidence: [],
-      }];
-
-      const result = await validateWork({
-        task,
-        context,
-        trackResults,
-        environment,
-        checkCommands,
-        reviewProvider: providers.claude,
-        fallbackReviewProvider: providers.codex,
-        reviewWorkerId: 'claude',
-        fallbackReviewWorkerId: 'codex',
-        reviewerVariant: REVIEWER_VARIANT,
-      });
-
-      const text = [
-        `**Status:** ${result.status} | **Recommendation:** ${result.recommendation}`,
-        `**Summary:** ${result.summary}`,
-        result.findings.length > 0 ? `\n**Findings:**` : '',
-        ...result.findings.map((f) => `- [${f.severity}] ${f.title}: ${f.body}`),
-      ].filter(Boolean).join('\n');
-
-      onUpdate?.({ content: [{ type: 'text', text }] });
-      setStatus('');
-      return {
-        content: [{ type: 'text', text }],
-        details: {
-          status: result.status,
-          recommendation: result.recommendation,
-          findingCount: result.findings.length,
-          scores: result.scores,
-        },
-      };
+      const { repoPath, goal } = params as { repoPath: string; goal: string };
+      onUpdate?.({ content: [{ type: 'text', text: 'Running validation pipeline...' }] });
+      const escaped = goal.replace(/"/g, '\\"');
+      const output = run(
+        `npx tsx packages/surfaces/src/cli.ts --repo "${repoPath}" --goal "${escaped}" --max-rounds 1`,
+        10 * 60_000,
+      );
+      try {
+        const parsed = JSON.parse(output);
+        const v = parsed.validation;
+        if (v) {
+          const findings = (v.findings ?? []).map((f: Record<string, string>) => `- [${f.severity}] ${f.title}`).join('\n');
+          const text = `**${v.status}** | ${v.recommendation}\n${v.summary}\n${findings}`;
+          return { content: [{ type: 'text', text }], details: v };
+        }
+      } catch { /* not JSON */ }
+      return { content: [{ type: 'text', text: output.slice(0, 2000) }] };
     },
   });
 
-  // ── Tool: foreman_memory ───────────────────────────────────────────
+  // ── Tool: foreman_insights ───────────────────────────────────────
 
   pi.registerTool({
-    name: 'foreman_memory',
-    label: 'Foreman: Update Memory',
-    description: 'Persist learnings from a run into Foreman memory: environment facts, worker performance, strategy patterns, and CI requirements. Called after validation to close the learning loop.',
-    promptSnippet: 'foreman_memory - save learnings from this run for future improvement',
+    name: 'foreman_insights',
+    label: 'Foreman: Session Insights',
+    description: 'Analyze recent Claude/Codex session patterns across repos. Shows recurring commands, key files, cross-repo themes, and suggested CLAUDE.md rules.',
+    promptSnippet: 'foreman_insights — analyze session patterns for workflow improvements',
     parameters: Type.Object({
-      repoPath: Type.String({ description: 'Absolute path to the repository' }),
-      goal: Type.String({ description: 'The task goal' }),
-      workerId: Type.String({ description: 'Which worker implemented (claude/codex)' }),
-      succeeded: Type.Boolean({ description: 'Whether validation passed' }),
-      checkCommands: Type.Optional(Type.Array(Type.String())),
-      ciFailures: Type.Optional(Type.Array(Type.String(), { description: 'CI failure lessons to remember' })),
+      repoPaths: Type.Array(Type.String(), { description: 'Repos to analyze' }),
+      hoursBack: Type.Optional(Type.Number({ description: 'Hours to look back (default 72)' })),
     }),
 
     async execute(_id, params, _signal, onUpdate) {
-      const {
-        repoPath,
-        goal,
-        workerId,
-        succeeded,
-        checkCommands,
-        ciFailures,
-      } = params as {
-        repoPath: string;
-        goal: string;
-        workerId: string;
-        succeeded: boolean;
-        checkCommands?: string[];
-        ciFailures?: string[];
-      };
-      setStatus('Updating memory...');
+      const { repoPaths, hoursBack } = params as { repoPaths: string[]; hoursBack?: number };
+      onUpdate?.({ content: [{ type: 'text', text: 'Analyzing sessions...' }] });
+      const escaped = JSON.stringify({ repoPaths, hoursBack: hoursBack ?? 72 });
+      const output = run(
+        `npx tsx -e "
+const { extractDeepSessionInsights } = require('./packages/surfaces/src/session-insights.ts');
+const opts = ${escaped};
+extractDeepSessionInsights(opts).then(r => console.log(JSON.stringify(r, null, 2)));
+"`,
+        60_000,
+      );
+      return { content: [{ type: 'text', text: output }] };
+    },
+  });
 
-      const memoryStore = await createMemoryStore({ rootDir: `${repoPath}/.foreman/memory` });
+  // ── Tool: foreman_memory ─────────────────────────────────────────
 
-      await updateMemory({
-        memoryStore,
-        repoPath,
-        profileId: 'pi-foreman',
-        implementationWorkerId: workerId,
-        reviewWorkerId: 'claude',
-        plannerWorkerId: 'claude',
-        goal,
-        expandedGoal: goal,
-        successCriteria: [],
-        checkCommands: checkCommands ?? [],
-        toolCommands: [],
-        ciFailures,
-        validation: succeeded
-          ? { status: 'pass', recommendation: 'complete', summary: 'Validated', findings: [] }
-          : { status: 'fail', recommendation: 'repair', summary: 'Failed', findings: [] },
-      });
+  pi.registerTool({
+    name: 'foreman_memory',
+    label: 'Foreman: Read Memory',
+    description: 'Read what Foreman knows about a repo — environment facts, CI requirements, worker performance, repair recipes.',
+    promptSnippet: 'foreman_memory — read what Foreman remembers about a repo',
+    parameters: Type.Object({
+      repoPath: Type.String({ description: 'Absolute path to the repo' }),
+    }),
 
-      const text = ciFailures?.length
-        ? `Memory updated. Learned ${ciFailures.length} CI requirement(s) for next time.`
-        : 'Memory updated.';
-      onUpdate?.({ content: [{ type: 'text', text }] });
-      setStatus('');
+    async execute(_id, params) {
+      const { repoPath } = params as { repoPath: string };
+      const memDir = join(repoPath, '.foreman', 'memory');
+      if (!existsSync(memDir)) {
+        return { content: [{ type: 'text', text: `No Foreman memory at ${memDir}` }] };
+      }
+      const parts: string[] = [];
+      for (const type of ['environment', 'worker', 'strategy', 'profile']) {
+        const typeDir = join(memDir, type);
+        try {
+          for (const file of readdirSync(typeDir)) {
+            if (!file.endsWith('.json')) continue;
+            try {
+              const data = readFileSync(join(typeDir, file), 'utf8');
+              parts.push(`### ${type}/${file}\n\`\`\`json\n${data.trim()}\n\`\`\``);
+            } catch { continue; }
+          }
+        } catch { continue; }
+      }
+      const text = parts.length > 0 ? parts.join('\n\n') : 'Memory exists but is empty.';
       return { content: [{ type: 'text', text }] };
     },
   });
 
-  // ── Command: /foreman ──────────────────────────────────────────────
+  // ── Command: /foreman ────────────────────────────────────────────
 
   pi.registerCommand('foreman', {
-    description: 'Show Foreman status and available tools',
+    description: 'Show Foreman session portfolio',
     handler: async (_args, ctx) => {
-      const tools = [
-        'foreman_harden  - expand goal into task envelope',
-        'foreman_observe - read repo state + docs + memory',
-        'foreman_dispatch - send work to claude/codex',
-        'foreman_validate - run checks + review',
-        'foreman_memory  - persist learnings',
-      ];
-      ctx.ui.notify(
-        `Foreman tools:\n${tools.join('\n')}\n\nLast status: ${lastStatus || 'idle'}`,
-        'info',
-      );
+      ctx.ui.notify(formatSessions(loadState()), 'info');
     },
   });
 
-  // ── Guidelines for the agent ───────────────────────────────────────
+  // ── Command: /heartbeat ──────────────────────────────────────────
 
-  pi.registerTool({
-    name: 'foreman_harden',
-    label: 'Foreman: Harden Task',
-    description: 'Expand a vague goal into an executable task envelope with success criteria, check commands, and execution notes.',
-    promptGuidelines: [
-      'Call foreman_harden first when given a new task to understand the full scope.',
-      'Call foreman_observe to understand the repo before implementing.',
-      'Use foreman_dispatch only for complex tasks that benefit from a dedicated worker session.',
-      'Call foreman_validate after implementation to get structured quality assessment.',
-      'Call foreman_memory after completing work to persist learnings for next time.',
-      'Use bash directly for git, gh, and simple commands — don\'t over-engineer.',
-      'If foreman_validate finds issues, fix them yourself (you have bash/write), then re-validate.',
-      'If CI fails after push, read the logs with bash (gh run view --log-failed), fix, and push again.',
-    ],
-  } as any); // Guidelines-only registration
+  pi.registerCommand('heartbeat', {
+    description: 'Run Foreman heartbeat scan now',
+    handler: async (_args, ctx) => {
+      ctx.ui.notify('Running heartbeat...', 'info');
+      const output = run(
+        'npx tsx packages/surfaces/src/operator-cli.ts --heartbeat --dry-run -v',
+        60_000,
+      );
+      ctx.ui.notify(output.slice(0, 1000), 'info');
+    },
+  });
+
+  // ── Inject context on session start ──────────────────────────────
+
+  pi.on('before_agent_start', async () => {
+    const state = loadState();
+    if (!state) return;
+    const sessions = (state.sessions ?? []) as Array<Record<string, unknown>>;
+    const blocked = sessions.filter((s) => s.status === 'blocked');
+    const active = sessions.filter((s) => s.status === 'active');
+    if (blocked.length > 0 || active.length > 0) {
+      pi.sendMessage({
+        customType: 'foreman-context',
+        content: [
+          `[Foreman] ${sessions.length} sessions tracked.`,
+          blocked.length > 0 ? `⚠ ${blocked.length} blocked` : '',
+          active.length > 0 ? `${active.length} active` : '',
+          'Use foreman_status for details.',
+        ].filter(Boolean).join(' '),
+        display: false,
+      });
+    }
+  });
 }
