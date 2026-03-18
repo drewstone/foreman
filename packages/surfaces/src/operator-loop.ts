@@ -85,7 +85,7 @@ export interface HeartbeatResult {
 
 // ─── Session Registry ────────────────────────────────────────────────
 
-const STATE_FILE = '.foreman/operator-state.json';
+const STATE_FILE = 'operator-state.json';
 
 export async function loadOperatorState(root: string): Promise<OperatorState> {
   const path = join(root, STATE_FILE);
