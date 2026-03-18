@@ -45,42 +45,38 @@ Workers are Claude Code, Codex, Pi, or any agent with bash. Foreman doesn't repl
 - [x] Code review-driven hardening (streaming JSONL reads, state pruning, error handling)
 - [x] vllm PR #1: all CI green. openclaw clippy fix pushed.
 
-## In Progress
+## Done this session (not yet in Completed list)
 
-- [-] Autonomous heartbeat on cron
-  Script exists. Auto-resume code works. Not yet added to crontab — needs a day of manual testing first.
-- [-] Foreman's own system prompt
-  The control plane should itself be a Claude session with supervision tools.
-- [-] Confidence-weighted decisions
-  Memory stores repair recipes but no confidence scores.
+- [x] Cron heartbeat running every 15 min (dry-run mode)
+- [x] Confidence-weighted auto-resume with RepairRecipe scoring
+- [x] Heartbeat traces persisted to ~/.foreman/traces/heartbeats/
+- [x] Heartbeat history in operator state (last 200, pruned)
+- [x] onReview callback dispatches Claude agent with full operator context
+- [x] Review agent prompt: portfolio, history, 6 analysis tasks, structured output
+- [x] Dry-run mode for all autonomous actions
 
 ## Next
 
-### Autonomous operation (immediate)
-- [ ] Add cron entry for heartbeat (every 15 minutes)
-- [ ] Test auto-resume on a real simple CI failure end-to-end
-- [ ] Confidence scoring on repair recipes ("protoc fix: 0.95, seen 3x" → auto-act)
-- [ ] Foreman control plane as a Claude session with system prompt
-- [ ] Tmux-based visibility: control pane + worker panes
+### Observe and validate (immediate — let it run)
+- [ ] Let cron run 24h, review heartbeat traces for quality
+- [ ] Remove --dry-run once decisions look correct
+- [ ] Test auto-resume on a simple CI failure end-to-end
+- [ ] Validate review agent output quality on real accumulated history
 
-### Context management
-- [ ] QMD integration for intelligent repo search (MCP server)
-- [ ] CLAUDE.md generation includes file pointers from session insights, not full content
+### Pi extension (the UX)
+- [ ] Package extensions/pi/foreman.ts with esbuild + deps
+- [ ] Test in real Pi session with Foreman tools
+- [ ] QMD available as MCP tool inside Pi (just CLAUDE.md instruction)
 
-### Surfaces
+### Surfaces (always-on)
 - [ ] Slack webhook listener (receive messages, post status, ask questions)
 - [ ] GitHub webhook listener (PR reviews, CI failures, issues)
-- [ ] Pi extension packaging (bundle with deps, test in real Pi session)
 
-### Product sense
-- [ ] Periodic repo health scans (test coverage, TODOs, stale branches, dep CVEs)
-- [ ] Feature proposals from performance data and code analysis
-- [ ] Cross-repo learning (blueprint-sdk → protoc required, applied everywhere)
-
-### Optimization
-- [ ] Run prompt optimization on accumulated traces (need variant diversity first)
-- [ ] Golden suites from real traces
+### Self-improvement
+- [ ] Run prompt optimization after variant diversity (10+ traces, 2+ variants)
+- [ ] Golden suites from real traces for regression testing
 - [ ] Track session cost, success rate, time-to-green as operator metrics
+- [ ] Cross-repo learning (recipe from one repo applied everywhere)
 
 ## What not to do
 
