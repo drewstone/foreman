@@ -64,13 +64,14 @@ Workers are Claude Code, Codex, Pi, or any agent with bash. Foreman doesn't repl
 - [ ] Validate review agent output quality on real accumulated history
 
 ### Pi extension (the UX)
-- [ ] Package extensions/pi/foreman.ts with esbuild + deps
-- [ ] Test in real Pi session with Foreman tools
-- [ ] QMD available as MCP tool inside Pi (just CLAUDE.md instruction)
+- [x] Pi extension as thin CLI wrapper (no bundling needed)
+- [ ] Test in real Pi session
+- [ ] QMD available as MCP tool (CLAUDE.md instruction, not code)
 
-### Surfaces (always-on)
-- [ ] Slack webhook listener (receive messages, post status, ask questions)
-- [ ] GitHub webhook listener (PR reviews, CI failures, issues)
+### Surfaces
+- Slack/GitHub are just bash commands — no custom code needed
+- Agent uses `curl $SLACK_WEBHOOK` and `gh` directly
+- Instructions go in CLAUDE.md, not in Foreman code
 
 ### Self-improvement
 - [ ] Run prompt optimization after variant diversity (10+ traces, 2+ variants)
