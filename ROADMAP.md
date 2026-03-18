@@ -39,31 +39,33 @@ Workers are Claude Code, Codex, Pi, or any agent with bash. Foreman doesn't repl
 - [x] Pi extension template (5 Foreman tools as Pi tools)
 - [x] Heartbeat cron script
 - [x] Proven against 2 real repos: openclaw-sandbox-blueprint, vllm-inference-blueprint
+- [x] Deep session insight extraction (75K messages analyzed, patterns across repos)
+- [x] Session insights drive CLAUDE.md generation (key files, check commands, recent goals)
+- [x] Cross-session awareness (Claude JSONL scanning, branch matching, worker session filtering)
+- [x] Code review-driven hardening (streaming JSONL reads, state pruning, error handling)
+- [x] vllm PR #1: all CI green. openclaw clippy fix pushed.
 
 ## In Progress
 
 - [-] Autonomous heartbeat on cron
-  Script exists but not yet added to crontab. Needs testing of auto-resume against real CI failures.
+  Script exists. Auto-resume code works. Not yet added to crontab — needs a day of manual testing first.
 - [-] Foreman's own system prompt
-  The control plane should itself be a Claude session with supervision tools. The CLAUDE.md generation applies to Foreman itself, not just workers.
-- [-] Context management strategy
-  CLAUDE.md is the primary context lever. QMD integration for intelligent retrieval is next.
+  The control plane should itself be a Claude session with supervision tools.
 - [-] Confidence-weighted decisions
-  Memory stores repair recipes but no confidence scores. Need: "protoc fix (confidence: 0.95, seen 3x)" → auto-act vs "unknown failure" → ask.
+  Memory stores repair recipes but no confidence scores.
 
 ## Next
 
-### Autonomous operation
-- [ ] Test auto-resume against real CI failures (openclaw PR #13, vllm PR #1)
+### Autonomous operation (immediate)
 - [ ] Add cron entry for heartbeat (every 15 minutes)
-- [ ] Confidence scoring on repair recipes
+- [ ] Test auto-resume on a real simple CI failure end-to-end
+- [ ] Confidence scoring on repair recipes ("protoc fix: 0.95, seen 3x" → auto-act)
 - [ ] Foreman control plane as a Claude session with system prompt
 - [ ] Tmux-based visibility: control pane + worker panes
 
 ### Context management
 - [ ] QMD integration for intelligent repo search (MCP server)
-- [ ] Context budget strategy: product docs first, then task-relevant files
-- [ ] CLAUDE.md generation includes relevant file pointers, not full content
+- [ ] CLAUDE.md generation includes file pointers from session insights, not full content
 
 ### Surfaces
 - [ ] Slack webhook listener (receive messages, post status, ask questions)
