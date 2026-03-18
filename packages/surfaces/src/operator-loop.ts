@@ -415,6 +415,7 @@ async function extractRecentSessionInsights(
 
   // Scan Claude Code sessions from the last 48 hours
   const claudeSessions = await scanRecentClaudeSessions(48);
+  const seenSessionKeys = new Set<string>();
   for (const session of claudeSessions) {
     const cwdResolved = session.cwd ? resolve(session.cwd) : '';
     const matchesRepo = cwdResolved && repoSet.has(cwdResolved);
@@ -422,7 +423,18 @@ async function extractRecentSessionInsights(
 
     const repoName = session.cwd?.split('/').pop() ?? 'unknown';
     const branchInfo = session.branch ? ` (${session.branch})` : '';
-    insights.push(`Recent Claude session on ${repoName}${branchInfo}: ${session.summary ?? session.title}`);
+    const title = session.summary ?? session.firstPrompt?.slice(0, 80) ?? session.title;
+
+    // Filter out Foreman-spawned worker sessions (they start with system prompts)
+    const isWorkerSession = /^You are (a |an |operating|Foreman )/i.test(title);
+    if (isWorkerSession) continue;
+
+    // Deduplicate by repo+branch
+    const dedupKey = `${repoName}:${session.branch ?? session.sessionId}`;
+    if (seenSessionKeys.has(dedupKey)) continue;
+    seenSessionKeys.add(dedupKey);
+
+    insights.push(`Recent Claude session on ${repoName}${branchInfo}: ${title}`);
 
     // Cross-reference: link Claude session to discovered branch
     if (state && session.branch) {
@@ -784,15 +796,47 @@ export function rankSessions(sessions: ManagedSession[]): ManagedSession[] {
 
 // ─── Summary for display ─────────────────────────────────────────────
 
-export function formatSessionSummary(sessions: ManagedSession[]): string {
+export async function formatSessionSummary(
+  sessions: ManagedSession[],
+  options?: { includeMemory?: boolean },
+): Promise<string> {
   const ranked = rankSessions(sessions);
   if (ranked.length === 0) return 'No active sessions.';
+
+  // Load memory for each unique repo if requested
+  const repoMemory = new Map<string, string[]>();
+  if (options?.includeMemory) {
+    const uniqueRepos = [...new Set(ranked.map((s) => s.repoPath))];
+    for (const repoPath of uniqueRepos) {
+      try {
+        const memPath = join(repoPath, '.foreman', 'memory', 'environment', sanitizeForPath(repoPath) + '.json');
+        const data = JSON.parse(await readFile(memPath, 'utf8')) as { facts?: string[]; failureModes?: string[] };
+        const facts = [
+          ...(data.facts?.filter((f) => f.startsWith('ci-requirement:') || f.startsWith('uses-dep:')) ?? []),
+          ...(data.failureModes?.slice(0, 2) ?? []),
+        ];
+        if (facts.length > 0) {
+          repoMemory.set(repoPath, facts.slice(0, 3));
+        }
+      } catch { /* no memory */ }
+    }
+  }
 
   return ranked.map((s, i) => {
     const ci = s.ciStatus ? ` [CI: ${s.ciStatus}]` : '';
     const pr = s.prNumber ? ` PR #${s.prNumber}` : '';
     const blocker = s.blockerReason ? ` ⚠ ${s.blockerReason}` : '';
     const age = s.metadata?.daysOld ? ` (${s.metadata.daysOld}d ago)` : '';
-    return `${i + 1}. [${s.status}] ${s.repoPath.split('/').pop()}/${s.branch}${pr}${ci}${blocker}${age}\n   ${s.goal}`;
+    const claudeSession = s.metadata?.claudeSessionId ? ' 💬' : '';
+    let line = `${i + 1}. [${s.status}] ${s.repoPath.split('/').pop()}/${s.branch}${pr}${ci}${blocker}${age}${claudeSession}\n   ${s.goal}`;
+    const memFacts = repoMemory.get(s.repoPath);
+    if (memFacts) {
+      line += `\n   Memory: ${memFacts.join(', ')}`;
+    }
+    return line;
   }).join('\n');
+}
+
+function sanitizeForPath(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'item';
 }

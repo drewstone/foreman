@@ -140,7 +140,7 @@ async function main(): Promise<void> {
     if (!session) {
       log(`Session not found: ${args.resume}`);
       log('Active sessions:');
-      log(formatSessionSummary(state.sessions));
+      log(await formatSessionSummary(state.sessions));
       process.exit(1);
     }
 
@@ -252,7 +252,7 @@ async function main(): Promise<void> {
   console.log('');
   console.log('─── Foreman Status ───');
   console.log('');
-  console.log(formatSessionSummary(state.sessions));
+  console.log(await formatSessionSummary(state.sessions, { includeMemory: true }));
   console.log('');
 
   if (result.discoveries.length > 0) {
