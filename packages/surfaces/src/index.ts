@@ -59,3 +59,4 @@ export { runSupervisorBenchmark } from './supervisor-benchmark.js';
 export { runTraceBenchmark } from './trace-benchmark.js';
 export { runWorkContinuation } from './work-continuation.js';
 export { runWorkDiscovery } from './work-discovery.js';
+export { pushBranch, createPR, checkCI, readCILogs } from './ci-tools.js';
