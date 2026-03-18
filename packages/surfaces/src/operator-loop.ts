@@ -730,6 +730,13 @@ export async function runHeartbeat(options: {
   repoPaths: string[];
   onQuestion?: (question: OperatorQuestion) => Promise<string | undefined>;
   onAction?: (sessionId: string, action: string) => void;
+  onReview?: (input: {
+    recentHeartbeats: HeartbeatLog[];
+    sessions: ManagedSession[];
+  }) => Promise<{
+    discoveries: string[];
+    actions?: Array<{ sessionId: string; action: string; result: string }>;
+  } | undefined>;
   autoResume?: boolean;
   dryRun?: boolean;
   minConfidence?: number;
@@ -872,65 +879,17 @@ export async function runHeartbeat(options: {
     }
   }
 
-  // ── Review prior heartbeat traces for patterns ────────────────────
-  if (options.state.heartbeatHistory.length >= 3) {
-    const recentHistory = options.state.heartbeatHistory.slice(-20);
-
-    // Detect persistent blockers (same session blocked across multiple heartbeats)
-    const blockerCounts = new Map<string, number>();
-    for (const hb of recentHistory) {
-      for (const blocked of hb.blockedSessions) {
-        blockerCounts.set(blocked.id, (blockerCounts.get(blocked.id) ?? 0) + 1);
-      }
-    }
-    for (const [sessionId, count] of blockerCounts) {
-      if (count >= 3) {
-        const session = options.state.sessions.find((s) => s.id === sessionId);
-        if (session && session.priority < 10) {
-          session.priority = 10;
-          result.discoveries.push(
-            `ESCALATE: ${session.repoPath.split('/').pop()}/${session.branch} has been blocked for ${count} consecutive heartbeats`,
-          );
-        }
-      }
-    }
-
-    // Detect recurring CI failure patterns across repos
-    const failureReasons = new Map<string, Set<string>>();
-    for (const hb of recentHistory) {
-      for (const blocked of hb.blockedSessions) {
-        if (blocked.reason) {
-          const normalized = blocked.reason.toLowerCase().trim();
-          if (!failureReasons.has(normalized)) {
-            failureReasons.set(normalized, new Set());
-          }
-          failureReasons.get(normalized)!.add(blocked.repo);
-        }
-      }
-    }
-    for (const [reason, repos] of failureReasons) {
-      if (repos.size >= 2) {
-        result.discoveries.push(
-          `CROSS-REPO PATTERN: "${reason}" failing in ${[...repos].join(', ')} — may need shared fix`,
-        );
-      }
-    }
-
-    // Detect high-activity sessions (appeared in many discoveries)
-    const activityCounts = new Map<string, number>();
-    for (const hb of recentHistory) {
-      for (const discovery of hb.discoveries) {
-        const repoMatch = discovery.match(/on (\S+?)[\s(/:]/);
-        if (repoMatch) {
-          activityCounts.set(repoMatch[1]!, (activityCounts.get(repoMatch[1]!) ?? 0) + 1);
-        }
-      }
-    }
-    for (const [repo, count] of activityCounts) {
-      if (count >= 5) {
-        result.discoveries.push(
-          `HIGH ACTIVITY: ${repo} has appeared in ${count} recent heartbeats — likely your current focus`,
-        );
+  // ── Dispatch trace review to an agent if enough history exists ───
+  // The heartbeat stays thin: scan + trace. An agent does the thinking.
+  if (options.state.heartbeatHistory.length >= 3 && options.onReview) {
+    const reviewResult = await options.onReview({
+      recentHeartbeats: options.state.heartbeatHistory.slice(-20),
+      sessions: options.state.sessions,
+    });
+    if (reviewResult) {
+      result.discoveries.push(...reviewResult.discoveries);
+      for (const action of reviewResult.actions ?? []) {
+        result.actions.push(action);
       }
     }
   }
