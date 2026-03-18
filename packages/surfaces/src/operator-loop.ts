@@ -382,6 +382,135 @@ export async function spawnSession(options: {
   }
 }
 
+// ─── Session Insight Extraction ──────────────────────────────────────
+
+async function extractRecentSessionInsights(repoPaths: string[]): Promise<string[]> {
+  const insights: string[] = [];
+  const repoSet = new Set(repoPaths.map((p) => resolve(p)));
+
+  // Scan Claude Code sessions from the last 24 hours
+  const claudeSessions = await scanRecentClaudeSessions(24);
+  for (const session of claudeSessions) {
+    if (session.cwd && repoSet.has(resolve(session.cwd))) {
+      insights.push(`Recent Claude session on ${session.cwd.split('/').pop()}: ${session.summary ?? session.title}`);
+    }
+  }
+
+  // Scan Codex sessions
+  const codexSessions = await scanRecentCodexSessions(24);
+  for (const session of codexSessions) {
+    insights.push(`Recent Codex session: ${session.summary ?? session.title}`);
+  }
+
+  return insights;
+}
+
+interface SessionScanResult {
+  sessionId: string;
+  title: string;
+  summary?: string;
+  cwd?: string;
+  updatedAt?: string;
+}
+
+async function scanRecentClaudeSessions(hoursBack: number): Promise<SessionScanResult[]> {
+  const { homedir: getHomedir } = await import('node:os');
+  const root = join(getHomedir(), '.claude', 'projects');
+  const cutoff = Date.now() - (hoursBack * 60 * 60 * 1000);
+  const results: SessionScanResult[] = [];
+
+  let projectDirs: string[] = [];
+  try {
+    const entries = await readdir(root, { withFileTypes: true });
+    projectDirs = entries.filter((e) => e.isDirectory()).map((e) => join(root, e.name));
+  } catch {
+    return [];
+  }
+
+  for (const dir of projectDirs) {
+    try {
+      const indexPath = join(dir, 'sessions-index.json');
+      const parsed = JSON.parse(await readFile(indexPath, 'utf8')) as {
+        entries?: Array<{
+          sessionId?: string;
+          summary?: string;
+          projectPath?: string;
+          modified?: string;
+          fileMtime?: number;
+        }>;
+      };
+
+      for (const entry of parsed.entries ?? []) {
+        const mtime = entry.fileMtime ?? (entry.modified ? new Date(entry.modified).getTime() : 0);
+        if (mtime > cutoff && entry.sessionId) {
+          results.push({
+            sessionId: entry.sessionId,
+            title: entry.summary ?? 'Claude session',
+            summary: entry.summary,
+            cwd: entry.projectPath,
+            updatedAt: entry.modified ?? new Date(mtime).toISOString(),
+          });
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return results.sort((a, b) => {
+    const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+    const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+    return bTime - aTime;
+  });
+}
+
+async function scanRecentCodexSessions(hoursBack: number): Promise<SessionScanResult[]> {
+  const { homedir: getHomedir } = await import('node:os');
+  const historyPath = join(getHomedir(), '.codex', 'history.jsonl');
+  const cutoff = Date.now() - (hoursBack * 60 * 60 * 1000);
+  const results: SessionScanResult[] = [];
+
+  let raw = '';
+  try {
+    raw = await readFile(historyPath, 'utf8');
+  } catch {
+    return [];
+  }
+
+  const bySession = new Map<string, { text?: string; ts?: number }>();
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = JSON.parse(line) as { session_id?: string; text?: string; ts?: number };
+      if (!parsed.session_id) continue;
+      const existing = bySession.get(parsed.session_id) ?? {};
+      if (parsed.text) existing.text = parsed.text;
+      if (parsed.ts) existing.ts = Math.max(existing.ts ?? 0, parsed.ts);
+      bySession.set(parsed.session_id, existing);
+    } catch {
+      continue;
+    }
+  }
+
+  for (const [sessionId, entry] of bySession) {
+    const ts = (entry.ts ?? 0) * 1000;
+    if (ts > cutoff) {
+      results.push({
+        sessionId,
+        title: entry.text?.slice(0, 120) ?? 'Codex session',
+        summary: entry.text?.slice(0, 200),
+        updatedAt: new Date(ts).toISOString(),
+      });
+    }
+  }
+
+  return results.sort((a, b) => {
+    const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+    const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+    return bTime - aTime;
+  });
+}
+
 function extractSessionId(output: string): string | undefined {
   try {
     const parsed = JSON.parse(output);
@@ -400,6 +529,7 @@ export async function runHeartbeat(options: {
   onAction?: (sessionId: string, action: string) => void;
   autoResume?: boolean;
   maxResumes?: number;
+  extractSessionInsights?: boolean;
 }): Promise<HeartbeatResult> {
   const result: HeartbeatResult = {
     checked: 0,
@@ -408,6 +538,12 @@ export async function runHeartbeat(options: {
     discoveries: [],
     actions: [],
   };
+
+  // ── Extract insights from recent harness sessions ────────────────
+  if (options.extractSessionInsights !== false) {
+    const insights = await extractRecentSessionInsights(options.repoPaths);
+    result.discoveries.push(...insights);
+  }
 
   // Discover what's active across all repos
   const discovered = await discoverActiveSessions(options.repoPaths);

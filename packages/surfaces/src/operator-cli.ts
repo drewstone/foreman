@@ -153,7 +153,7 @@ async function main(): Promise<void> {
     const claudeMd = await generateClaudeMd({
       repoPath: session.repoPath,
       session,
-      memory: memory as Record<string, unknown> | undefined,
+      memory: memory as unknown as Record<string, unknown> | undefined,
     });
 
     if (args.verbose) {
