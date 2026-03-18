@@ -8,6 +8,7 @@
  *   npm run foreman -- --fix-ci      — auto-fix all failing CI
  */
 
+import { extractDeepSessionInsights } from './session-insights.js';
 import {
   discoverActiveSessions,
   formatSessionSummary,
@@ -150,10 +151,26 @@ async function main(): Promise<void> {
       .then((s) => s.getEnvironmentMemory(session.repoPath))
       .catch(() => null);
 
+    // Extract session insights for this repo
+    const insights = await extractDeepSessionInsights({
+      repoPaths: [session.repoPath],
+      hoursBack: 168, // 7 days
+      maxSessionsPerRepo: 5,
+    });
+    const repoInsight = insights.repoActivity.find(
+      (a) => session.repoPath.endsWith(a.repo),
+    );
+
     const claudeMd = await generateClaudeMd({
       repoPath: session.repoPath,
       session,
       memory: memory as unknown as Record<string, unknown> | undefined,
+      sessionInsights: repoInsight ? {
+        commonCommands: repoInsight.commonCommands,
+        commonFiles: repoInsight.commonFiles,
+        suggestedRules: insights.suggestedClaudeMdRules,
+        recentGoals: repoInsight.inferredGoals,
+      } : undefined,
     });
 
     if (args.verbose) {

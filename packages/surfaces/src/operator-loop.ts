@@ -247,8 +247,14 @@ export async function generateClaudeMd(options: {
   session: ManagedSession;
   memory?: Record<string, unknown>;
   ciFailures?: string[];
+  sessionInsights?: {
+    commonCommands?: string[];
+    commonFiles?: string[];
+    suggestedRules?: string[];
+    recentGoals?: string[];
+  };
 }): Promise<string> {
-  const { repoPath, session, memory, ciFailures } = options;
+  const { repoPath, session, memory, ciFailures, sessionInsights } = options;
 
   // Read existing CLAUDE.md if present
   let existingClaudeMd = '';
@@ -265,7 +271,7 @@ export async function generateClaudeMd(options: {
 
   // Add Foreman-generated context
   sections.push('');
-  sections.push('## Foreman Context (auto-generated, do not edit manually)');
+  sections.push('## Foreman Context (auto-generated)');
   sections.push('');
   sections.push(`**Current goal:** ${session.goal}`);
   sections.push(`**Branch:** ${session.branch}`);
@@ -284,11 +290,20 @@ export async function generateClaudeMd(options: {
   const ciReqs = facts.filter((f: string) => f.startsWith('ci-requirement:'));
   const checkCmds = facts.filter((f: string) => f.startsWith('check-command:'));
 
-  if (checkCmds.length > 0) {
+  // Session insight-derived instructions
+  const insightCommands = (sessionInsights?.commonCommands ?? [])
+    .filter((cmd) => /^(cargo|npm|pnpm|yarn|forge|make)\s/.test(cmd));
+  const allCheckCmds = [...new Set([
+    ...checkCmds.map((c) => c.replace('check-command: ', '')),
+    ...insightCommands,
+  ])];
+
+  if (allCheckCmds.length > 0) {
     sections.push('');
-    sections.push('### Required checks (from prior runs)');
-    for (const cmd of checkCmds) {
-      sections.push(`- \`${cmd.replace('check-command: ', '')}\``);
+    sections.push('### Required checks');
+    sections.push('Run ALL of these before declaring done:');
+    for (const cmd of allCheckCmds) {
+      sections.push(`- \`${cmd}\``);
     }
   }
 
@@ -300,6 +315,38 @@ export async function generateClaudeMd(options: {
     }
     for (const failure of ciFailures ?? []) {
       sections.push(`- ${failure}`);
+    }
+  }
+
+  // Key files from session insights — front-load in context
+  const keyFiles = sessionInsights?.commonFiles?.slice(0, 5) ?? [];
+  if (keyFiles.length > 0) {
+    sections.push('');
+    sections.push('### Key files (read first)');
+    sections.push('The operator frequently starts by reading these files:');
+    for (const file of keyFiles) {
+      sections.push(`- \`${file}\``);
+    }
+  }
+
+  // Recent goals — show what's been worked on
+  const recentGoals = sessionInsights?.recentGoals?.slice(0, 3) ?? [];
+  if (recentGoals.length > 0) {
+    sections.push('');
+    sections.push('### Recent work context');
+    for (const goal of recentGoals) {
+      sections.push(`- ${goal}`);
+    }
+  }
+
+  // Operator-learned rules from session patterns
+  const rules = (sessionInsights?.suggestedRules ?? [])
+    .filter((r) => !r.includes('git diff') && !r.includes('git log') && !r.includes('git status'));
+  if (rules.length > 0) {
+    sections.push('');
+    sections.push('### Learned rules (from operator behavior)');
+    for (const rule of rules.slice(0, 5)) {
+      sections.push(`- ${rule}`);
     }
   }
 
