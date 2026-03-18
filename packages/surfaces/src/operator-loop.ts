@@ -406,22 +406,63 @@ export async function spawnSession(options: {
 
 // ─── Session Insight Extraction ──────────────────────────────────────
 
-async function extractRecentSessionInsights(repoPaths: string[]): Promise<string[]> {
+async function extractRecentSessionInsights(
+  repoPaths: string[],
+  state?: OperatorState,
+): Promise<string[]> {
   const insights: string[] = [];
   const repoSet = new Set(repoPaths.map((p) => resolve(p)));
 
-  // Scan Claude Code sessions from the last 24 hours
-  const claudeSessions = await scanRecentClaudeSessions(24);
+  // Scan Claude Code sessions from the last 48 hours
+  const claudeSessions = await scanRecentClaudeSessions(48);
   for (const session of claudeSessions) {
-    if (session.cwd && repoSet.has(resolve(session.cwd))) {
-      insights.push(`Recent Claude session on ${session.cwd.split('/').pop()}: ${session.summary ?? session.title}`);
+    const cwdResolved = session.cwd ? resolve(session.cwd) : '';
+    const matchesRepo = cwdResolved && repoSet.has(cwdResolved);
+    if (!matchesRepo) continue;
+
+    const repoName = session.cwd?.split('/').pop() ?? 'unknown';
+    const branchInfo = session.branch ? ` (${session.branch})` : '';
+    insights.push(`Recent Claude session on ${repoName}${branchInfo}: ${session.summary ?? session.title}`);
+
+    // Cross-reference: link Claude session to discovered branch
+    if (state && session.branch) {
+      const matchingSession = state.sessions.find(
+        (s) => s.repoPath === cwdResolved && s.branch === session.branch,
+      );
+      if (matchingSession) {
+        matchingSession.sessionId = session.sessionId;
+        matchingSession.metadata = {
+          ...matchingSession.metadata,
+          claudeSessionId: session.sessionId,
+          lastClaudeActivity: session.updatedAt ?? '',
+        };
+        if (session.firstPrompt) {
+          matchingSession.metadata.firstPrompt = session.firstPrompt.slice(0, 200);
+        }
+      }
     }
   }
 
-  // Scan Codex sessions
-  const codexSessions = await scanRecentCodexSessions(24);
+  // Scan Codex sessions from the last 48 hours
+  const codexSessions = await scanRecentCodexSessions(48);
   for (const session of codexSessions) {
     insights.push(`Recent Codex session: ${session.summary ?? session.title}`);
+  }
+
+  // Surface sessions with no recent Claude activity
+  if (state) {
+    const activeBranches = state.sessions.filter(
+      (s) => s.status === 'active' || s.status === 'waiting',
+    );
+    const branchesWithoutSessions = activeBranches.filter(
+      (s) => !s.metadata?.claudeSessionId,
+    );
+    if (branchesWithoutSessions.length > 0 && claudeSessions.length > 0) {
+      const count = Math.min(branchesWithoutSessions.length, 3);
+      insights.push(
+        `${count} active branch(es) have no recent Claude session — may need attention`,
+      );
+    }
   }
 
   return insights;
@@ -433,6 +474,8 @@ interface SessionScanResult {
   summary?: string;
   cwd?: string;
   updatedAt?: string;
+  branch?: string;
+  firstPrompt?: string;
 }
 
 async function scanRecentClaudeSessions(hoursBack: number): Promise<SessionScanResult[]> {
@@ -451,55 +494,72 @@ async function scanRecentClaudeSessions(hoursBack: number): Promise<SessionScanR
   }
 
   for (const dir of projectDirs) {
+    // Strategy 1: Check sessions-index.json for metadata
+    const indexData = new Map<string, {
+      summary?: string;
+      projectPath?: string;
+      gitBranch?: string;
+      fileMtime?: number;
+      firstPrompt?: string;
+    }>();
+
     try {
-      const indexPath = join(dir, 'sessions-index.json');
-      const parsed = JSON.parse(await readFile(indexPath, 'utf8')) as {
-        entries?: Array<{
-          sessionId?: string;
-          summary?: string;
-          projectPath?: string;
-          modified?: string;
-          fileMtime?: number;
-          fullPath?: string;
-        }>;
+      const parsed = JSON.parse(await readFile(join(dir, 'sessions-index.json'), 'utf8')) as {
+        entries?: Array<Record<string, unknown>>;
       };
-
       for (const entry of parsed.entries ?? []) {
-        // Try multiple sources for the timestamp: fileMtime, modified field, actual file mtime
-        let mtime = entry.fileMtime ?? (entry.modified ? new Date(entry.modified).getTime() : 0);
-        if (!mtime && entry.fullPath) {
-          try {
-            const fileStat = await stat(entry.fullPath);
-            mtime = fileStat.mtimeMs;
-          } catch { /* file may not exist */ }
-        }
-        if (!mtime && entry.sessionId) {
-          // Try to find the JSONL file by session ID in the project directory
-          const sessionDir = join(dir, entry.sessionId);
-          try {
-            const sessionFiles = await readdir(sessionDir);
-            for (const sf of sessionFiles) {
-              if (sf.endsWith('.jsonl')) {
-                const fileStat = await stat(join(sessionDir, sf));
-                mtime = Math.max(mtime, fileStat.mtimeMs);
-              }
-            }
-          } catch { /* no session dir */ }
-        }
-
-        if (mtime > cutoff && entry.sessionId) {
-          results.push({
-            sessionId: entry.sessionId,
-            title: entry.summary ?? 'Claude session',
-            summary: entry.summary,
-            cwd: entry.projectPath,
-            updatedAt: new Date(mtime).toISOString(),
+        const sid = entry.sessionId as string | undefined;
+        if (sid) {
+          indexData.set(sid, {
+            summary: entry.summary as string | undefined,
+            projectPath: entry.projectPath as string | undefined,
+            gitBranch: entry.gitBranch as string | undefined,
+            fileMtime: entry.fileMtime ? Number(entry.fileMtime) : undefined,
+            firstPrompt: entry.firstPrompt as string | undefined,
           });
         }
       }
-    } catch {
-      continue;
-    }
+    } catch { /* no index */ }
+
+    // Strategy 2: Find actual JSONL files modified recently (the source of truth)
+    try {
+      const dirEntries = await readdir(dir, { withFileTypes: true });
+      for (const entry of dirEntries) {
+        if (!entry.name.endsWith('.jsonl')) continue;
+        const sessionId = entry.name.replace('.jsonl', '');
+        const filePath = join(dir, entry.name);
+
+        let mtime: number;
+        try {
+          const fileStat = await stat(filePath);
+          mtime = fileStat.mtimeMs;
+        } catch {
+          continue;
+        }
+
+        if (mtime < cutoff) continue;
+
+        const indexed = indexData.get(sessionId);
+        const projectName = dir.split('/').pop()?.replace(/^-home-drew-code-/, '') ?? '';
+        const inferredCwd = indexed?.projectPath ?? `/home/drew/code/${projectName}`;
+
+        // Extract first user message from JSONL for context (read first 5 lines only)
+        let firstPrompt = indexed?.firstPrompt;
+        if (!firstPrompt || firstPrompt === 'No prompt') {
+          firstPrompt = await extractFirstPrompt(filePath);
+        }
+
+        results.push({
+          sessionId,
+          title: indexed?.summary ?? firstPrompt?.slice(0, 120) ?? `Claude session on ${projectName}`,
+          summary: indexed?.summary,
+          cwd: inferredCwd,
+          updatedAt: new Date(mtime).toISOString(),
+          branch: indexed?.gitBranch,
+          firstPrompt,
+        });
+      }
+    } catch { /* can't read dir */ }
   }
 
   return results.sort((a, b) => {
@@ -507,6 +567,26 @@ async function scanRecentClaudeSessions(hoursBack: number): Promise<SessionScanR
     const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
     return bTime - aTime;
   });
+}
+
+async function extractFirstPrompt(jsonlPath: string): Promise<string | undefined> {
+  try {
+    const content = await readFile(jsonlPath, 'utf8');
+    const lines = content.split('\n').slice(0, 20);
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line) as Record<string, unknown>;
+        if (entry.type === 'user') {
+          const msg = entry.message as { content?: string } | undefined;
+          if (typeof msg?.content === 'string' && msg.content.trim()) {
+            return msg.content.trim().slice(0, 200);
+          }
+        }
+      } catch { continue; }
+    }
+  } catch { /* can't read file */ }
+  return undefined;
 }
 
 async function scanRecentCodexSessions(hoursBack: number): Promise<SessionScanResult[]> {
@@ -586,7 +666,7 @@ export async function runHeartbeat(options: {
 
   // ── Extract insights from recent harness sessions ────────────────
   if (options.extractSessionInsights !== false) {
-    const insights = await extractRecentSessionInsights(options.repoPaths);
+    const insights = await extractRecentSessionInsights(options.repoPaths, options.state);
     result.discoveries.push(...insights);
   }
 
