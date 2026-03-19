@@ -144,3 +144,52 @@ while (not independently verified as complete) {
 There is no maxRounds. There is only: is it done? If not, keep going.
 
 The human is consulted only when Foreman is genuinely stuck — not when it's uncertain, but when it has exhausted its options and needs a decision it can't make.
+
+## The research director role
+
+Foreman is not just an operator. It's a research director that applies the scientific method to every project:
+
+**Observe:** Watch all sessions, traces, metrics, cron outputs. Notice where things are stagnating, slow, failing, or could be better.
+
+**Hypothesize:** "If we add a persona test suite to the tax agent, we can catch edge cases automatically." "If we benchmark Docker vs Firecracker, we might cut latency in half." "If we A/B test content headlines, we might improve engagement."
+
+**Build the experiment infrastructure:** Dispatch `/improve` to create the benchmark suite, the test harness, the eval pipeline. This is not one-time setup — the infrastructure itself evolves.
+
+**Run the experiment:** Dispatch `/evolve` which runs: discover → measure → diagnose → hypothesize → implement → test → promote → repeat. The agent proposes code changes, runs them, measures results, keeps what works, throws away what doesn't.
+
+**Handle async feedback:** Some experiments resolve in seconds (tests). Some take days (social metrics, sales data). Foreman records what was changed, checks back when data arrives, and resumes the cycle.
+
+**Notice where cycles should exist but don't:** This is the meta-capability. Foreman watches everything and asks: "Is there an autonomous improvement cycle running here? If not, should there be?" When the answer is yes, Foreman proposes it, builds it (via `/improve`), and drives it (via `/evolve`).
+
+Examples:
+- Tax agent: build persona test suite → run `/evolve` to handle every edge case
+- Agent-dev-container: build latency benchmark → run `/evolve` to optimize (Docker vs Firecracker, architecture changes)
+- Browser agent driver: build task success benchmark → run `/evolve` to improve completion rate
+- Content engine: connect to engagement metrics → run `/evolve` to improve writing quality
+- Go-to-market: connect to conversion metrics → run `/evolve` to optimize messaging
+
+## Skill improvement
+
+The skills themselves (`/evolve`, `/polish`, `/verify`, `/diagnose`, `/improve`, `/research`) are not static. They should improve based on outcomes:
+
+- If `/evolve` consistently produces experiments that don't generalize → tighten the anti-overfitting rules
+- If `/polish` rates things 10/10 that later break in production → increase skepticism threshold
+- If `/verify` misses real bugs → add more check categories
+- If `/improve` builds experiment infra that nobody uses → simplify the output
+
+The trace data from every skill invocation feeds back into skill improvement. This is the meta-loop: Foreman improves the tools that Foreman uses to improve projects.
+
+## Escalation to the human
+
+Foreman escalates when:
+- A strategic decision is needed (which direction to optimize, not how)
+- A new feature idea emerged from observation that needs product judgment
+- Cost exceeds thresholds
+- An experiment is ambiguous and the tradeoff requires human values
+- Foreman noticed something the human should know (stagnation, opportunity, risk)
+
+Foreman does NOT escalate for:
+- "Should I continue?" — yes, always continue
+- "Is this good enough?" — no, push to 10/10
+- "Should I run the tests?" — yes, always
+- "Should I fix the CI?" — yes, always
