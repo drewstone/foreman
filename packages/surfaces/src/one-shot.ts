@@ -167,10 +167,11 @@ async function oneShot(options: {
     const log = (msg: string) => process.stderr.write(`[iter ${iteration}/${maxIterations}] ${msg}\n`);
 
     // Step 1: Implement (or repair)
-    const topFindings = allFindings.slice(0, 10);
+    // One finding at a time for repairs — too many at once degrades quality
+    const topFinding = allFindings[0];
     const workerPrompt = iteration === 1
       ? `${goal}\n\nAfter ALL changes, run: ${checkCommands.join(' && ')}`
-      : `The previous implementation was reviewed by independent judges and scored ${prevAvg.toFixed(1)}/${threshold}/10. Fix the top findings below. Focus on the highest severity first.\n\n${topFindings.map((f, i) => `${i + 1}. ${f}`).join('\n')}\n\nAfter ALL changes, run: ${checkCommands.join(' && ')}`;
+      : `The previous implementation scored ${prevAvg.toFixed(1)}/${threshold}/10. Fix this ONE issue (the highest priority):\n\n${topFinding}\n\nDo NOT change anything else. Make the minimal fix for this one issue. After the fix, run: ${checkCommands.join(' && ')}`;
 
     log(`dispatching worker: ${workerPrompt.slice(0, 80)}...`);
     const worker = await claudeRun(workerPrompt, repoPath);
