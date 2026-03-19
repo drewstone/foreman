@@ -362,6 +362,36 @@ export async function generateClaudeMd(options: {
     }
   }
 
+  // Skill recommendations based on repo type
+  const skillHints: string[] = [];
+  try {
+    const cargoContent = await readFile(join(repoPath, 'Cargo.toml'), 'utf8').catch(() => '');
+    const pkgContent = await readFile(join(repoPath, 'package.json'), 'utf8').catch(() => '');
+    const hasSolidity = await readdir(join(repoPath, 'contracts', 'src')).catch(() => []);
+
+    if (cargoContent.includes('blueprint-sdk')) {
+      skillHints.push('Use /tangle-blueprint-expert skill for blueprint architecture guidance');
+      skillHints.push('Use `cargo tangle` CLI for blueprint registration and testing');
+    }
+    if (cargoContent.includes('sandbox-runtime') || cargoContent.includes('ai-agent-sandbox')) {
+      skillHints.push('Use /sandbox-blueprint skill for container lifecycle and operator API patterns');
+    }
+    if (Array.isArray(hasSolidity) && hasSolidity.some((f: { name?: string } | string) => (typeof f === 'string' ? f : f.name ?? '').endsWith('.sol'))) {
+      skillHints.push('Use /solidity-auditor skill before finalizing contract changes');
+    }
+    if (pkgContent.includes('react') || pkgContent.includes('next')) {
+      skillHints.push('Use /vercel-react-best-practices skill for React/Next.js patterns');
+    }
+  } catch { /* best effort */ }
+
+  if (skillHints.length > 0) {
+    sections.push('');
+    sections.push('### Recommended skills');
+    for (const hint of skillHints) {
+      sections.push(`- ${hint}`);
+    }
+  }
+
   // Quality bar
   sections.push('');
   sections.push('### Completion standard');
