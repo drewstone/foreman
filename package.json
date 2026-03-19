@@ -18,6 +18,7 @@
     "check:sync": "tsx scripts/check-sync.ts",
     "test": "node --import tsx --test packages/*/src/*.test.ts",
     "foreman": "tsx packages/surfaces/src/operator-cli.ts",
+    "foreman:init": "tsx packages/surfaces/src/init-cli.ts init",
     "engineering": "tsx packages/surfaces/src/cli.ts",
     "benchmark-engineering": "tsx packages/surfaces/src/engineering-benchmark-cli.ts",
     "bootstrap-profile": "tsx packages/surfaces/src/profile-bootstrap-cli.ts",
