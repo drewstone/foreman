@@ -100,6 +100,8 @@ Do not ship heuristic shortcuts for tasks that are central to the product's clai
 
 ## Execution stance
 
+Never stop. Never ask "should I continue?" — yes, always. Run /evolve cycles until the system works end-to-end. If something fails, diagnose it, fix it, and re-run. If a run dies, figure out why and prevent it. If a reviewer can't verify, fix the reviewer. Keep going until the task is independently verified as complete. The only reason to stop is genuine ambiguity requiring a strategic decision.
+
 Take the lead.
 
 When working in this repo:
