@@ -67,21 +67,32 @@ const DEFAULT_CONFIG = {
 async function main(): Promise<void> {
   const command = process.argv[2];
 
+  const scriptDir = new URL('.', import.meta.url).pathname;
+  const repoRoot = resolve(scriptDir, '../../..');
+
   if (command === 'init') {
     await init();
   } else if (command === 'status') {
-    execSync(`npx tsx ${join(__dirname, 'operator-cli.ts')}`, { stdio: 'inherit', cwd: resolve(__dirname, '../../..') });
+    execSync(`node --import tsx packages/surfaces/src/operator-cli.ts`, { stdio: 'inherit', cwd: repoRoot });
   } else if (command === 'heartbeat') {
-    execSync(`npx tsx ${join(__dirname, 'operator-cli.ts')} --heartbeat --dry-run -v`, { stdio: 'inherit', cwd: resolve(__dirname, '../../..') });
+    execSync(`node --import tsx packages/surfaces/src/operator-cli.ts --heartbeat --dry-run -v`, { stdio: 'inherit', cwd: repoRoot });
+  } else if (command === 'resume') {
+    const target = process.argv[3] ?? '';
+    execSync(`node --import tsx packages/surfaces/src/operator-cli.ts --resume "${target}" -v`, { stdio: 'inherit', cwd: repoRoot });
+  } else if (command === 'fix-ci') {
+    execSync(`node --import tsx packages/surfaces/src/operator-cli.ts --fix-ci -v`, { stdio: 'inherit', cwd: repoRoot });
   } else {
     console.log(`Foreman — autonomous engineering operator
 
 Commands:
-  foreman init          Set up a new Foreman instance
-  foreman status        Show session portfolio
-  foreman heartbeat     Run heartbeat scan
+  foreman init              Set up ~/.foreman/ (soul, config, state)
+  foreman status            Show session portfolio across repos
+  foreman heartbeat         Scan repos, check CI, trace results
+  foreman resume <id>       Resume a session with Foreman context
+  foreman fix-ci            Auto-fix all sessions with failing CI
 
 Config: ${FOREMAN_HOME}/config.json
+Soul:   ${FOREMAN_HOME}/soul.md
 `);
   }
 }
