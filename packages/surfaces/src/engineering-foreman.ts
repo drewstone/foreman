@@ -865,7 +865,11 @@ function decideStop(input: {
       reason: input.validation.summary,
     };
   }
-  if (input.validation.recommendation === 'escalate' && input.escalationMode !== 'auto-repair') {
+  // If deterministic checks failed, always repair — these are fixable
+  const hasDeterministicFailure = input.validation.findings.some(
+    (f) => f.severity === 'high' && f.title.startsWith('Check failed:'),
+  );
+  if (input.validation.recommendation === 'escalate' && !hasDeterministicFailure && input.escalationMode !== 'auto-repair') {
     return {
       done: true,
       status: 'blocked',
