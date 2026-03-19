@@ -160,14 +160,17 @@ async function oneShot(options: {
   await mkdir(traceDir, { recursive: true });
 
   let allFindings: string[] = [];
+  let prevAvg = 0;
+  const prevScores: number[] = [];
 
   for (let iteration = 1; iteration <= maxIterations; iteration++) {
     const log = (msg: string) => process.stderr.write(`[iter ${iteration}/${maxIterations}] ${msg}\n`);
 
     // Step 1: Implement (or repair)
+    const topFindings = allFindings.slice(0, 10);
     const workerPrompt = iteration === 1
-      ? goal
-      : `The previous implementation was reviewed by independent judges and scored below ${threshold}/10. Fix ALL of these findings:\n\n${allFindings.map((f, i) => `${i + 1}. ${f}`).join('\n')}\n\nThen run all checks and verify.`;
+      ? `${goal}\n\nAfter ALL changes, run: ${checkCommands.join(' && ')}`
+      : `The previous implementation was reviewed by independent judges and scored ${prevAvg.toFixed(1)}/${threshold}/10. Fix the top findings below. Focus on the highest severity first.\n\n${topFindings.map((f, i) => `${i + 1}. ${f}`).join('\n')}\n\nAfter ALL changes, run: ${checkCommands.join(' && ')}`;
 
     log(`dispatching worker: ${workerPrompt.slice(0, 80)}...`);
     const worker = await claudeRun(workerPrompt, repoPath);
@@ -201,6 +204,7 @@ async function oneShot(options: {
     }
 
     const avgScore = Object.values(scores).reduce((a, b) => a + b, 0) / Object.values(scores).length;
+    prevAvg = avgScore;
     log(`scores: ${Object.entries(scores).map(([k, v]) => `${k}=${v}`).join(', ')} | avg=${avgScore.toFixed(1)}`);
 
     // Save iteration trace
@@ -219,10 +223,20 @@ async function oneShot(options: {
       return { status: 'complete', iterations: iteration, finalScores: scores, avgScore, allFindings: [] };
     }
 
-    log(`avg ${avgScore.toFixed(1)} < ${threshold} — repairing with ${allFindings.length} findings`);
+    // Stall detection: if score didn't improve from last judged iteration, stop
+    if (iteration > 2 && prevScores.length >= 2) {
+      const last2 = prevScores.slice(-2);
+      if (last2.every((s) => Math.abs(s - avgScore) < 0.5)) {
+        log(`stalled — score hasn't improved in 2 cycles (${last2.map((s) => s.toFixed(1)).join(', ')}, ${avgScore.toFixed(1)})`);
+        return { status: 'max_iterations', iterations: iteration, finalScores: scores, avgScore, allFindings };
+      }
+    }
+    prevScores.push(avgScore);
+
+    log(`avg ${avgScore.toFixed(1)} < ${threshold} — repairing with ${allFindings.length} findings (top 10 sent to worker)`);
   }
 
-  return { status: 'max_iterations', iterations: maxIterations, finalScores: {}, avgScore: 0, allFindings };
+  return { status: 'max_iterations', iterations: maxIterations, finalScores: {}, avgScore: prevAvg, allFindings };
 }
 
 // ── CLI ──────────────────────────────────────────────────────────────
@@ -232,7 +246,7 @@ async function main(): Promise<void> {
   let repoPath = '';
   let goal = '';
   let threshold = 9.5;
-  let maxIterations = 5;
+  let maxIterations = 20;
   const checkCommands: string[] = [];
 
   for (let i = 0; i < argv.length; i++) {
