@@ -237,7 +237,17 @@ async function main(): Promise<void> {
       }
     : undefined;
   const result = await runEngineeringForeman({ ...args, onEvent });
-  console.log(JSON.stringify(result, null, 2));
+  const output = JSON.stringify(result, null, 2);
+
+  // Write to file if --output specified, otherwise stdout
+  const outputIdx = process.argv.indexOf('--output');
+  if (outputIdx >= 0 && process.argv[outputIdx + 1]) {
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(process.argv[outputIdx + 1]!, output + '\n', 'utf8');
+    process.stderr.write(`Result written to ${process.argv[outputIdx + 1]}\n`);
+  } else {
+    console.log(output);
+  }
 }
 
 main().catch((error) => {

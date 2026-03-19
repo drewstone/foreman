@@ -858,6 +858,23 @@ function decideStop(input: {
       reason: input.validation.summary,
     };
   }
+  // If all deterministic checks pass and only judge disagrees, complete anyway
+  const allDeterministicPass = input.validation.scores?.deterministic === 1;
+  const onlyJudgeIssues = input.validation.findings.every(
+    (f) => !f.title.startsWith('Check failed:'),
+  );
+  if (allDeterministicPass && onlyJudgeIssues && input.validation.recommendation !== 'abort') {
+    const judgeFindings = input.validation.findings.filter(
+      (f) => f.severity === 'high' || f.severity === 'critical',
+    );
+    if (judgeFindings.length === 0) {
+      return {
+        done: true,
+        status: 'completed',
+        reason: `Deterministic checks pass. Judge findings are low severity only. ${input.validation.summary}`,
+      };
+    }
+  }
   if (input.validation.recommendation === 'abort') {
     return {
       done: true,
