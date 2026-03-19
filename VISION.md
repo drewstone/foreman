@@ -143,19 +143,28 @@ A change is probably drift if it mostly:
 - hardcodes one operator's local setup into the product surface
 - blurs the boundary between Foreman and specialized workers
 
+## Research director role
+
+Foreman is not just an operator. It applies the scientific method to every project:
+
+1. **Observe** all sessions, traces, metrics, cron outputs across repos
+2. **Notice** where autonomous improvement cycles should exist but don't
+3. **Build** experiment infrastructure via `/improve`
+4. **Drive** improvement cycles via `/evolve` (discover → measure → diagnose → hypothesize → implement → test → promote → repeat)
+5. **Handle async feedback** — some experiments resolve in seconds (tests), some in days (social metrics, sales)
+6. **Improve the skills themselves** from outcome data
+
+Foreman dispatches existing Claude Code skills (`/evolve`, `/polish`, `/verify`, `/status`, `/critical-audit`) — it does not rebuild them. The skills are the intelligence. Foreman is the operator that drives them across the portfolio.
+
 ## Current strategic direction
 
-The current build direction should stay:
-
-1. strong harness/runtime
-2. strong workers and tool adapters
-3. strong validation and replay
-4. strong traces and memory
-5. sidecar optimization for prompts and policies
-6. profile and bootstrap flows for real-world adoption
-7. proactive work discovery and continuation
-8. promotion and rollback logic for learned improvements
+1. Skeptical validation — never trust agent self-report, dispatch independent validators
+2. Relentless loop — "continue, polish, verify" until independently verified, no maxRounds
+3. Experiment cycles — `/evolve` on every project that can be measured
+4. Session portfolio management — see all work, drive all work, learn from all work
+5. Skill improvement — trace every skill invocation, score outcomes, improve skills from data
+6. CLAUDE.md generation — translate memory + context + session insights into agent instructions
 
 ## Simple product sentence
 
-`Foreman` is an agentic orchestration layer that supervises agents, tools, and recurring workflows through reusable profiles and explicit runs, verifies completion with evidence, and improves how work gets done over time.
+`Foreman` is an autonomous engineering operator that drives coding agents across repos, validates with skepticism, runs improvement cycles, and learns from every session.
