@@ -209,7 +209,7 @@ async function getBranchesWithWork(repoPath: string): Promise<Array<{
           priority: isCurrent && currentHasUncommitted ? 8 : agePriority,
         };
       })
-      .filter((b) => b.name !== 'main' && b.name !== 'master' && b.daysOld < 30);
+      .filter((b) => b.name !== 'main' && b.name !== 'master' && (b.hasUncommitted || b.daysOld < 7));
   } catch {
     return [];
   }
