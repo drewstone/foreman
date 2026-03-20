@@ -625,25 +625,116 @@ import('./packages/surfaces/src/session-insights.ts').then(async ({ extractDeepS
     }
   })
 
+  // ── Memory nudge: post-session learning ─────────────────────────
+
+  pi.on('agent_end', async (event, ctx) => {
+    // This runs AFTER the auto-loop check (separate handler)
+    // Analyze the session for learnable patterns
+    const messages = event.messages ?? []
+    if (messages.length < 4) return // too short to learn from
+
+    // Extract what happened
+    const userMsgs: string[] = []
+    const toolNames = new Set<string>()
+    let hasError = false
+
+    for (const msg of messages) {
+      const m = msg as { role?: string; content?: unknown }
+      if (m.role === 'user' && typeof m.content === 'string') {
+        userMsgs.push(m.content.slice(0, 200))
+      }
+      if (m.role === 'assistant' && Array.isArray(m.content)) {
+        for (const block of m.content as Array<Record<string, unknown>>) {
+          if (block.type === 'tool_use' && typeof block.name === 'string') {
+            toolNames.add(block.name)
+          }
+        }
+      }
+      if (m.role === 'tool_result') {
+        const tr = m as { content?: unknown; is_error?: boolean }
+        if (tr.is_error) hasError = true
+      }
+    }
+
+    // Nudge conditions:
+    // 1. Complex session (5+ tool calls) — may have discovered a pattern
+    // 2. Error recovery — fixed something, worth remembering the fix
+    // 3. User correction — "no not that, do X instead"
+    const isComplex = toolNames.size >= 5
+    const hadCorrection = userMsgs.some((m) => {
+      const lower = m.toLowerCase()
+      return lower.includes('no ') || lower.includes('not that') ||
+        lower.includes('instead') || lower.includes('wrong') ||
+        lower.includes('don\'t') || lower.includes('stop')
+    })
+
+    if ((isComplex || (hasError && messages.length > 6) || hadCorrection) && ctx.hasUI) {
+      const nudgeMsg = isComplex
+        ? `[Foreman] Complex session (${toolNames.size} tools, ${messages.length} messages). Any patterns or fixes worth remembering for next time?`
+        : hadCorrection
+          ? `[Foreman] Noted a correction in this session. Should I save this preference for future sessions?`
+          : `[Foreman] Session involved error recovery. Should I save the fix as a repair recipe?`
+
+      ctx.ui.setStatus('foreman-nudge', nudgeMsg)
+      // Auto-clear after 30s
+      setTimeout(() => ctx.ui.setStatus('foreman-nudge', undefined), 30_000)
+    }
+  })
+
   // ── Inject context on session start ──────────────────────────────
 
-  pi.on('before_agent_start', async () => {
-    const state = loadState();
-    if (!state) return;
-    const sessions = (state.sessions ?? []) as Array<Record<string, unknown>>;
-    const blocked = sessions.filter((s) => s.status === 'blocked');
-    const active = sessions.filter((s) => s.status === 'active');
-    if (blocked.length > 0 || active.length > 0) {
+  pi.on('before_agent_start', async (event, ctx) => {
+    const state = loadState()
+    const lines: string[] = []
+
+    if (state) {
+      const sessions = (state.sessions ?? []) as Array<Record<string, unknown>>
+      const blocked = sessions.filter((s) => s.status === 'blocked')
+      const active = sessions.filter((s) => s.status === 'active')
+      if (blocked.length > 0 || active.length > 0) {
+        lines.push(`[Foreman] ${sessions.length} sessions tracked.${blocked.length > 0 ? ` ⚠ ${blocked.length} blocked.` : ''} ${active.length > 0 ? `${active.length} active.` : ''}`)
+      }
+    }
+
+    // Suggest relevant skills based on the user's prompt
+    const prompt = event.prompt?.toLowerCase() ?? ''
+    const skillSuggestions: string[] = []
+
+    if (prompt.includes('fix') || prompt.includes('ci') || prompt.includes('failing') || prompt.includes('broken')) {
+      skillSuggestions.push('/converge (iterative CI fix)', '/diagnose (root cause)')
+    }
+    if (prompt.includes('improve') || prompt.includes('better') || prompt.includes('optimize') || prompt.includes('evolve')) {
+      skillSuggestions.push('/evolve (measure→experiment→verify loop)', '/pursue (multi-stream orchestration)')
+    }
+    if (prompt.includes('review') || prompt.includes('audit') || prompt.includes('quality')) {
+      skillSuggestions.push('/critical-audit (parallel reviewers)', '/polish (relentless quality loop)')
+    }
+    if (prompt.includes('ship') || prompt.includes('deploy') || prompt.includes('push') || prompt.includes('pr')) {
+      skillSuggestions.push('/verify (completion check)', '/code-review')
+    }
+    if (prompt.includes('research') || prompt.includes('investigate') || prompt.includes('explore')) {
+      skillSuggestions.push('/research (hypothesis→experiment loop)')
+    }
+
+    if (skillSuggestions.length > 0) {
+      lines.push(`[Foreman] Relevant skills: ${skillSuggestions.join(', ')}`)
+    }
+
+    // Load operator profile for context
+    try {
+      const profilePath = join(FOREMAN_HOME, 'memory', 'user', 'operator.json')
+      const profile = JSON.parse(readFileSync(profilePath, 'utf8'))
+      if (profile.operatorPatterns?.length) {
+        lines.push(`[Foreman] Operator: ${profile.operatorPatterns.slice(0, 3).join('. ')}.`)
+      }
+    } catch { /* no profile */ }
+
+    if (lines.length > 0) {
       pi.sendMessage({
         customType: 'foreman-context',
-        content: [
-          `[Foreman] ${sessions.length} sessions tracked.`,
-          blocked.length > 0 ? `⚠ ${blocked.length} blocked` : '',
-          active.length > 0 ? `${active.length} active` : '',
-          'Use foreman_status for details.',
-        ].filter(Boolean).join(' '),
+        content: lines.join('\n'),
         display: false,
-      });
+      })
     }
   });
 }
