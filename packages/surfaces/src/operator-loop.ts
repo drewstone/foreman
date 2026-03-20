@@ -975,6 +975,34 @@ export async function runHeartbeat(options: {
     }
   }
 
+  // For multi-stream goals, suggest /pursue in the spawn goal
+  // This makes the spawned agent aware of the skill
+  for (const session of options.state.sessions) {
+    if (session.status !== 'active') continue
+    if (!session.goal) continue
+    const goalLower = session.goal.toLowerCase()
+    const isMultiStream = goalLower.includes('all ') || goalLower.includes('across ') ||
+      goalLower.includes('every ') || goalLower.includes('parallel')
+    if (isMultiStream && !session.metadata?.pursueHinted) {
+      session.metadata = session.metadata ?? {}
+      session.metadata.pursueHinted = 'true'
+      result.discoveries.push(
+        `Multi-stream goal detected on ${session.repoPath.split('/').pop()}/${session.branch}: consider /pursue for parallel orchestration`,
+      )
+    }
+  }
+
+  // Notify on significant actions
+  const significantActions = result.actions.filter((a) => a.result !== 'not-attempted')
+  if (significantActions.length > 0) {
+    try {
+      const { notifyHeartbeatAction } = await import('./notify.js');
+      for (const action of significantActions) {
+        await notifyHeartbeatAction(action);
+      }
+    } catch { /* notifications are best-effort */ }
+  }
+
   // Surface questions for ambiguous situations
   if (options.onQuestion) {
     const stale = options.state.sessions.filter((s) => s.status === 'stale');

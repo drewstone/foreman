@@ -96,13 +96,31 @@ export async function trackSkillPerformance(options?: {
         )
 
         const responseText = nearbyResponses.map((r) => r.message.content).join(' ').toLowerCase()
-        const succeeded = responseText.includes('pass') ||
-          responseText.includes('complete') ||
-          responseText.includes('success') ||
-          responseText.includes('9/10') ||
-          responseText.includes('10/10') ||
-          responseText.includes('merged') ||
-          responseText.includes('pushed')
+
+        // Positive signals (skill completed successfully)
+        const positiveSignals = [
+          'all tests pass', 'all checks pass', 'ci is green', 'ci green',
+          'pr created', 'pushed to', 'merged', 'committed',
+          '9/10', '10/10', '9.', '10.', 'score: 9', 'score: 10',
+          'complete', 'converged', 'promoted', 'verified',
+          'pass rate: 100', 'pass rate: 1.0',
+          'round complete', 'iteration complete', 'loop complete',
+        ]
+        // Negative signals (skill failed or was abandoned)
+        const negativeSignals = [
+          'failed', 'error:', 'panic', 'compilation error',
+          'giving up', 'cannot', 'unable to', 'stuck',
+          'max iterations', 'max rounds', 'timed out',
+          'abort', 'cancelled', 'score: 0', 'score: 1', 'score: 2',
+          '0/10', '1/10', '2/10', '3/10',
+        ]
+
+        const posCount = positiveSignals.filter((s) => responseText.includes(s)).length
+        const negCount = negativeSignals.filter((s) => responseText.includes(s)).length
+
+        // Classify: if more positive than negative signals, or no signals but agent ran long enough
+        const succeeded = posCount > negCount ||
+          (posCount === 0 && negCount === 0 && nearbyResponses.length >= 3)
 
         classified.push({
           skillName: skill,

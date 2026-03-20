@@ -22,6 +22,8 @@ console.log(repos.join(':'))
 
 export FOREMAN_REPOS="${CORE_REPOS}${DYNAMIC_REPOS:+:$DYNAMIC_REPOS}"
 export PATH="/home/drew/.nvm/versions/node/v24.13.0/bin:/home/drew/.local/bin:/home/drew/.cargo/bin:$PATH"
+export FOREMAN_TELEGRAM_BOT_TOKEN="8569647724:AAGCD5wdpaVuHos3oN0T8ur1csUWIXxoCvI"
+export FOREMAN_TELEGRAM_CHAT_ID="631795417"
 
 # --heartbeat enables auto-resume decisions
 # --max-resumes 1: at most one auto-resume per cycle (safety limit)

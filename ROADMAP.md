@@ -118,15 +118,28 @@ Started 2026-03-20. See `.foreman/rollout-tracker.md` for daily logs.
 - Judge traces: ~/.foreman/traces/judgments/
 - Nightly optimize: /tmp/foreman-nightly-optimize.log
 
-## Future — Phase 8
+## Completed — Phase 8: Notifications, Calibration, Integration
+
+- [x] Telegram notifications (heartbeat actions, daily reports, degradation alerts, promotions, CI failures)
+- [x] Slack webhook notifications (same events, via FOREMAN_SLACK_WEBHOOK)
+- [x] Generic webhook surface (POST JSON to FOREMAN_WEBHOOK_URL)
+- [x] Skill success classifier calibrated (positive/negative signal matching, not bare keyword)
+- [x] /pursue detection in heartbeat (multi-stream goals suggest /pursue skill)
+- [x] Skill-aware context injection in Pi (suggests relevant skills based on prompt)
+- [x] Variant generator (LLM proposes improved artifacts from judge feedback)
+- [x] Memory nudges in Pi extension (post-session learning prompts)
+- [x] Operator profile injection on session start
+- [x] All cron scripts send Telegram notifications
+
+## Future — Phase 9
 
 - [ ] Pi extension tested in real Pi session end-to-end
 - [ ] Golden suites from real traces for regression testing
-- [ ] AxLLM GEPA full integration (currently promotes but doesn't train new selectors)
-- [ ] Skill success classifier calibration (keyword matching → LLM classification)
-- [ ] Foreman invokes /pursue for multi-stream goal orchestration
+- [ ] AxLLM GEPA full training (not just selection — generate new prompt variants via optimization)
 - [ ] QMD available as MCP tool
-- [ ] Webhook/Slack surfaces for notifications
+- [ ] Foreman as a service (API + webhook receiver, not just cron)
+- [ ] Multi-user support (multiple operator profiles)
+- [ ] Cost budgets and alerting (per-repo, per-harness, per-day limits)
 
 ## What not to do
 

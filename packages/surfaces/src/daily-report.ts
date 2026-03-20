@@ -35,6 +35,7 @@ import { createClaudeProvider } from '@drew/foreman-providers'
 import { VersionedStore } from '@drew/foreman-core'
 import { loadSessionMetrics, aggregateMetrics, renderMetricsAggregate } from './session-metrics.js'
 import { trackSkillPerformance, detectDegradation, renderSkillPerformance } from './skill-tracker.js'
+import { notifyDailyReport, notifyDegradation } from './notify.js'
 
 const FOREMAN_HOME = process.env.FOREMAN_HOME ?? join(homedir(), '.foreman')
 const TRACES_DIR = join(FOREMAN_HOME, 'traces', 'heartbeats')
@@ -586,6 +587,14 @@ export async function generateDailyReport(date: string): Promise<string> {
   await mkdir(REPORTS_DIR, { recursive: true })
   const reportPath = join(REPORTS_DIR, `${date}.md`)
   await writeFile(reportPath, scored, 'utf8')
+
+  // Send notifications
+  try {
+    await notifyDailyReport(reportPath, {
+      deterministic: judgment.summary,
+      llm: llmJudgment ? `${llmJudgment.overallScore}/${llmJudgment.maxScore}` : undefined,
+    })
+  } catch { /* notifications best-effort */ }
 
   return reportPath
 }
