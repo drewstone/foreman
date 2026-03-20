@@ -4,7 +4,12 @@
   "private": true,
   "type": "module",
   "description": "Foreman evaluation contracts.",
-  "exports": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./foreman-judge": "./src/foreman-judge.ts",
+    "./llm-judge": "./src/llm-judge.ts",
+    "./eval-env": "./src/eval-env.ts"
+  },
   "types": "./src/index.ts",
   "scripts": {
     "check": "tsc --noEmit"

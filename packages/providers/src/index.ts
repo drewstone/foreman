@@ -189,12 +189,17 @@ export class CommandSessionDriver implements SessionDriver {
   }
 }
 
-export function createCodexProvider(id = 'codex'): TextProvider {
+export function createCodexProvider(id = 'codex', providerOptions?: { model?: string }): TextProvider {
   return {
     id,
     async run(prompt, options) {
       const execution = await runProviderCommand(
-        ['codex', 'exec', '--full-auto', '--json', ...(options?.cwd ? ['-C', options.cwd] : []), prompt],
+        [
+          'codex', 'exec', '--full-auto', '--json',
+          ...(providerOptions?.model ? ['--model', providerOptions.model] : []),
+          ...(options?.cwd ? ['-C', options.cwd] : []),
+          prompt,
+        ],
         options,
       );
       return normalizeCodexExecution(execution);
@@ -202,7 +207,7 @@ export function createCodexProvider(id = 'codex'): TextProvider {
   };
 }
 
-export function createClaudeProvider(id = 'claude'): TextProvider {
+export function createClaudeProvider(id = 'claude', providerOptions?: { model?: string }): TextProvider {
   return {
     id,
     async run(prompt, options) {
@@ -211,8 +216,8 @@ export function createClaudeProvider(id = 'claude'): TextProvider {
           'claude',
           '--dangerously-skip-permissions',
           '-p',
-          '--output-format',
-          'json',
+          '--output-format', 'json',
+          ...(providerOptions?.model ? ['--model', providerOptions.model] : []),
           prompt,
         ],
         options,

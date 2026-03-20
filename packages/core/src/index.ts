@@ -41,3 +41,10 @@ export {
   stringValue,
   truncate,
 } from './utils.js';
+
+export {
+  VersionedStore,
+  type ArtifactVersion,
+  type ArtifactManifest,
+  type PutResult,
+} from './versioned-store.js';

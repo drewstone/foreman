@@ -406,6 +406,15 @@ export async function generateClaudeMd(options: {
 
 // ─── Session Spawning ────────────────────────────────────────────────
 
+export interface SpawnResult {
+  sessionId: string;
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+  metrics?: import('./session-metrics.js').SessionMetrics;
+}
+
 export async function spawnSession(options: {
   repoPath: string;
   goal: string;
@@ -414,13 +423,7 @@ export async function spawnSession(options: {
   claudeMd?: string;
   provider?: 'claude' | 'codex';
   timeoutMs?: number;
-}): Promise<{
-  sessionId: string;
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-  durationMs: number;
-}> {
+}): Promise<SpawnResult> {
   const provider = options.provider ?? 'claude';
   const startedAt = Date.now();
 
@@ -443,21 +446,44 @@ export async function spawnSession(options: {
         timeout: options.timeoutMs ?? 15 * 60 * 1000,
         env: process.env,
       });
+      const dm = Date.now() - startedAt;
+      const { parseClaudeMetrics, enrichMetrics, persistSessionMetrics } = await import('./session-metrics.js');
+      let metrics = parseClaudeMetrics(stdout, {
+        repo: options.repoPath.split('/').pop() ?? '',
+        goal: options.goal,
+        durationMs: dm,
+        exitCode: 0,
+      });
+      metrics = await enrichMetrics(metrics, stdout);
+      await persistSessionMetrics(metrics).catch(() => {});
       return {
-        sessionId: options.sessionId ?? extractSessionId(stdout) ?? 'unknown',
+        sessionId: metrics.sessionId !== 'unknown' ? metrics.sessionId : (options.sessionId ?? extractSessionId(stdout) ?? 'unknown'),
         exitCode: 0,
         stdout,
         stderr,
-        durationMs: Date.now() - startedAt,
+        durationMs: dm,
+        metrics,
       };
     } catch (error) {
       const err = error as { stdout?: string; stderr?: string; code?: number };
+      const dm = Date.now() - startedAt;
+      const exitCode = typeof err.code === 'number' ? err.code : 1;
+      try {
+        const { parseClaudeMetrics, persistSessionMetrics } = await import('./session-metrics.js');
+        const metrics = parseClaudeMetrics(err.stdout ?? '', {
+          repo: options.repoPath.split('/').pop() ?? '',
+          goal: options.goal,
+          durationMs: dm,
+          exitCode,
+        });
+        await persistSessionMetrics(metrics).catch(() => {});
+      } catch { /* metrics extraction failed — non-fatal */ }
       return {
         sessionId: options.sessionId ?? 'unknown',
-        exitCode: typeof err.code === 'number' ? err.code : 1,
+        exitCode,
         stdout: err.stdout ?? '',
         stderr: err.stderr ?? String(error),
-        durationMs: Date.now() - startedAt,
+        durationMs: dm,
       };
     }
   }
@@ -474,21 +500,43 @@ export async function spawnSession(options: {
       timeout: options.timeoutMs ?? 15 * 60 * 1000,
       env: process.env,
     });
+    const dm = Date.now() - startedAt;
+    const { parseCodexMetrics, persistSessionMetrics } = await import('./session-metrics.js');
+    const metrics = parseCodexMetrics(stdout, {
+      repo: options.repoPath.split('/').pop() ?? '',
+      goal: options.goal,
+      durationMs: dm,
+      exitCode: 0,
+    });
+    await persistSessionMetrics(metrics).catch(() => {});
     return {
-      sessionId: options.sessionId ?? 'unknown',
+      sessionId: metrics.sessionId !== 'unknown' ? metrics.sessionId : (options.sessionId ?? 'unknown'),
       exitCode: 0,
       stdout,
       stderr,
-      durationMs: Date.now() - startedAt,
+      durationMs: dm,
+      metrics,
     };
   } catch (error) {
     const err = error as { stdout?: string; stderr?: string; code?: number };
+    const dm = Date.now() - startedAt;
+    const exitCode = typeof err.code === 'number' ? err.code : 1;
+    try {
+      const { parseCodexMetrics, persistSessionMetrics } = await import('./session-metrics.js');
+      const metrics = parseCodexMetrics(err.stdout ?? '', {
+        repo: options.repoPath.split('/').pop() ?? '',
+        goal: options.goal,
+        durationMs: dm,
+        exitCode,
+      });
+      await persistSessionMetrics(metrics).catch(() => {});
+    } catch { /* non-fatal */ }
     return {
       sessionId: options.sessionId ?? 'unknown',
-      exitCode: typeof err.code === 'number' ? err.code : 1,
+      exitCode,
       stdout: err.stdout ?? '',
       stderr: err.stderr ?? String(error),
-      durationMs: Date.now() - startedAt,
+      durationMs: dm,
     };
   }
 }
@@ -850,6 +898,29 @@ export async function runHeartbeat(options: {
             matchedRecipe = recipe.pattern;
           }
         }
+
+        // If no recipe found, try to diagnose from CI logs and create one
+        if (confidence === 0 && session.branch) {
+          try {
+            const { diagnoseAndPersistRecipe } = await import('./ci-diagnosis.js');
+            const diagnosis = await diagnoseAndPersistRecipe(session.repoPath, session.branch);
+            if (diagnosis) {
+              result.discoveries.push(
+                `CI diagnosis for ${session.repoPath.split('/').pop()}/${session.branch}: ${diagnosis.failedStep} — ${diagnosis.errorSummary.slice(0, 120)}`,
+              );
+              // Re-check for the newly created recipe
+              const updatedStrategy = await memStore.getStrategyMemory('engineering');
+              if (updatedStrategy?.scoredRecipes && session.blockerReason) {
+                const { findMatchingRecipe: findRecipe } = await import('@drew/foreman-memory');
+                const newRecipe = findRecipe(updatedStrategy.scoredRecipes, session.blockerReason);
+                if (newRecipe) {
+                  confidence = newRecipe.confidence;
+                  matchedRecipe = newRecipe.pattern;
+                }
+              }
+            }
+          } catch { /* CI diagnosis failed — non-fatal */ }
+        }
       } catch { /* no memory available */ }
 
       const action = confidence >= minConfidence
@@ -871,6 +942,24 @@ export async function runHeartbeat(options: {
 
         session.lastResumedAt = new Date().toISOString();
         result.resumed++;
+
+        // Update recipe confidence based on outcome
+        if (matchedRecipe) {
+          try {
+            const { createMemoryStore: loadMem, recordRepairOutcome } = await import('@drew/foreman-memory');
+            const memStore = await loadMem({ rootDir: join(session.repoPath, '.foreman', 'memory') });
+            const strategy = await memStore.getStrategyMemory('engineering');
+            if (strategy?.scoredRecipes) {
+              strategy.scoredRecipes = recordRepairOutcome(
+                strategy.scoredRecipes,
+                matchedRecipe,
+                spawnResult.exitCode === 0,
+              );
+              await memStore.putStrategyMemory(strategy);
+            }
+          } catch { /* non-fatal */ }
+        }
+
         result.actions.push({
           sessionId: session.id,
           action: `resume-ci-fix (confidence: ${(confidence * 100).toFixed(0)}%)`,

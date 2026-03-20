@@ -70,3 +70,4 @@ export { runSupervisorBenchmark } from './supervisor-benchmark.js';
 export { runTraceBenchmark } from './trace-benchmark.js';
 export { runWorkContinuation } from './work-continuation.js';
 export { runWorkDiscovery } from './work-discovery.js';
+export { runExperiments, type Experiment, type ExperimentResult, type ExperimentRunResult, type Scorer } from './worktree-experiment.js';

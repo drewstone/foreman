@@ -5,7 +5,7 @@ set -euo pipefail
 
 cd /home/drew/code/foreman
 
-export FOREMAN_REPOS="/home/drew/code/openclaw-sandbox-blueprint:/home/drew/code/vllm-inference-blueprint:/home/drew/code/foreman:/home/drew/code/blueprint"
+export FOREMAN_REPOS="/home/drew/code/openclaw-sandbox-blueprint:/home/drew/code/vllm-inference-blueprint:/home/drew/code/foreman:/home/drew/code/blueprint:/home/drew/code/agent-dev-container:/home/drew/code/phony"
 export PATH="/home/drew/.nvm/versions/node/v24.13.0/bin:/home/drew/.local/bin:/home/drew/.cargo/bin:$PATH"
 
 # --heartbeat enables auto-resume decisions

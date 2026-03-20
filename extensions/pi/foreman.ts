@@ -18,6 +18,10 @@
  * Commands:
  *   /foreman         — show status dashboard
  *   /heartbeat       — run a heartbeat scan now
+ *   /auto [goal]     — toggle autonomous check→fix→review→ship loop
+ *
+ * Flags:
+ *   --foreman-auto   — enable autonomous loop from CLI
  */
 
 import { Type } from '@mariozechner/pi-ai';
@@ -72,7 +76,126 @@ function formatSessions(state: Record<string, unknown> | null): string {
   }).join('\n');
 }
 
+// ─── Watchdog: mid-session stuck detection ────────────────────────
+
+interface WatchdogState {
+  enabled: boolean
+  lastActivityTs: number
+  lastNudgeTs: number
+  consecutiveNudges: number
+  checkIntervalMs: number
+  stuckThresholdMs: number
+  maxNudges: number
+  judgeInProgress: boolean
+  timer: ReturnType<typeof setInterval> | null
+}
+
+function createWatchdogState(): WatchdogState {
+  return {
+    enabled: true,
+    lastActivityTs: Date.now(),
+    lastNudgeTs: 0,
+    consecutiveNudges: 0,
+    checkIntervalMs: 30_000,   // check every 30s
+    stuckThresholdMs: 120_000, // 2min no activity = stuck
+    maxNudges: 3,
+    judgeInProgress: false,
+    timer: null,
+  }
+}
+
+function formatRecentActivity(messages: Array<{ role?: string; content?: unknown }>, maxChars = 3000): string {
+  const lines: string[] = []
+  let chars = 0
+  for (const msg of messages.slice(-15)) {
+    if (chars >= maxChars) break
+    const role = (msg.role ?? 'unknown').toUpperCase()
+    let text = ''
+    if (typeof msg.content === 'string') {
+      text = msg.content.slice(0, 300)
+    } else if (Array.isArray(msg.content)) {
+      for (const b of msg.content as Array<Record<string, unknown>>) {
+        if (b.type === 'text' && typeof b.text === 'string') {
+          text += b.text.slice(0, 200) + ' '
+        } else if (b.type === 'tool_use' || b.type === 'toolCall') {
+          text += `[${b.name ?? b.toolName ?? 'tool'}] `
+        }
+      }
+    }
+    if (!text.trim()) continue
+    const line = `[${role}] ${text.trim().slice(0, 250)}`
+    lines.push(line)
+    chars += line.length
+  }
+  return lines.join('\n')
+}
+
+// ─── Automation state machine ─────────────────────────────────────
+
+type AutoPhase = 'idle' | 'implementing' | 'checking' | 'fixing' | 'reviewing' | 'shipping'
+
+interface AutoState {
+  enabled: boolean
+  phase: AutoPhase
+  iteration: number
+  maxIterations: number
+  checkFailures: number
+  lastCheckOutput: string
+  repoPath: string | null
+  goal: string | null
+}
+
+function createAutoState(): AutoState {
+  return {
+    enabled: false,
+    phase: 'idle',
+    iteration: 0,
+    maxIterations: 10,
+    checkFailures: 0,
+    lastCheckOutput: '',
+    repoPath: null,
+    goal: null,
+  }
+}
+
+function detectChecks(repoPath: string): string[] {
+  const checks: string[] = []
+  try {
+    const pkg = JSON.parse(readFileSync(join(repoPath, 'package.json'), 'utf8'))
+    const scripts = pkg.scripts ?? {}
+    if (scripts.check) checks.push('npm run check')
+    else {
+      if (scripts['check:types'] || scripts.typecheck) checks.push(scripts['check:types'] ? 'npm run check:types' : 'npm run typecheck')
+      if (scripts.lint) checks.push('npm run lint')
+      if (scripts.test) checks.push('npm run test')
+    }
+    if (checks.length === 0 && scripts.build) checks.push('npm run build')
+  } catch { /* no package.json */ }
+  if (checks.length === 0) {
+    try { readFileSync(join(repoPath, 'Cargo.toml'), 'utf8'); checks.push('cargo check', 'cargo test') } catch { /* no Cargo.toml */ }
+  }
+  if (checks.length === 0) {
+    try { readFileSync(join(repoPath, 'Makefile'), 'utf8'); checks.push('make test') } catch { /* no Makefile */ }
+  }
+  return checks
+}
+
+function looksLikeQuestion(text: string): boolean {
+  const last200 = text.slice(-200).toLowerCase()
+  return /\?\s*$/.test(last200.trim()) ||
+    /should i |what do you|do you want|would you like|let me know|your thoughts/i.test(last200)
+}
+
+function extractTextFromMessage(msg: { content?: Array<{ type: string; text?: string }> }): string {
+  if (!msg.content || !Array.isArray(msg.content)) return ''
+  return msg.content
+    .filter((c: { type: string; text?: string }) => c.type === 'text' && c.text)
+    .map((c: { type: string; text?: string }) => c.text)
+    .join('\n')
+}
+
 export default function foremanExtension(pi: ExtensionAPI) {
+  const auto = createAutoState()
 
   // ── Tool: foreman_status ─────────────────────────────────────────
 
@@ -108,9 +231,9 @@ export default function foremanExtension(pi: ExtensionAPI) {
     async execute(_id, params, _signal, onUpdate) {
       const { sessionId, goal } = params as { sessionId: string; goal?: string };
       onUpdate?.({ content: [{ type: 'text', text: `Resuming session: ${sessionId}...` }] });
-      const goalFlag = goal ? `--goal "${goal.replace(/"/g, '\\"')}"` : '';
+      const goalFlag = goal ? `--goal ${JSON.stringify(goal)}` : '';
       const output = run(
-        `npx tsx packages/surfaces/src/operator-cli.ts --resume "${sessionId}" ${goalFlag} -v`,
+        `npx tsx packages/surfaces/src/operator-cli.ts --resume ${JSON.stringify(sessionId)} ${goalFlag} -v`,
         5 * 60_000,
       );
       return { content: [{ type: 'text', text: output }] };
@@ -135,10 +258,12 @@ export default function foremanExtension(pi: ExtensionAPI) {
       const escaped = JSON.stringify({ goal, repoPath });
       const output = run(
         `npx tsx -e "
-const { hardenTask } = require('./packages/surfaces/src/engineering-tools.ts');
-const { createClaudeProvider } = require('./packages/providers/src/index.ts');
-const opts = ${escaped};
-hardenTask({ ...opts, provider: createClaudeProvider() }).then(r => console.log(JSON.stringify(r, null, 2)));
+import('./packages/surfaces/src/engineering-tools.ts').then(async ({ hardenTask }) => {
+  const { createClaudeProvider } = await import('./packages/providers/src/index.ts');
+  const opts = ${escaped};
+  const r = await hardenTask({ ...opts, provider: createClaudeProvider() });
+  console.log(JSON.stringify(r, null, 2));
+});
 "`,
         2 * 60_000,
       );
@@ -161,9 +286,8 @@ hardenTask({ ...opts, provider: createClaudeProvider() }).then(r => console.log(
     async execute(_id, params, _signal, onUpdate) {
       const { repoPath, goal } = params as { repoPath: string; goal: string };
       onUpdate?.({ content: [{ type: 'text', text: 'Running validation pipeline...' }] });
-      const escaped = goal.replace(/"/g, '\\"');
       const output = run(
-        `npx tsx packages/surfaces/src/cli.ts --repo "${repoPath}" --goal "${escaped}" --max-rounds 1`,
+        `npx tsx packages/surfaces/src/cli.ts --repo ${JSON.stringify(repoPath)} --goal ${JSON.stringify(goal)} --max-rounds 1`,
         10 * 60_000,
       );
       try {
@@ -197,9 +321,11 @@ hardenTask({ ...opts, provider: createClaudeProvider() }).then(r => console.log(
       const escaped = JSON.stringify({ repoPaths, hoursBack: hoursBack ?? 72 });
       const output = run(
         `npx tsx -e "
-const { extractDeepSessionInsights } = require('./packages/surfaces/src/session-insights.ts');
-const opts = ${escaped};
-extractDeepSessionInsights(opts).then(r => console.log(JSON.stringify(r, null, 2)));
+import('./packages/surfaces/src/session-insights.ts').then(async ({ extractDeepSessionInsights }) => {
+  const opts = ${escaped};
+  const r = await extractDeepSessionInsights(opts);
+  console.log(JSON.stringify(r, null, 2));
+});
 "`,
         60_000,
       );
@@ -264,6 +390,240 @@ extractDeepSessionInsights(opts).then(r => console.log(JSON.stringify(r, null, 2
       ctx.ui.notify(output.slice(0, 1000), 'info');
     },
   });
+
+  // ── Flag: --foreman-auto ────────────────────────────────────────
+
+  pi.registerFlag('foreman-auto', {
+    description: 'Enable autonomous check→fix→review→ship loop',
+    type: 'boolean',
+    default: false,
+  })
+
+  // ── Command: /auto ─────────────────────────────────────────────
+
+  pi.registerCommand('auto', {
+    description: 'Toggle autonomous foreman loop (check → fix → review → ship)',
+    handler: async (args, ctx) => {
+      if (args.trim() === 'off') {
+        auto.enabled = false
+        auto.phase = 'idle'
+        auto.iteration = 0
+        ctx.ui.notify('[Foreman] Auto mode OFF', 'info')
+        return
+      }
+      auto.enabled = !auto.enabled
+      if (auto.enabled) {
+        auto.repoPath = ctx.cwd
+        auto.iteration = 0
+        auto.phase = 'implementing'
+        auto.checkFailures = 0
+        if (args.trim()) auto.goal = args.trim()
+        ctx.ui.notify(`[Foreman] Auto mode ON — repo: ${ctx.cwd}, max ${auto.maxIterations} iterations`, 'info')
+      } else {
+        auto.phase = 'idle'
+        ctx.ui.notify('[Foreman] Auto mode OFF', 'info')
+      }
+    },
+  })
+
+  // ── Watchdog: mid-session stuck detection ───────────────────────
+
+  const watchdog = createWatchdogState()
+
+  function updateWatchdogActivity() {
+    watchdog.lastActivityTs = Date.now()
+    watchdog.consecutiveNudges = 0
+  }
+
+  pi.on('turn_end', async () => { updateWatchdogActivity() })
+  pi.on('tool_execution_end', async () => { updateWatchdogActivity() })
+  pi.on('message_end', async () => { updateWatchdogActivity() })
+
+  pi.on('session_start', async (_event, ctx) => {
+    updateWatchdogActivity()
+    if (watchdog.timer) clearInterval(watchdog.timer)
+
+    watchdog.timer = setInterval(async () => {
+      if (!watchdog.enabled || ctx.isIdle()) return
+      const elapsed = Date.now() - watchdog.lastActivityTs
+      if (elapsed < watchdog.stuckThresholdMs) return
+      if (watchdog.judgeInProgress) return
+
+      watchdog.judgeInProgress = true
+      try {
+        if (watchdog.consecutiveNudges >= watchdog.maxNudges) {
+          ctx.abort()
+          pi.sendUserMessage(
+            '[Watchdog] Agent appears stuck after ' + watchdog.maxNudges +
+            ' nudge attempts. Operation cancelled. Please review and decide how to proceed.',
+            { deliverAs: 'followUp' },
+          )
+          watchdog.enabled = false
+          ctx.ui.setStatus('watchdog', '[watchdog] stopped — max nudges reached')
+          return
+        }
+
+        ctx.abort()
+        watchdog.consecutiveNudges++
+        watchdog.lastActivityTs = Date.now()
+        watchdog.lastNudgeTs = Date.now()
+        ctx.ui.setStatus('watchdog', `[watchdog] nudge ${watchdog.consecutiveNudges}/${watchdog.maxNudges}`)
+
+        pi.sendUserMessage(
+          `[Watchdog] No progress detected for ${Math.round(elapsed / 1000)}s. ` +
+          'The blocked operation was cancelled. Try a different approach — ' +
+          'if a tool call is hanging, skip it. If stuck in a loop, break out and try an alternative.',
+          { deliverAs: 'followUp' },
+        )
+      } catch { /* swallow — watchdog should never crash the session */ }
+      finally { watchdog.judgeInProgress = false }
+    }, watchdog.checkIntervalMs)
+  })
+
+  pi.on('session_shutdown', async () => {
+    if (watchdog.timer) {
+      clearInterval(watchdog.timer)
+      watchdog.timer = null
+    }
+  })
+
+  // ── Command: /watchdog ─────────────────────────────────────────
+
+  pi.registerCommand('watchdog', {
+    description: 'Toggle watchdog stuck detection (on/off)',
+    handler: async (args, ctx) => {
+      if (args.trim() === 'off') {
+        watchdog.enabled = false
+        ctx.ui.setStatus('watchdog', undefined)
+        ctx.ui.notify('[Watchdog] Disabled', 'info')
+      } else {
+        watchdog.enabled = true
+        watchdog.consecutiveNudges = 0
+        watchdog.lastActivityTs = Date.now()
+        ctx.ui.setStatus('watchdog', '[watchdog] active')
+        ctx.ui.notify('[Watchdog] Enabled — will nudge after 2min inactivity', 'info')
+      }
+    },
+  })
+
+  // ── Agent end: autonomous loop ─────────────────────────────────
+
+  pi.on('agent_end', async (event, ctx) => {
+    // Skip auto-loop if agent just restarted from a watchdog nudge
+    if (Date.now() - watchdog.lastNudgeTs < 5000) return
+
+    if (!auto.enabled) {
+      // Check CLI flag on first agent_end
+      if (pi.getFlag('foreman-auto') === true) {
+        auto.enabled = true
+        auto.repoPath = ctx.cwd
+        auto.phase = 'implementing'
+      }
+      if (!auto.enabled) return
+    }
+
+    auto.iteration++
+    if (auto.iteration > auto.maxIterations) {
+      ctx.ui.notify(`[Foreman] Max iterations (${auto.maxIterations}) reached. Stopping auto mode.`, 'warning')
+      auto.enabled = false
+      auto.phase = 'idle'
+      return
+    }
+
+    const messages = event.messages ?? []
+    const lastMsg = messages[messages.length - 1]
+    if (!lastMsg) return
+
+    const lastText = extractTextFromMessage(lastMsg as { content?: Array<{ type: string; text?: string }> })
+
+    // If agent asked a question, don't auto-continue
+    if (looksLikeQuestion(lastText)) {
+      ctx.ui.setStatus('foreman', `[auto] paused — agent asked a question (iter ${auto.iteration})`)
+      return
+    }
+
+    const repoPath = auto.repoPath ?? ctx.cwd
+
+    // Phase: agent just finished implementing or fixing → run checks
+    if (auto.phase === 'implementing' || auto.phase === 'fixing') {
+      auto.phase = 'checking'
+      ctx.ui.setStatus('foreman', `[auto] running checks (iter ${auto.iteration})...`)
+
+      const checks = detectChecks(repoPath)
+      if (checks.length === 0) {
+        ctx.ui.setStatus('foreman', `[auto] no checks detected — skipping to review`)
+        auto.phase = 'reviewing'
+        pi.sendUserMessage(
+          'All implementation looks complete. Run /verify or /critical-audit to review the changes, then create a PR if everything passes.',
+          { deliverAs: 'followUp' },
+        )
+        return
+      }
+
+      const results: Array<{ cmd: string; ok: boolean; output: string }> = []
+      for (const cmd of checks) {
+        try {
+          const result = await pi.exec('bash', ['-c', cmd], { cwd: repoPath, timeout: 120_000 })
+          results.push({ cmd, ok: result.code === 0, output: (result.stdout + '\n' + result.stderr).trim() })
+        } catch (e) {
+          results.push({ cmd, ok: false, output: String(e) })
+        }
+      }
+
+      const allPassed = results.every((r) => r.ok)
+      const summary = results.map((r) => `${r.ok ? 'PASS' : 'FAIL'} ${r.cmd}${r.ok ? '' : '\n' + r.output.slice(-500)}`).join('\n\n')
+
+      if (allPassed) {
+        ctx.ui.setStatus('foreman', `[auto] checks passed — reviewing (iter ${auto.iteration})`)
+        auto.phase = 'reviewing'
+        auto.checkFailures = 0
+        pi.sendUserMessage(
+          `All checks passed:\n\`\`\`\n${summary}\n\`\`\`\n\nReview the changes for correctness and quality. If everything looks good, commit, push, and create a PR.`,
+          { deliverAs: 'followUp' },
+        )
+      } else {
+        auto.checkFailures++
+        if (auto.checkFailures > 3) {
+          ctx.ui.notify(`[Foreman] 3 consecutive check failures. Stopping auto mode.`, 'warning')
+          auto.enabled = false
+          auto.phase = 'idle'
+          return
+        }
+        ctx.ui.setStatus('foreman', `[auto] checks failed (${auto.checkFailures}/3) — fixing (iter ${auto.iteration})`)
+        auto.phase = 'fixing'
+        auto.lastCheckOutput = summary
+        pi.sendUserMessage(
+          `Checks failed:\n\`\`\`\n${summary}\n\`\`\`\n\nFix the failures. Do not skip or disable any checks.`,
+          { deliverAs: 'followUp' },
+        )
+      }
+      return
+    }
+
+    // Phase: agent finished review → check if it shipped
+    if (auto.phase === 'reviewing' || auto.phase === 'shipping') {
+      auto.phase = 'shipping'
+      // Check if a PR was created or push happened
+      try {
+        const gitResult = await pi.exec('git', ['status', '--porcelain'], { cwd: repoPath, timeout: 10_000 })
+        if (gitResult.stdout.trim() === '') {
+          // Clean working tree — likely committed and pushed
+          ctx.ui.setStatus('foreman', `[auto] complete (iter ${auto.iteration})`)
+          ctx.ui.notify(`[Foreman] Auto loop complete after ${auto.iteration} iterations.`, 'info')
+          auto.enabled = false
+          auto.phase = 'idle'
+          return
+        }
+      } catch { /* ignore */ }
+
+      // Still has uncommitted changes — nudge
+      pi.sendUserMessage(
+        'There are still uncommitted changes. Commit, push to a branch, and create a PR to complete the task.',
+        { deliverAs: 'followUp' },
+      )
+      return
+    }
+  })
 
   // ── Inject context on session start ──────────────────────────────
 

@@ -69,20 +69,32 @@ export async function extractDeepSessionInsights(options: {
   const fileReadCounts = new Map<string, { count: number; repos: Set<string> }>();
   const goalsByRepo = new Map<string, string[]>();
 
+  // Claude Code encodes project paths: /home/drew/code/foo → -home-drew-code-foo
+  // This encoding is lossy (hyphens in dir names), so we go forward: encode each
+  // repo path and check if the dir exists.
+  function encodeProjectDir(repoPath: string): string {
+    return repoPath.replace(/\//g, '-');
+  }
+
+  const repoDirMap = new Map<string, string>(); // encoded dir → repo path
+  for (const repo of repoSet) {
+    const encoded = encodeProjectDir(repo);
+    repoDirMap.set(encoded, repo);
+  }
+
   let projectDirs: string[] = [];
   try {
     const entries = await readdir(root, { withFileTypes: true });
-    projectDirs = entries.filter((e) => e.isDirectory()).map((e) => join(root, e.name));
+    projectDirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
   } catch {
     return report;
   }
 
-  for (const dir of projectDirs) {
-    const dirName = dir.split('/').pop() ?? '';
-    const pathParts = dirName.replace(/^-/, '').split('-');
-    const projectName = pathParts.length >= 3 ? pathParts.slice(2).join('-') : dirName;
-    const inferredRepoPath = join(homedir(), 'code', projectName);
-    if (!repoSet.has(resolve(inferredRepoPath))) continue;
+  for (const dirName of projectDirs) {
+    const repoPath = repoDirMap.get(dirName);
+    if (!repoPath) continue;
+    const dir = join(root, dirName);
+    const projectName = repoPath.split('/').pop() ?? dirName;
 
     // Find recent JSONL files
     const sessionFiles: Array<{ path: string; mtime: number }> = [];
@@ -231,7 +243,11 @@ async function parseSessionContent(jsonlPath: string): Promise<{
         if (entry.type === 'user' && goals.length < maxGoals) {
           const msg = entry.message as { content?: string } | undefined;
           if (typeof msg?.content === 'string' && msg.content.length > 10 && msg.content.length < 500) {
-            goals.push(msg.content.trim().slice(0, 150));
+            let text = msg.content.trim()
+            // Strip XML tags from local commands, system reminders, etc.
+            if (text.includes('<local-command-caveat>') || text.includes('<command-name>') || text.includes('<system-reminder>')) continue
+            text = text.replace(/<[^>]+>/g, '').trim()
+            if (text.length > 10) goals.push(text.slice(0, 150))
           }
         }
 

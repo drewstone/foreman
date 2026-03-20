@@ -7,6 +7,7 @@
     "packages/*"
   ],
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.0.0",
     "@types/pg": "^8.18.0",
     "tsx": "^4.20.5",
@@ -51,9 +52,14 @@
     "benchmark-supervisor": "tsx packages/surfaces/src/supervisor-benchmark-cli.ts",
     "review-sessions": "tsx packages/surfaces/src/session-review-cli.ts",
     "replay-engineering": "tsx packages/surfaces/src/engineering-replay-cli.ts",
-    "run-schedule": "tsx packages/surfaces/src/schedule-cli.ts"
+    "run-schedule": "tsx packages/surfaces/src/schedule-cli.ts",
+    "experiment": "tsx packages/surfaces/src/worktree-experiment-cli.ts",
+    "daily-report": "tsx packages/surfaces/src/daily-report-cli.ts",
+    "session-index": "tsx packages/surfaces/src/session-index-cli.ts",
+    "learn": "tsx packages/surfaces/src/learning-cli.ts"
   },
   "dependencies": {
-    "@ax-llm/ax": "^19.0.17"
+    "@ax-llm/ax": "^19.0.17",
+    "better-sqlite3": "^12.8.0"
   }
 }
