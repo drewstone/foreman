@@ -73,10 +73,12 @@ interface CliArgs {
   dryRun: boolean;
   resume?: string;
   verbose: boolean;
+  maxResumes: number;
+  minConfidence: number;
 }
 
 function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = { heartbeat: false, fixCi: false, dryRun: false, verbose: false };
+  const args: CliArgs = { heartbeat: false, fixCi: false, dryRun: false, verbose: false, maxResumes: 2, minConfidence: 0.7 };
   for (let i = 0; i < argv.length; i++) {
     switch (argv[i]) {
       case '--dry-run':
@@ -90,6 +92,12 @@ function parseArgs(argv: string[]): CliArgs {
         break;
       case '--resume':
         args.resume = argv[++i];
+        break;
+      case '--max-resumes':
+        args.maxResumes = parseInt(argv[++i] ?? '2', 10);
+        break;
+      case '--min-confidence':
+        args.minConfidence = parseFloat(argv[++i] ?? '0.7');
         break;
       case '--verbose':
       case '-v':
@@ -267,8 +275,8 @@ async function main(): Promise<void> {
     repoPaths,
     autoResume: args.heartbeat,
     dryRun: args.dryRun,
-    minConfidence: 0.7,
-    maxResumes: 2,
+    minConfidence: args.minConfidence,
+    maxResumes: args.maxResumes,
     traceRoot: join(FOREMAN_HOME, 'traces'),
     onAction: (sessionId, action) => {
       log(`${sessionId}: ${action}`);
