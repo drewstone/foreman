@@ -34,6 +34,7 @@ import {
 import { createClaudeProvider } from '@drew/foreman-providers'
 import { VersionedStore } from '@drew/foreman-core'
 import { loadSessionMetrics, aggregateMetrics, renderMetricsAggregate } from './session-metrics.js'
+import { trackSkillPerformance, detectDegradation, renderSkillPerformance } from './skill-tracker.js'
 
 const FOREMAN_HOME = process.env.FOREMAN_HOME ?? join(homedir(), '.foreman')
 const TRACES_DIR = join(FOREMAN_HOME, 'traces', 'heartbeats')
@@ -475,6 +476,15 @@ export async function generateDailyReport(date: string): Promise<string> {
       report += '\n' + renderMetricsAggregate(agg)
     }
   } catch { /* no metrics yet */ }
+
+  // Skill performance tracking
+  try {
+    const performances = await trackSkillPerformance({ hoursBack: 168 })
+    if (performances.length > 0) {
+      const proposals = detectDegradation(performances)
+      report += '\n' + renderSkillPerformance(performances, proposals)
+    }
+  } catch { /* no skill data */ }
 
   // Auto-score this report
   const knownRepos = [...new Set(traces.flatMap((t) => t.sessions.map((s) => s.repo)))]
