@@ -406,6 +406,7 @@ export async function runPolicyCycle(options?: {
   dryRun?: boolean
   confidenceStore?: ConfidenceStore
   recentEvents?: ForemanEvent[]
+  watchedDirs?: string[]
   provider?: { run(prompt: string): Promise<{ stdout: string }> }
   onProgress?: (msg: string) => void
 }): Promise<PolicyDecision> {
@@ -426,6 +427,7 @@ export async function runPolicyCycle(options?: {
     const state = await buildStateSnapshot({
       confidenceScores,
       recentEvents: options?.recentEvents,
+      watchedDirs: options?.watchedDirs,
     })
 
     log(`State: ${state.totalManagedProjects} projects, ${state.totalActiveSessions} sessions`)

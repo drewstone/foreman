@@ -64,6 +64,7 @@ export interface ForemanState {
 export interface BuildStateSnapshotOptions {
   confidenceScores?: Array<{ actionType: string; project: string; score: number; level: string }>
   recentEvents?: ForemanEvent[]
+  watchedDirs?: string[]
 }
 
 export async function buildStateSnapshot(
@@ -111,6 +112,27 @@ export async function buildStateSnapshot(
       totalSessions: data.sessionCount,
       harnesses: data.harnesses,
     })
+  }
+
+  // Add projects from watched git dirs that aren't in session index yet
+  if (options?.watchedDirs) {
+    for (const dir of options.watchedDirs) {
+      const name = dir.split('/').pop() ?? dir
+      if (!activeProjects.some((p) => p.name === name)) {
+        activeProjects.push({
+          path: dir,
+          name,
+          activeBranches: [],
+          lastSessionAt: null,
+          ciStatus: 'unknown',
+          momentum: 'active', // new projects are active by definition
+          recentGoals: ['New project — needs initial exploration and setup'],
+          activeSessions: 0,
+          totalSessions: 0,
+          harnesses: [],
+        })
+      }
+    }
   }
 
   // Enrich with git/CI data (best effort, 15s timeout)

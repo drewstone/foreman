@@ -194,6 +194,7 @@ async function triggerPolicyCycle(state: DaemonState, config: DaemonConfig): Pro
     dryRun: config.dryRun,
     confidenceStore: state.confidenceStore,
     recentEvents: state.recentEvents.slice(-10),
+    watchedDirs: config.watchGitDirs,
     onProgress: (msg) => log(config, `  ${msg}`),
   })
 
