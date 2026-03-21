@@ -155,7 +155,7 @@ export class CIRepairEnv extends ForemanEvalEnv {
     ].filter(Boolean).join('\n')
 
     // Spawn the session
-    const { spawnSession } = await import('./operator-loop.js')
+    const { spawnSession } = await import('./session-spawn.js')
     const { enrichMetrics } = await import('./session-metrics.js')
 
     const spawnResult = await spawnSession({

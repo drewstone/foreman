@@ -156,7 +156,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         json(res, { error: 'Missing repo or goal' }, 400)
         return
       }
-      const { spawnSession } = await import('./operator-loop.js')
+      const { spawnSession } = await import('./session-spawn.js')
       const result = await spawnSession({
         repoPath: body.repo,
         goal: body.goal,

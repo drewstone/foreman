@@ -126,7 +126,7 @@ export class TerminalTaskEnv extends ForemanEvalEnv {
     try { await rm('/tmp/foreman-test', { recursive: true, force: true }) } catch {}
     await mkdir('/tmp/foreman-test', { recursive: true })
 
-    const { spawnSession } = await import('./operator-loop.js')
+    const { spawnSession } = await import('./session-spawn.js')
     const { enrichMetrics } = await import('./session-metrics.js')
 
     const spawnResult = await spawnSession({
@@ -265,7 +265,7 @@ export class SWEBenchEnv extends ForemanEvalEnv {
       } catch { /* setup failed — still try */ }
     }
 
-    const { spawnSession } = await import('./operator-loop.js')
+    const { spawnSession } = await import('./session-spawn.js')
     const { enrichMetrics } = await import('./session-metrics.js')
 
     const spawnResult = await spawnSession({
@@ -397,7 +397,7 @@ export class MultiHarnessEnv extends ForemanEvalEnv {
     try { await rm('/tmp/foreman-test', { recursive: true, force: true }) } catch {}
     await mkdir('/tmp/foreman-test', { recursive: true })
 
-    const { spawnSession } = await import('./operator-loop.js')
+    const { spawnSession } = await import('./session-spawn.js')
     const { enrichMetrics } = await import('./session-metrics.js')
 
     let lastResult: Awaited<ReturnType<typeof spawnSession>> | null = null

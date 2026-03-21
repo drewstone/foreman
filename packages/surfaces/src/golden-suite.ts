@@ -4,11 +4,10 @@ import { dirname, join, resolve } from 'node:path';
 import { FilesystemTraceStore } from '@drew/foreman-tracing';
 
 import { runBrowserReplay } from './browser-replay.js';
-import { runEngineeringReplay } from './engineering-replay.js';
 import { runSessionReplay } from './session-replay.js';
 import { runSupervisorReplay } from './supervisor-replay.js';
 
-type GoldenSurface = 'engineering' | 'session' | 'browser' | 'supervisor';
+type GoldenSurface = 'session' | 'browser' | 'supervisor';
 
 interface GoldenReplayPolicy {
   traceOutputRoot?: string;
@@ -118,17 +117,7 @@ async function runGoldenSuiteCase(
   );
 
   let replayTraceId: string | undefined;
-  if (suiteCase.surface === 'engineering') {
-    const replay = await runEngineeringReplay({
-      traceRoot: resolvedTraceRoot,
-      traceId: suiteCase.traceId,
-      traceOutputRoot: replayTraceRoot,
-      artifactsRoot: suiteCase.replay?.artifactsRoot
-        ? resolve(suiteCase.replay.artifactsRoot)
-        : join(replayTraceRoot, 'artifacts', suiteCase.id),
-    });
-    replayTraceId = replay.replay.traceId;
-  } else if (suiteCase.surface === 'session') {
+  if (suiteCase.surface === 'session') {
     const replay = await runSessionReplay({
       traceRoot: resolvedTraceRoot,
       traceId: suiteCase.traceId,

@@ -10,7 +10,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./session-index": "./src/session-index.ts",
-    "./learning": "./src/learning.ts"
+    "./learning": "./src/learning.ts",
+    "./confidence": "./src/confidence.ts"
   },
   "types": "./src/index.ts",
   "scripts": {

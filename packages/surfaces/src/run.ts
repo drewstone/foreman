@@ -16,7 +16,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
-import { generateClaudeMd } from './operator-loop.js';
+import { generateClaudeMd } from './claudemd-generator.js';
 import { extractDeepSessionInsights } from './session-insights.js';
 
 const execFileAsync = promisify(execFile);
