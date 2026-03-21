@@ -44,6 +44,7 @@
     "daily-report": "tsx packages/surfaces/src/daily-report-cli.ts",
     "session-index": "tsx packages/surfaces/src/session-index-cli.ts",
     "eval": "tsx packages/surfaces/src/eval-runner-cli.ts",
+    "confidence": "tsx packages/surfaces/src/confidence-cli.ts",
     "serve": "tsx packages/surfaces/src/api-server.ts"
   },
   "dependencies": {

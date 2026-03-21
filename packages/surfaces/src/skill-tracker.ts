@@ -97,22 +97,20 @@ export async function trackSkillPerformance(options?: {
 
         const responseText = nearbyResponses.map((r) => r.message.content).join(' ').toLowerCase()
 
-        // Positive signals (skill completed successfully)
+        // Positive signals — conclusive evidence of success
         const positiveSignals = [
-          'all tests pass', 'all checks pass', 'ci is green', 'ci green',
-          'pr created', 'pushed to', 'merged', 'committed',
-          '9/10', '10/10', '9.', '10.', 'score: 9', 'score: 10',
-          'complete', 'converged', 'promoted', 'verified',
-          'pass rate: 100', 'pass rate: 1.0',
-          'round complete', 'iteration complete', 'loop complete',
+          'all tests pass', 'all checks pass', 'ci is green',
+          'pr created', 'pr #', 'pushed to', 'merged to',
+          'committed', 'commit ',
+          'score: 9', 'score: 10', '9/10', '10/10',
+          'verified', 'converged', 'promoted',
         ]
-        // Negative signals (skill failed or was abandoned)
+        // Negative signals — conclusive evidence of failure/abandonment
         const negativeSignals = [
-          'failed', 'error:', 'panic', 'compilation error',
-          'giving up', 'cannot', 'unable to', 'stuck',
-          'max iterations', 'max rounds', 'timed out',
-          'abort', 'cancelled', 'score: 0', 'score: 1', 'score: 2',
-          '0/10', '1/10', '2/10', '3/10',
+          'giving up', 'cannot proceed', 'unable to proceed',
+          'max iterations reached', 'max rounds reached', 'timed out',
+          'aborted', 'cancelled',
+          'score: 0', 'score: 1/', 'score: 2/', '0/10', '1/10', '2/10',
         ]
 
         const posCount = positiveSignals.filter((s) => responseText.includes(s)).length

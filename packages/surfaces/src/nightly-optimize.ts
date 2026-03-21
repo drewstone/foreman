@@ -7,8 +7,9 @@
  *   3. Auto-promote winning artifact versions
  *   4. Track skill performance
  *   5. Generate golden suites from successful traces
- *   6. Check cost budgets
- *   7. Send notifications
+ *   6. Deep session analysis + campaign update
+ *   7. Policy self-improvement (cross-pollinate + variant generation)
+ *   8. Check cost budgets
  */
 
 import { join } from 'node:path'
@@ -62,7 +63,7 @@ export async function runNightlyOptimization(options?: {
   }
 
   // Step 1: Generate variants
-  log('[1/6] Generating artifact variants...')
+  log('[1/8] Generating artifact variants...')
   try {
     const proposals = await generateVariants({
       scoreThreshold: 0.8,
@@ -76,7 +77,7 @@ export async function runNightlyOptimization(options?: {
 
   // Step 2: GEPA optimization (if enough traces)
   if (!options?.skipGepa) {
-    log('[2/6] Running GEPA optimization...')
+    log('[2/8] Running GEPA optimization...')
     try {
       const traceStore = new FilesystemTraceStore(join(FOREMAN_HOME, 'traces', 'evals'))
       const refs = await traceStore.list()
@@ -150,7 +151,7 @@ export async function runNightlyOptimization(options?: {
   }
 
   // Step 3: Auto-promote
-  log('[3/6] Auto-promoting artifact versions...')
+  log('[3/8] Auto-promoting artifact versions...')
   try {
     const store = new VersionedStore()
     const kinds = await store.listKinds()
@@ -172,7 +173,7 @@ export async function runNightlyOptimization(options?: {
   }
 
   // Step 4: Skill tracking
-  log('[4/6] Tracking skill performance...')
+  log('[4/8] Tracking skill performance...')
   try {
     const performances = await trackSkillPerformance({ hoursBack: 168, onProgress: log })
     const alerts = detectDegradation(performances)
@@ -185,7 +186,7 @@ export async function runNightlyOptimization(options?: {
   }
 
   // Step 5: Golden suites
-  log('[5/6] Generating golden suites...')
+  log('[5/8] Generating golden suites...')
   try {
     const suite = await generateGoldenSuiteFromTraces({ name: `nightly-${new Date().toISOString().slice(0, 10)}` })
     result.goldenCases = suite.cases.length
@@ -195,7 +196,7 @@ export async function runNightlyOptimization(options?: {
   }
 
   // Step 6: Deep session analysis + campaign update
-  log('[6/7] Deep session analysis...')
+  log('[6/8] Deep session analysis...')
   try {
     const analysis = await analyzeSessionsDeep({ hoursBack: 72, maxRepos: 8, onProgress: log })
     log(`  Focus: ${analysis.operatorFocus}`)
@@ -208,8 +209,28 @@ export async function runNightlyOptimization(options?: {
     log(`  Session analysis failed: ${e}`)
   }
 
-  // Step 7: Cost check
-  log('[6/6] Checking costs...')
+  // Step 7: Policy self-improvement
+  log('[7/8] Policy optimization...')
+  try {
+    const { computePolicyMetrics, crossPollinate, generatePolicyVariant } = await import('./policy-optimizer.js')
+    const { ConfidenceStore } = await import('@drew/foreman-memory/confidence')
+    const store = new ConfidenceStore()
+    try {
+      crossPollinate(store)
+      const metrics = await computePolicyMetrics({ hoursBack: 24 })
+      if (metrics.totalDecisions >= 10) {
+        const variantId = await generatePolicyVariant(metrics)
+        if (variantId) log(`  New policy variant: ${variantId}`)
+      }
+    } finally {
+      store.close()
+    }
+  } catch (e) {
+    log(`  policy optimization failed: ${e}`)
+  }
+
+  // Step 8: Cost check
+  log('[8/8] Checking costs...')
   try {
     const metrics = await loadSessionMetrics({ hoursBack: 24 })
     const agg = aggregateMetrics(metrics)
