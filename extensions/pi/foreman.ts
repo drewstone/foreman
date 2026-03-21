@@ -19,6 +19,8 @@
  *   /foreman         — show status dashboard
  *   /heartbeat       — run a heartbeat scan now
  *   /auto [goal]     — toggle autonomous check→fix→review→ship loop
+ *   /watchdog        — toggle mid-session stuck detection
+ *   /qmd             — generate and show CLAUDE.md context for current repo
  *
  * Flags:
  *   --foreman-auto   — enable autonomous loop from CLI
@@ -679,6 +681,100 @@ import('./packages/surfaces/src/session-insights.ts').then(async ({ extractDeepS
       // Auto-clear after 30s
       setTimeout(() => ctx.ui.setStatus('foreman-nudge', undefined), 30_000)
     }
+  })
+
+  // ── Compaction hook: save context before compression ────────────
+
+  pi.on('session_before_compact', async (_event, ctx) => {
+    // Before Pi compresses context, save key findings to Foreman memory
+    try {
+      const entries = ctx.sessionManager.getBranch?.() ?? []
+      const recentUser: string[] = []
+      const recentTools: string[] = []
+
+      for (const entry of (entries as Array<Record<string, unknown>>).slice(-20)) {
+        if (entry.type !== 'message' || !entry.message) continue
+        const msg = entry.message as Record<string, unknown>
+        if (msg.role === 'user' && typeof msg.content === 'string') {
+          recentUser.push(msg.content.slice(0, 200))
+        }
+        if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+          for (const b of msg.content as Array<Record<string, unknown>>) {
+            if (b.type === 'tool_use' && typeof b.name === 'string') {
+              recentTools.push(b.name as string)
+            }
+          }
+        }
+      }
+
+      // Persist a compaction snapshot for learning
+      const snapshotPath = join(FOREMAN_HOME, 'traces', 'compactions')
+      const { mkdirSync, writeFileSync } = await import('node:fs')
+      try { mkdirSync(snapshotPath, { recursive: true }) } catch {}
+      writeFileSync(
+        join(snapshotPath, `${new Date().toISOString().replace(/[:.]/g, '-')}.json`),
+        JSON.stringify({
+          cwd: ctx.cwd,
+          timestamp: new Date().toISOString(),
+          recentUserMessages: recentUser.slice(-5),
+          recentTools: [...new Set(recentTools)],
+          contextTokens: ctx.getContextUsage?.()?.tokens,
+        }, null, 2) + '\n',
+      )
+    } catch { /* non-fatal */ }
+  })
+
+  pi.on('session_compact', async (_event, ctx) => {
+    // After compaction, inject Foreman context so it's not lost
+    const lines: string[] = []
+
+    // Inject operator profile
+    try {
+      const profilePath = join(FOREMAN_HOME, 'memory', 'user', 'operator.json')
+      const profile = JSON.parse(readFileSync(profilePath, 'utf8'))
+      if (profile.operatorPatterns?.length) {
+        lines.push(`[Foreman post-compact] Operator: ${profile.operatorPatterns.join('. ')}.`)
+      }
+    } catch {}
+
+    // Inject repo environment facts
+    try {
+      const repo = ctx.cwd.split('/').pop() ?? ''
+      const envPath = join(FOREMAN_HOME, 'memory', 'environment', `${repo}.json`)
+      const env = JSON.parse(readFileSync(envPath, 'utf8'))
+      if (env.facts?.length) {
+        lines.push(`[Foreman post-compact] Repo facts: ${env.facts.join('. ')}.`)
+      }
+    } catch {}
+
+    if (lines.length > 0) {
+      pi.sendMessage({
+        customType: 'foreman-post-compact',
+        content: lines.join('\n'),
+        display: false,
+      })
+    }
+  })
+
+  // ── Command: /qmd ──────────────────────────────────────────────
+
+  pi.registerCommand('qmd', {
+    description: 'Generate and show Foreman CLAUDE.md context for current repo',
+    handler: async (_args, ctx) => {
+      ctx.ui.notify('Generating CLAUDE.md context...', 'info')
+      const output = run(
+        `node --import tsx packages/surfaces/src/run.ts --repo ${JSON.stringify(ctx.cwd)} --goal "show context only" --dry-run 2>&1 || npx tsx -e "
+import { generateClaudeMd } from './packages/surfaces/src/operator-loop.js'
+const result = await generateClaudeMd({
+  repoPath: ${JSON.stringify(ctx.cwd)},
+  session: { id: 'qmd', repoPath: ${JSON.stringify(ctx.cwd)}, branch: 'current', goal: 'generate context', status: 'active', provider: 'claude', priority: 10 },
+})
+console.log(result)
+"`,
+        30_000,
+      )
+      ctx.ui.notify(output.slice(0, 2000), 'info')
+    },
   })
 
   // ── Inject context on session start ──────────────────────────────
