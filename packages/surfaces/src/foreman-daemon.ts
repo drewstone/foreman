@@ -34,7 +34,7 @@ const DEFAULT_CONFIG: DaemonConfig = {
   dryRun: false,
   pollIntervalMs: 5 * 60 * 1000,
   minPolicyCycleMs: 60 * 1000,
-  maxActionsPerHour: 10,
+  maxActionsPerHour: 30,
   watchSessionDirs: true,
   watchGitDirs: [],
   logPath: LOG_PATH,

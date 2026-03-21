@@ -109,7 +109,13 @@ export async function decideAction(
 ): Promise<Action | null> {
   const stateText = formatStateForLLM(state)
   const systemPrompt = await loadPolicyPrompt()
-  const prompt = `${systemPrompt}\n\n---\n\n${stateText}`
+
+  // Tell the LLM what was recently acted on so it picks different projects
+  const recentlyActed = recentDecisionKeys.length > 0
+    ? `\n\nRECENTLY ACTED ON (pick a DIFFERENT project/action):\n${recentDecisionKeys.map((k) => `- ${k}`).join('\n')}`
+    : ''
+
+  const prompt = `${systemPrompt}\n\n---\n\n${stateText}${recentlyActed}`
 
   let responseText: string
 
