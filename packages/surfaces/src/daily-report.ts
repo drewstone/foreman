@@ -37,6 +37,15 @@ import { loadSessionMetrics, aggregateMetrics, renderMetricsAggregate } from './
 import { trackSkillPerformance, detectDegradation, renderSkillPerformance } from './skill-tracker.js'
 import { notifyDailyReport, notifyDegradation } from './notify.js'
 import { checkCosts, renderCostReport } from './cost-monitor.js'
+import {
+  extractIntents,
+  updateCampaigns,
+  generatePredictions,
+  scorePredictions,
+  renderCampaigns,
+  renderPredictions,
+  renderPredictionScore,
+} from './intent-engine.js'
 
 const FOREMAN_HOME = process.env.FOREMAN_HOME ?? join(homedir(), '.foreman')
 const TRACES_DIR = join(FOREMAN_HOME, 'traces', 'heartbeats')
@@ -487,6 +496,31 @@ export async function generateDailyReport(date: string): Promise<string> {
       report += '\n' + renderSkillPerformance(performances, proposals)
     }
   } catch { /* no skill data */ }
+
+  // Intent engine: campaigns + predictions
+  try {
+    // Score yesterday's predictions
+    const yesterday = new Date(Date.now() - 24 * 3600 * 1000).toISOString().slice(0, 10)
+    const score = await scorePredictions(yesterday)
+    if (score.predictions.length > 0) {
+      report += '\n' + renderPredictionScore(score)
+    }
+
+    // Extract intents from recent sessions
+    const intents = await extractIntents({ hoursBack: 48, maxSessions: 10 })
+
+    // Update campaigns
+    const campaigns = await updateCampaigns(intents)
+    if (campaigns.length > 0) {
+      report += '\n' + renderCampaigns(campaigns)
+    }
+
+    // Generate today's predictions
+    const predictions = await generatePredictions({ campaigns, intents })
+    if (predictions.predictions.length > 0) {
+      report += '\n' + renderPredictions(predictions)
+    }
+  } catch { /* intent engine is best-effort */ }
 
   // Cost monitoring
   try {
