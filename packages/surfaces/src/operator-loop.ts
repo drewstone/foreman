@@ -1048,6 +1048,23 @@ export async function runHeartbeat(options: {
     }
   }
 
+  // Async replan: update predictions based on what just changed
+  try {
+    const { detectReplanTriggers, replanPredictions } = await import('./async-replan.js');
+    const triggers = await detectReplanTriggers({
+      currentSessions: options.state.sessions.map((s) => ({
+        id: s.id, status: s.status, ciStatus: s.ciStatus,
+        repoPath: s.repoPath, branch: s.branch, blockerReason: s.blockerReason,
+      })),
+    });
+    if (triggers.length > 0) {
+      const replan = await replanPredictions(triggers);
+      if (replan.predictionsUpdated) {
+        result.discoveries.push(`Predictions replanned: ${triggers.map((t) => `${t.type}(${t.repo})`).join(', ')}`);
+      }
+    }
+  } catch { /* replan is best-effort */ }
+
   // Notify on significant actions
   const significantActions = result.actions.filter((a) => a.result !== 'not-attempted')
   if (significantActions.length > 0) {

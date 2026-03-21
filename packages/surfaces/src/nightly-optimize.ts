@@ -30,6 +30,8 @@ import { trackSkillPerformance, detectDegradation } from './skill-tracker.js'
 import { generateGoldenSuiteFromTraces } from './golden-suite-generator.js'
 import { notifyPromotion, notifyDegradation } from './notify.js'
 import { loadSessionMetrics, aggregateMetrics } from './session-metrics.js'
+import { analyzeSessionsDeep } from './session-analysis.js'
+import { extractIntents, updateCampaigns } from './intent-engine.js'
 
 const FOREMAN_HOME = process.env.FOREMAN_HOME ?? join(homedir(), '.foreman')
 
@@ -192,7 +194,21 @@ export async function runNightlyOptimization(options?: {
     log(`  golden suite generation failed: ${e}`)
   }
 
-  // Step 6: Cost check
+  // Step 6: Deep session analysis + campaign update
+  log('[6/7] Deep session analysis...')
+  try {
+    const analysis = await analyzeSessionsDeep({ hoursBack: 72, maxRepos: 8, onProgress: log })
+    log(`  Focus: ${analysis.operatorFocus}`)
+    log(`  Themes: ${analysis.crossCuttingThemes.length}, Dependencies: ${analysis.dependencies.length}`)
+
+    // Update campaigns with deeper understanding
+    const intents = await extractIntents({ hoursBack: 72, maxSessions: 15 })
+    await updateCampaigns(intents, { onProgress: log })
+  } catch (e) {
+    log(`  Session analysis failed: ${e}`)
+  }
+
+  // Step 7: Cost check
   log('[6/6] Checking costs...')
   try {
     const metrics = await loadSessionMetrics({ hoursBack: 24 })
