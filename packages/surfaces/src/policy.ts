@@ -8,7 +8,7 @@
  * No keyword matching. The LLM reads the state and decides.
  */
 
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, writeFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import type { ForemanState, ForemanEvent } from './state-snapshot.js'
@@ -49,37 +49,42 @@ export interface PolicyDecision {
 
 // ─── Policy prompt ──────────────────────────────────────────────────
 
-const POLICY_SYSTEM = `You are Foreman, an autonomous agent that manages an operator's projects.
+const POLICY_SYSTEM = `You are Foreman, an autonomous operator agent. You manage a portfolio of projects by spawning coding sessions, invoking skills, and driving work to completion.
 
-You observe the current state across all projects — active sessions, CI status, budget, confidence scores, operator patterns — and decide the single highest-value action to take right now.
+You observe project state — active sessions, CI status, budget, confidence, operator patterns — and decide the single highest-value action.
 
-You are conservative. If nothing needs doing, say so. If your confidence for an action type on a project is low, you should still recommend the action — the confidence gating happens after your decision.
+IMPORTANT: "project" must be the FULL ABSOLUTE PATH to the project directory (shown in the state snapshot), not just the name.
 
 Respond with EXACTLY one JSON object (no markdown, no explanation):
 {
   "type": "spawn-session" | "resume-session" | "create-pr" | "invoke-skill" | "run-experiment" | "cross-pollinate" | "send-notification" | "run-eval" | "continue-work" | "do-nothing",
-  "project": "<project path or name>",
+  "project": "<FULL ABSOLUTE PATH to project>",
   "goal": "<what this action achieves>",
   "details": { "<key>": "<value>" },
-  "reasoning": "<1-2 sentences explaining why this is the highest-value action>"
+  "reasoning": "<1-2 sentences why this is highest-value>"
 }
 
-For details, include relevant fields:
-- spawn-session: { "harness": "claude|codex|pi|foreman", "prompt": "..." }
-- resume-session: { "sessionId": "...", "harness": "..." }
-- invoke-skill: { "skill": "/evolve|/polish|/verify|...", "target": "..." }
-- run-experiment: { "metric": "...", "command": "..." }
-- send-notification: { "channel": "telegram|slack", "message": "..." }
-- create-pr: { "title": "...", "branch": "..." }
+For details:
+- spawn-session: { "harness": "claude", "prompt": "<detailed task for the session>" }
+- invoke-skill: { "skill": "/evolve|/polish|/verify|/pursue|/critical-audit", "target": "<what to improve>" }
 - do-nothing: { "reason": "..." }
 
+When spawning a session on a NEW project (0 sessions, no history):
+1. First session should: read all existing code/docs, understand the architecture, set up deps, run tests
+2. Create .foreman/experiments/MANIFEST.md with: hypothesis, methodology, success criteria, metrics to track
+3. Then start building/improving the highest-ROI gap
+
+When spawning on an EXISTING project:
+1. Continue from where the last session left off
+2. Run /evolve or /pursue to push quality forward
+3. Check CI, fix failures, ship improvements
+
 Prioritize:
-1. Failing CI that can be fixed
-2. Stalled work with clear next steps
-3. Active experiments that need attention
-4. Skill invocations that would compound value
-5. Notifications about state changes
-6. Nothing — if nothing needs doing, that's fine`
+1. New active projects with 0 sessions (need initial exploration)
+2. Failing CI that can be fixed
+3. Stalled work with clear next steps
+4. Skill invocations that compound value (/evolve, /pursue)
+5. Nothing — if nothing needs doing, that's fine`
 
 // ─── Versioned policy loading ────────────────────────────────────────
 
@@ -118,10 +123,11 @@ export async function decideAction(
     const execFileAsync = promisify(execFile)
 
     try {
-      const { stdout } = await execFileAsync('claude', [
+      const claudePath = process.env.CLAUDE_PATH ?? '/home/drew/.local/bin/claude'
+      const { stdout } = await execFileAsync(claudePath, [
         '-p', prompt,
         '--output-format', 'text',
-      ], { timeout: 60_000 })
+      ], { timeout: 60_000, env: { ...process.env, PATH: `${process.env.HOME}/.local/bin:${process.env.PATH}` } })
       responseText = stdout
     } catch (e) {
       return null
@@ -185,7 +191,28 @@ export async function executeAction(action: Action): Promise<ActionOutcome> {
   }
 }
 
+async function resolveProjectPath(project: string): Promise<string> {
+  if (project.startsWith('/')) return project
+  const home = homedir()
+  const candidates = [
+    join(home, 'foreman-projects', 'avalanche-intelligence', 'repo', project),
+    join(home, 'foreman-projects', 'belief-state-agents', 'repo', project),
+    join(home, 'foreman-projects', 'PiGraph', 'repo', project),
+    join(home, 'foreman-projects', project),
+    join(home, 'code', project),
+  ]
+  for (const p of candidates) {
+    try {
+      const s = await stat(p)
+      if (s.isDirectory()) return p
+    } catch {}
+  }
+  return join(home, 'code', project)
+}
+
 async function executeSpawnSession(action: Action): Promise<ActionOutcome> {
+  const projectPath = await resolveProjectPath(action.project)
+
   if (action.details.harness === 'foreman') {
     const { spawnChild } = await import('./foreman-provider.js')
     const child = await spawnChild({
@@ -199,52 +226,50 @@ async function executeSpawnSession(action: Action): Promise<ActionOutcome> {
     }
   }
 
-  const { runSessionSurface } = await import('./session-run.js')
-  const result = await runSessionSurface({
-    provider: (action.details.harness as 'claude' | 'codex') ?? 'claude',
-    action: 'start',
-    prompt: action.details.prompt ?? action.goal,
-    cwd: action.project,
-    approve: true,
-  })
-  return {
-    success: result.status === 'completed',
-    summary: `Session ${result.sessionId ?? 'unknown'}: ${result.status}`,
-    evidence: result.sessionId ? [`session:${result.sessionId}`] : [],
+  // Spawn claude directly — simpler and more reliable than runSessionSurface
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const exec = promisify(execFile)
+  const claudePath = process.env.CLAUDE_PATH ?? '/home/drew/.local/bin/claude'
+  const prompt = action.details.prompt ?? action.goal
+
+  try {
+    const { stdout } = await exec(claudePath, [
+      '-p', prompt,
+      '--output-format', 'text',
+    ], {
+      cwd: projectPath,
+      timeout: 300_000, // 5 min
+      env: { ...process.env, PATH: `${process.env.HOME}/.local/bin:${process.env.PATH}` },
+    })
+    return {
+      success: true,
+      summary: `Session completed in ${action.project}: ${stdout.slice(0, 200)}`,
+      evidence: [`session:${action.project}`],
+    }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return {
+      success: false,
+      summary: `Session failed in ${action.project}: ${msg.slice(0, 200)}`,
+      evidence: [],
+    }
   }
 }
 
 async function executeResumeSession(action: Action): Promise<ActionOutcome> {
-  const { runSessionSurface } = await import('./session-run.js')
-  const result = await runSessionSurface({
-    provider: (action.details.harness as 'claude' | 'codex') ?? 'claude',
-    action: 'continue-last',
-    prompt: action.details.prompt ?? action.goal,
-    cwd: action.project,
-    approve: true,
+  return executeSpawnSession({
+    ...action,
+    details: { ...action.details, prompt: action.details.prompt ?? `Continue working on: ${action.goal}` },
   })
-  return {
-    success: result.status === 'completed',
-    summary: `Resume ${result.sessionId ?? 'last'}: ${result.status}`,
-    evidence: result.sessionId ? [`session:${result.sessionId}`] : [],
-  }
 }
 
 async function executeInvokeSkill(action: Action): Promise<ActionOutcome> {
-  const { runSessionSurface } = await import('./session-run.js')
   const skill = action.details.skill ?? '/evolve'
-  const result = await runSessionSurface({
-    provider: 'claude',
-    action: 'start',
-    prompt: `${skill} ${action.details.target ?? action.goal}`,
-    cwd: action.project,
-    approve: true,
+  return executeSpawnSession({
+    ...action,
+    details: { ...action.details, prompt: `${skill} ${action.details.target ?? action.goal}` },
   })
-  return {
-    success: result.status === 'completed',
-    summary: `Skill ${skill}: ${result.status}`,
-    evidence: [`skill:${skill}`],
-  }
 }
 
 async function executeSendNotification(action: Action): Promise<ActionOutcome> {
@@ -477,6 +502,12 @@ export async function runPolicyCycle(options?: {
     log(`Confidence: ${result.score.toFixed(2)} (${result.level}) → ${result.executed ? 'executed' : 'not executed'}`)
     if (result.outcome) {
       log(`Outcome: ${result.outcome.success ? 'success' : 'failure'} — ${result.outcome.summary}`)
+      // If action failed, clear it from dedup so it can be retried
+      if (!result.outcome.success) {
+        const key = actionKey(action)
+        const idx = recentDecisionKeys.indexOf(key)
+        if (idx !== -1) recentDecisionKeys.splice(idx, 1)
+      }
     }
 
     const decision: PolicyDecision = {

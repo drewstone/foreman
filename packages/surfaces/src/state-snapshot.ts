@@ -347,7 +347,7 @@ export function formatStateForLLM(state: ForemanState): string {
         : '[BLOCKED]'
       const harness = p.harnesses.length > 0 ? ` (${p.harnesses.join(', ')})` : ''
       const branch = p.activeBranches.length > 0 ? ` [${p.activeBranches[0]}]` : ''
-      lines.push(`- ${status} **${p.name}**${branch} — ${p.totalSessions} sessions, CI: ${p.ciStatus}${harness}`)
+      lines.push(`- ${status} **${p.name}** (${p.path})${branch} — ${p.totalSessions} sessions, CI: ${p.ciStatus}${harness}`)
       if (p.recentGoals.length > 0) {
         lines.push(`  Recent: ${p.recentGoals[0].slice(0, 120)}`)
       }

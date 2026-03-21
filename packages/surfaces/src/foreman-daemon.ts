@@ -76,8 +76,9 @@ function debouncedPolicyCycle(state: DaemonState, config: DaemonConfig): void {
   const now = Date.now()
   if (now - state.lastPolicyCycle < config.minPolicyCycleMs) return
 
-  // Debounce: wait 30s of quiet before triggering
-  if (debounceTimer) clearTimeout(debounceTimer)
+  // Debounce: fire 30s after FIRST event, not 30s of silence
+  // (active sessions generate continuous events — waiting for silence never works)
+  if (debounceTimer) return // already scheduled, let it fire
   debounceTimer = setTimeout(() => {
     debounceTimer = null
     triggerPolicyCycle(state, config).catch((e) => {
