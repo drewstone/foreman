@@ -70,16 +70,20 @@ function createEvent(
 // ─── Debouncing ─────────────────────────────────────────────────────
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
-const DEBOUNCE_MS = 5000 // batch events within 5 seconds
 
 function debouncedPolicyCycle(state: DaemonState, config: DaemonConfig): void {
+  // Don't schedule if we're within the rate limit window
+  const now = Date.now()
+  if (now - state.lastPolicyCycle < config.minPolicyCycleMs) return
+
+  // Debounce: wait 30s of quiet before triggering
   if (debounceTimer) clearTimeout(debounceTimer)
   debounceTimer = setTimeout(() => {
     debounceTimer = null
     triggerPolicyCycle(state, config).catch((e) => {
       log(config, `Policy cycle error: ${e}`)
     })
-  }, DEBOUNCE_MS)
+  }, 30_000)
 }
 
 // ─── Logging ────────────────────────────────────────────────────────
