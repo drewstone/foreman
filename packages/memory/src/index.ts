@@ -377,3 +377,5 @@ function weightedAverage(
 function dedupeStrings(values: string[], maxItems: number): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))].slice(0, maxItems);
 }
+
+export { ConfidenceStore, type ConfidenceEntry, type ConfidenceSignal, type ConfidenceLevel, type ConfidenceOverride, type ActionType, ACTION_TYPES } from './confidence.js'
