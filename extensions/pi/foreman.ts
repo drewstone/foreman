@@ -20,7 +20,7 @@
  *   /heartbeat       — run a heartbeat scan now
  *   /auto [goal]     — toggle autonomous check→fix→review→ship loop
  *   /watchdog        — toggle mid-session stuck detection
- *   /qmd             — generate and show CLAUDE.md context for current repo
+ *   /context         — generate and show Foreman context for current repo
  *
  * Flags:
  *   --foreman-auto   — enable autonomous loop from CLI
@@ -758,8 +758,8 @@ import('./packages/surfaces/src/session-insights.ts').then(async ({ extractDeepS
 
   // ── Command: /qmd ──────────────────────────────────────────────
 
-  pi.registerCommand('qmd', {
-    description: 'Generate and show Foreman CLAUDE.md context for current repo',
+  pi.registerCommand('context', {
+    description: 'Generate and show Foreman context (memory, repo facts, session insights) for current repo',
     handler: async (_args, ctx) => {
       ctx.ui.notify('Generating CLAUDE.md context...', 'info')
       const output = run(

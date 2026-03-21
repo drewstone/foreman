@@ -146,7 +146,7 @@ Started 2026-03-20. See `.foreman/rollout-tracker.md` for daily logs.
 ## Future — Phase 10
 
 - [ ] Pi extension tested in real Pi session end-to-end
-- [ ] QMD available as MCP tool
+- [ ] Foreman context generation as MCP tool
 - [ ] Foreman API deployed as systemd service (not just `npm run serve`)
 - [ ] Profile-driven heartbeat (reads preferences from active profile)
 - [ ] GitHub App integration (replace `gh` CLI with authenticated API)
