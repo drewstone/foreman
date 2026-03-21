@@ -370,6 +370,36 @@ export async function logDecision(decision: PolicyDecision): Promise<void> {
   )
 }
 
+// ─── Decision deduplication ─────────────────────────────────────────
+
+const recentDecisionKeys: string[] = []
+const MAX_DEDUP_HISTORY = 10
+
+function actionKey(action: Action): string {
+  return `${action.type}:${action.project}`
+}
+
+function isDuplicate(action: Action): boolean {
+  return recentDecisionKeys.includes(actionKey(action))
+}
+
+function recordDecision(action: Action | null): void {
+  if (!action) return
+  const key = actionKey(action)
+  // Remove if already tracked (will re-add at end)
+  const idx = recentDecisionKeys.indexOf(key)
+  if (idx !== -1) recentDecisionKeys.splice(idx, 1)
+  recentDecisionKeys.push(key)
+  if (recentDecisionKeys.length > MAX_DEDUP_HISTORY) {
+    recentDecisionKeys.shift()
+  }
+}
+
+/** Clear dedup history — call when new events arrive so the policy can re-evaluate */
+export function clearDedup(): void {
+  recentDecisionKeys.length = 0
+}
+
 // ─── Full policy cycle ──────────────────────────────────────────────
 
 export async function runPolicyCycle(options?: {
@@ -406,6 +436,7 @@ export async function runPolicyCycle(options?: {
 
     if (!action) {
       log('Policy: do nothing')
+      recordDecision(null)
       const decision: PolicyDecision = {
         timestamp: new Date().toISOString(),
         state,
@@ -419,6 +450,23 @@ export async function runPolicyCycle(options?: {
       return decision
     }
 
+    // Dedup: if we already proposed this exact (type, project) recently, skip
+    if (isDuplicate(action)) {
+      log(`Policy: ${action.type} on ${action.project} — DEDUP (already proposed recently)`)
+      const decision: PolicyDecision = {
+        timestamp: new Date().toISOString(),
+        state,
+        action: null,
+        confidenceLevel: 'dry-run',
+        confidenceScore: 0,
+        executed: false,
+        outcome: null,
+      }
+      // Don't log dedup'd decisions — they're noise
+      return decision
+    }
+
+    recordDecision(action)
     log(`Policy: ${action.type} on ${action.project} — ${action.reasoning}`)
 
     // Gate and execute

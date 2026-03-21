@@ -12,7 +12,7 @@ import { readdir, stat, mkdir, appendFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { ConfidenceStore } from '@drew/foreman-memory/confidence'
-import { runPolicyCycle, type PolicyDecision } from './policy.js'
+import { runPolicyCycle, clearDedup, type PolicyDecision } from './policy.js'
 import type { ForemanEvent } from './state-snapshot.js'
 
 const FOREMAN_HOME = process.env.FOREMAN_HOME ?? join(homedir(), '.foreman')
@@ -161,6 +161,9 @@ function pushEvent(state: DaemonState, config: DaemonConfig, event: ForemanEvent
   }
 
   log(config, `Event: [${event.type}] ${event.project}`)
+
+  // New events clear dedup so the policy can reconsider with fresh context
+  clearDedup()
 
   // Debounce: batch rapid events into single policy cycle
   debouncedPolicyCycle(state, config)

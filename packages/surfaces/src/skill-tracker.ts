@@ -79,46 +79,43 @@ export async function trackSkillPerformance(options?: {
 
       if (invocations.length === 0) continue
 
-      // Also search assistant responses for completion signals
-      const responses = index.search({
-        query: skill,
-        role: 'assistant',
-        hoursBack,
-        limit: 50,
+      // Search for success/failure indicators in assistant messages
+      // FTS5 doesn't support OR, so we search multiple terms and merge
+      const successTerms = ['committed', 'pushed', 'passed', 'verified', 'promoted']
+      const failureTerms = ['giving up', 'timed out', 'aborted', 'max iterations']
+
+      const successResults = successTerms.flatMap((term) => {
+        try { return index.search({ query: term, role: 'assistant', hoursBack, limit: 30 }) }
+        catch { return [] }
+      })
+      const failureResults = failureTerms.flatMap((term) => {
+        try { return index.search({ query: term, role: 'assistant', hoursBack, limit: 30 }) }
+        catch { return [] }
       })
 
-      // Classify each invocation as success/failure based on nearby responses
+      // Classify each invocation
       const classified: SkillInvocation[] = []
       for (const inv of invocations) {
-        const nearbyResponses = responses.filter((r) =>
+        const invTime = new Date(inv.message.timestamp).getTime()
+        const window = 30 * 60 * 1000
+
+        // Check for success signals in the same session within 30 min after invocation
+        const hasSuccess = successResults.some((r) =>
           r.message.sessionId === inv.message.sessionId &&
-          Math.abs(new Date(r.message.timestamp).getTime() - new Date(inv.message.timestamp).getTime()) < 30 * 60 * 1000,
+          r.message.timestamp > inv.message.timestamp &&
+          new Date(r.message.timestamp).getTime() - invTime < window,
         )
 
-        const responseText = nearbyResponses.map((r) => r.message.content).join(' ').toLowerCase()
+        // Check for failure signals in the same session within 30 min after invocation
+        const hasFailure = failureResults.some((r) =>
+          r.message.sessionId === inv.message.sessionId &&
+          r.message.timestamp > inv.message.timestamp &&
+          new Date(r.message.timestamp).getTime() - invTime < window,
+        )
 
-        // Positive signals — conclusive evidence of success
-        const positiveSignals = [
-          'all tests pass', 'all checks pass', 'ci is green',
-          'pr created', 'pr #', 'pushed to', 'merged to',
-          'committed', 'commit ',
-          'score: 9', 'score: 10', '9/10', '10/10',
-          'verified', 'converged', 'promoted',
-        ]
-        // Negative signals — conclusive evidence of failure/abandonment
-        const negativeSignals = [
-          'giving up', 'cannot proceed', 'unable to proceed',
-          'max iterations reached', 'max rounds reached', 'timed out',
-          'aborted', 'cancelled',
-          'score: 0', 'score: 1/', 'score: 2/', '0/10', '1/10', '2/10',
-        ]
-
-        const posCount = positiveSignals.filter((s) => responseText.includes(s)).length
-        const negCount = negativeSignals.filter((s) => responseText.includes(s)).length
-
-        // Classify: if more positive than negative signals, or no signals but agent ran long enough
-        const succeeded = posCount > negCount ||
-          (posCount === 0 && negCount === 0 && nearbyResponses.length >= 3)
+        // Success if we found positive signals, or if no failure signals detected
+        // (most skill invocations that don't explicitly fail produce useful work)
+        const succeeded = hasSuccess || !hasFailure
 
         classified.push({
           skillName: skill,
