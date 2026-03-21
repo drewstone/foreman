@@ -297,7 +297,63 @@ export async function generateClaudeMd(options: {
     sections.push(`**Blocker:** ${session.blockerReason}`);
   }
 
-  // Memory-derived instructions
+  // Load learning data from Foreman memory stores
+  const repoName = repoPath.split('/').pop() ?? '';
+  let operatorPatterns: string[] = [];
+  let repoFacts: string[] = [];
+  let repoRecipes: Array<{ pattern: string; confidence: number }> = [];
+  try {
+    const { readFile: rf } = await import('node:fs/promises');
+    const { join: j } = await import('node:path');
+    const { homedir: hd } = await import('node:os');
+    const fhome = process.env.FOREMAN_HOME ?? j(hd(), '.foreman');
+
+    // Operator profile
+    try {
+      const profile = JSON.parse(await rf(j(fhome, 'memory', 'user', 'operator.json'), 'utf8'));
+      operatorPatterns = profile.operatorPatterns ?? [];
+    } catch {}
+
+    // Repo environment facts
+    try {
+      const env = JSON.parse(await rf(j(fhome, 'memory', 'environment', `${repoName}.json`), 'utf8'));
+      repoFacts = env.facts ?? [];
+    } catch {}
+
+    // Repo repair recipes
+    try {
+      const strategy = JSON.parse(await rf(j(repoPath, '.foreman', 'memory', 'strategy', 'engineering.json'), 'utf8'));
+      repoRecipes = (strategy.scoredRecipes ?? [])
+        .filter((r: { confidence: number }) => r.confidence >= 0.5)
+        .map((r: { pattern: string; confidence: number }) => ({ pattern: r.pattern, confidence: r.confidence }));
+    } catch {}
+  } catch {}
+
+  // Inject operator profile (compact — Hermes-style)
+  if (operatorPatterns.length > 0) {
+    sections.push('');
+    sections.push(`**Operator:** ${operatorPatterns.slice(0, 3).join('. ')}.`);
+  }
+
+  // Inject repo facts from learning
+  if (repoFacts.length > 0) {
+    sections.push('');
+    sections.push('### Repo facts (learned)');
+    for (const fact of repoFacts.slice(0, 5)) {
+      sections.push(`- ${fact}`);
+    }
+  }
+
+  // Inject repair recipes
+  if (repoRecipes.length > 0) {
+    sections.push('');
+    sections.push('### Known repair patterns');
+    for (const r of repoRecipes.slice(0, 5)) {
+      sections.push(`- ${r.pattern} (${(r.confidence * 100).toFixed(0)}% confidence)`);
+    }
+  }
+
+  // Memory-derived instructions (legacy — from passed-in memory param)
   const facts = (memory as { facts?: string[] })?.facts ?? [];
   const ciReqs = facts.filter((f: string) => f.startsWith('ci-requirement:'));
   const checkCmds = facts.filter((f: string) => f.startsWith('check-command:'));
