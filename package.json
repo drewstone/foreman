@@ -56,7 +56,8 @@
     "experiment": "tsx packages/surfaces/src/worktree-experiment-cli.ts",
     "daily-report": "tsx packages/surfaces/src/daily-report-cli.ts",
     "session-index": "tsx packages/surfaces/src/session-index-cli.ts",
-    "learn": "tsx packages/surfaces/src/learning-cli.ts"
+    "learn": "tsx packages/surfaces/src/learning-cli.ts",
+    "serve": "tsx packages/surfaces/src/api-server.ts"
   },
   "dependencies": {
     "@ax-llm/ax": "^19.0.17",

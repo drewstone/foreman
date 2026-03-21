@@ -36,6 +36,7 @@ import { VersionedStore } from '@drew/foreman-core'
 import { loadSessionMetrics, aggregateMetrics, renderMetricsAggregate } from './session-metrics.js'
 import { trackSkillPerformance, detectDegradation, renderSkillPerformance } from './skill-tracker.js'
 import { notifyDailyReport, notifyDegradation } from './notify.js'
+import { checkCosts, renderCostReport } from './cost-monitor.js'
 
 const FOREMAN_HOME = process.env.FOREMAN_HOME ?? join(homedir(), '.foreman')
 const TRACES_DIR = join(FOREMAN_HOME, 'traces', 'heartbeats')
@@ -486,6 +487,12 @@ export async function generateDailyReport(date: string): Promise<string> {
       report += '\n' + renderSkillPerformance(performances, proposals)
     }
   } catch { /* no skill data */ }
+
+  // Cost monitoring
+  try {
+    const costReport = await checkCosts({ hoursBack: 48 })
+    report += '\n' + renderCostReport(costReport)
+  } catch { /* no cost data */ }
 
   // Auto-score this report
   const knownRepos = [...new Set(traces.flatMap((t) => t.sessions.map((s) => s.repo)))]

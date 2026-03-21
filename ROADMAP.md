@@ -131,15 +131,26 @@ Started 2026-03-20. See `.foreman/rollout-tracker.md` for daily logs.
 - [x] Operator profile injection on session start
 - [x] All cron scripts send Telegram notifications
 
-## Future — Phase 9
+## Completed — Phase 9: Production Infrastructure
+
+- [x] Golden suite generator — extracts verified traces into regression test cases
+- [x] AxLLM GEPA full pipeline wired into nightly cron (dataset → rank → GEPA optimize → policy update → snapshot)
+- [x] Foreman HTTP API server (`npm run serve`) — /status, /report, /metrics, /search, /webhook, /run, /learn, /artifacts
+- [x] GitHub webhook receiver — CI status changes trigger notifications
+- [x] Multi-user operator profiles — preferences, budgets, repos, skills, notification settings
+- [x] Profile bootstrap from existing memory and session index
+- [x] Cost monitoring — per-repo, per-harness, per-day tracking with budget alerts
+- [x] Cost report in daily report
+- [x] Nightly optimization orchestrator — full 6-step pipeline (variants → GEPA → promote → skills → golden → costs)
+
+## Future — Phase 10
 
 - [ ] Pi extension tested in real Pi session end-to-end
-- [ ] Golden suites from real traces for regression testing
-- [ ] AxLLM GEPA full training (not just selection — generate new prompt variants via optimization)
 - [ ] QMD available as MCP tool
-- [ ] Foreman as a service (API + webhook receiver, not just cron)
-- [ ] Multi-user support (multiple operator profiles)
-- [ ] Cost budgets and alerting (per-repo, per-harness, per-day limits)
+- [ ] Foreman API deployed as systemd service (not just `npm run serve`)
+- [ ] Profile-driven heartbeat (reads preferences from active profile)
+- [ ] GitHub App integration (replace `gh` CLI with authenticated API)
+- [ ] Dashboard web UI (read-only view of reports, metrics, artifacts)
 
 ## What not to do
 
