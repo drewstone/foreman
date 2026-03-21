@@ -162,6 +162,34 @@ export class ConfidenceStore {
     return (row?.override as ConfidenceOverride) ?? null
   }
 
+  getLog(limit = 50): Array<{
+    actionType: string
+    project: string
+    signal: string
+    oldScore: number
+    newScore: number
+    timestamp: string
+  }> {
+    const rows = this.db.prepare(
+      'SELECT action_type, project, signal, old_score, new_score, timestamp FROM confidence_log ORDER BY id DESC LIMIT ?',
+    ).all(limit) as Array<{
+      action_type: string
+      project: string
+      signal: string
+      old_score: number
+      new_score: number
+      timestamp: string
+    }>
+    return rows.map((r) => ({
+      actionType: r.action_type,
+      project: r.project,
+      signal: r.signal,
+      oldScore: r.old_score,
+      newScore: r.new_score,
+      timestamp: r.timestamp,
+    }))
+  }
+
   close(): void {
     this.db.close()
   }

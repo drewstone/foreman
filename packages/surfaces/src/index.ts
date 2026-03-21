@@ -58,3 +58,5 @@ export { runEvals, listEnvNames, ENV_REGISTRY, type CombinedEvalReport, type Env
 export { buildStateSnapshot, formatStateForLLM, type ForemanState, type ForemanEvent, type ProjectState, type BudgetState } from './state-snapshot.js'
 export { decideAction, executeAction, gateAndExecute, runPolicyCycle, type Action, type ActionType, type ActionOutcome, type PolicyDecision, type GatedResult } from './policy.js'
 export { createDaemon, type ForemanDaemon, type DaemonConfig } from './foreman-daemon.js'
+export { spawnChild, listChildren, stopChild, stopAll, type ForemanChildInstance, type ForemanProviderOptions } from './foreman-provider.js'
+export { computePolicyMetrics, generatePolicyVariant, crossPollinate, type PolicyMetrics } from './policy-optimizer.js'

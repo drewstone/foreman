@@ -14,6 +14,7 @@ import { homedir } from 'node:os'
 import type { ForemanState, ForemanEvent } from './state-snapshot.js'
 import { buildStateSnapshot, formatStateForLLM } from './state-snapshot.js'
 import { ConfidenceStore, type ConfidenceLevel, type ConfidenceSignal, type ActionType } from '@drew/foreman-memory/confidence'
+import { VersionedStore } from '@drew/foreman-core'
 import { notify } from './notify.js'
 
 const FOREMAN_HOME = process.env.FOREMAN_HOME ?? join(homedir(), '.foreman')
@@ -64,7 +65,7 @@ Respond with EXACTLY one JSON object (no markdown, no explanation):
 }
 
 For details, include relevant fields:
-- spawn-session: { "harness": "claude|codex|pi", "prompt": "..." }
+- spawn-session: { "harness": "claude|codex|pi|foreman", "prompt": "..." }
 - resume-session: { "sessionId": "...", "harness": "..." }
 - invoke-skill: { "skill": "/evolve|/polish|/verify|...", "target": "..." }
 - run-experiment: { "metric": "...", "command": "..." }
@@ -80,6 +81,21 @@ Prioritize:
 5. Notifications about state changes
 6. Nothing — if nothing needs doing, that's fine`
 
+// ─── Versioned policy loading ────────────────────────────────────────
+
+async function loadPolicyPrompt(): Promise<string> {
+  try {
+    const store = new VersionedStore()
+    const active = await store.getActive('policy', 'main')
+    if (active) return active.content
+    // Bootstrap: save the default prompt as v001
+    await store.put('policy', 'main', POLICY_SYSTEM, { source: 'bootstrap' })
+    return POLICY_SYSTEM
+  } catch {
+    return POLICY_SYSTEM
+  }
+}
+
 // ─── Core policy call ───────────────────────────────────────────────
 
 export async function decideAction(
@@ -87,7 +103,8 @@ export async function decideAction(
   provider?: { run(prompt: string): Promise<{ stdout: string }> },
 ): Promise<Action | null> {
   const stateText = formatStateForLLM(state)
-  const prompt = `${POLICY_SYSTEM}\n\n---\n\n${stateText}`
+  const systemPrompt = await loadPolicyPrompt()
+  const prompt = `${systemPrompt}\n\n---\n\n${stateText}`
 
   let responseText: string
 
@@ -169,6 +186,19 @@ export async function executeAction(action: Action): Promise<ActionOutcome> {
 }
 
 async function executeSpawnSession(action: Action): Promise<ActionOutcome> {
+  if (action.details.harness === 'foreman') {
+    const { spawnChild } = await import('./foreman-provider.js')
+    const child = await spawnChild({
+      project: action.project,
+      dryRun: true, // children always start in dry-run
+    })
+    return {
+      success: child.status === 'running',
+      summary: `Foreman child spawned for ${action.project} (PID ${child.pid})`,
+      evidence: [`foreman-child:${action.project}:${child.pid}`],
+    }
+  }
+
   const { runSessionSurface } = await import('./session-run.js')
   const result = await runSessionSurface({
     provider: (action.details.harness as 'claude' | 'codex') ?? 'claude',
