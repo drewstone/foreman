@@ -11,7 +11,7 @@
 import { mkdir, writeFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { spawn as nodeSpawn } from 'node:child_process'
+import { spawn as nodeSpawn, execFileSync } from 'node:child_process'
 import type { ForemanState, ForemanEvent } from './state-snapshot.js'
 import { buildStateSnapshot, formatStateForLLM } from './state-snapshot.js'
 import { ConfidenceStore, type ConfidenceLevel, type ConfidenceSignal, type ActionType } from '@drew/foreman-memory/confidence'
@@ -226,7 +226,6 @@ function tmuxSessionName(project: string): string {
 
 function tmuxSessionExists(sessionName: string): boolean {
   try {
-    const { execFileSync } = require('node:child_process') as typeof import('node:child_process')
     execFileSync('tmux', ['has-session', '-t', sessionName], { stdio: 'ignore' })
     return true
   } catch {
@@ -237,7 +236,6 @@ function tmuxSessionExists(sessionName: string): boolean {
 /** List all active foreman tmux sessions */
 export function listTmuxSessions(): string[] {
   try {
-    const { execFileSync } = require('node:child_process') as typeof import('node:child_process')
     const out = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
     return out.trim().split('\n').filter((s) => s.startsWith('foreman-'))
   } catch {
@@ -274,7 +272,6 @@ async function executeSpawnSession(action: Action): Promise<ActionOutcome> {
   // Spawn a persistent tmux session running claude
   // Operator can attach with: tmux attach -t foreman-<project>
   try {
-    const { execFileSync } = require('node:child_process') as typeof import('node:child_process')
     const env = { ...process.env, PATH: `${process.env.HOME}/.local/bin:${process.env.PATH}` }
 
     // Build the claude command — escape the prompt for shell
