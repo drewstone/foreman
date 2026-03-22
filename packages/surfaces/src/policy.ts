@@ -69,22 +69,22 @@ For details:
 - invoke-skill: { "skill": "/evolve|/polish|/verify|/pursue|/critical-audit", "target": "<what to improve>" }
 - do-nothing: { "reason": "..." }
 
-When spawning a session on a NEW project (0 sessions, no history):
-1. First session should: read all existing code/docs, understand the architecture, set up deps, run tests
-2. Create .foreman/experiments/MANIFEST.md with: hypothesis, methodology, success criteria, metrics to track
-3. Then start building/improving the highest-ROI gap
+When writing the "prompt" for spawn-session, write PLAIN ENGLISH instructions. Do NOT use slash commands like /init-context or /evolve in the prompt — the spawned session may not have those skills.
 
-When spawning on an EXISTING project:
-1. Continue from where the last session left off
-2. Run /evolve or /pursue to push quality forward
-3. Check CI, fix failures, ship improvements
+For a NEW project (0 sessions):
+- "Read all files in this repo. Understand the architecture, stack, and build system. Run any existing tests. Identify the highest-priority work items. Create .foreman/experiments/MANIFEST.md with hypothesis, methodology, and success criteria. Then start building the highest-ROI feature or fix."
+
+For an EXISTING project:
+- "Continue improving this project. Check what was done in previous sessions. Run tests, fix any failures. Push quality forward — improve test coverage, fix bugs, add missing features. Commit your work."
+
+CRITICAL: Each project has a confidence level shown as {autonomous}, {act-notify}, {propose}, or {dry-run}.
+ONLY pick projects marked {autonomous} or {act-notify}. Projects marked {dry-run} or {propose} will be blocked — do not waste a decision on them.
 
 Prioritize:
-1. New active projects with 0 sessions (need initial exploration)
-2. Failing CI that can be fixed
-3. Stalled work with clear next steps
-4. Skill invocations that compound value (/evolve, /pursue)
-5. Nothing — if nothing needs doing, that's fine`
+1. {autonomous} projects with 0 sessions (need initial exploration)
+2. {autonomous} projects with failing CI
+3. {autonomous} projects with stalled work
+4. Nothing — if no autonomous projects need work, say do-nothing`
 
 // ─── Versioned policy loading ────────────────────────────────────────
 
@@ -232,35 +232,42 @@ async function executeSpawnSession(action: Action): Promise<ActionOutcome> {
     }
   }
 
-  // Spawn claude directly — simpler and more reliable than runSessionSurface
-  const { execFile } = await import('node:child_process')
-  const { promisify } = await import('node:util')
-  const exec = promisify(execFile)
-  const claudePath = process.env.CLAUDE_PATH ?? '/home/drew/.local/bin/claude'
+  // Spawn claude directly with full path
   const prompt = action.details.prompt ?? action.goal
 
-  try {
-    const { stdout } = await exec(claudePath, [
-      '-p', prompt,
-      '--output-format', 'text',
-    ], {
+  return new Promise<ActionOutcome>((resolve) => {
+    const { spawn } = require('node:child_process') as typeof import('node:child_process')
+    const claudeBin = '/home/drew/.local/bin/claude'
+    const child = spawn(claudeBin, ['-p', prompt, '--output-format', 'text', '--max-turns', '30'], {
       cwd: projectPath,
-      timeout: 300_000, // 5 min
       env: { ...process.env, PATH: `${process.env.HOME}/.local/bin:${process.env.PATH}` },
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 600_000, // 10 min
     })
-    return {
-      success: true,
-      summary: `Session completed in ${action.project}: ${stdout.slice(0, 200)}`,
-      evidence: [`session:${action.project}`],
-    }
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e)
-    return {
-      success: false,
-      summary: `Session failed in ${action.project}: ${msg.slice(0, 200)}`,
-      evidence: [],
-    }
-  }
+
+    let stdout = ''
+    let stderr = ''
+    child.stdout?.on('data', (d: Buffer) => { stdout += d.toString() })
+    child.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
+
+    child.on('error', (err: Error) => {
+      resolve({
+        success: false,
+        summary: `Session spawn error in ${action.project}: ${err.message}`,
+        evidence: [],
+      })
+    })
+
+    child.on('close', (code: number | null) => {
+      resolve({
+        success: code === 0,
+        summary: code === 0
+          ? `Session completed in ${action.project}: ${stdout.slice(0, 200)}`
+          : `Session failed in ${action.project} (exit ${code}): ${(stderr || stdout).slice(0, 200)}`,
+        evidence: [`session:${action.project}`],
+      })
+    })
+  })
 }
 
 async function executeResumeSession(action: Action): Promise<ActionOutcome> {

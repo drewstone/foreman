@@ -347,7 +347,10 @@ export function formatStateForLLM(state: ForemanState): string {
         : '[BLOCKED]'
       const harness = p.harnesses.length > 0 ? ` (${p.harnesses.join(', ')})` : ''
       const branch = p.activeBranches.length > 0 ? ` [${p.activeBranches[0]}]` : ''
-      lines.push(`- ${status} **${p.name}** (${p.path})${branch} — ${p.totalSessions} sessions, CI: ${p.ciStatus}${harness}`)
+      // Show confidence level for this project if available
+      const confEntry = state.confidenceScores.find((c) => c.project === p.name && c.actionType === 'spawn-session')
+      const confLabel = confEntry ? ` {${confEntry.level}}` : ''
+      lines.push(`- ${status} **${p.name}** (${p.path})${branch}${confLabel} — ${p.totalSessions} sessions, CI: ${p.ciStatus}${harness}`)
       if (p.recentGoals.length > 0) {
         lines.push(`  Recent: ${p.recentGoals[0].slice(0, 120)}`)
       }
