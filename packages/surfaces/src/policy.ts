@@ -72,11 +72,13 @@ For details:
 
 When writing the "prompt" for spawn-session, write PLAIN ENGLISH instructions. Do NOT use slash commands like /init-context or /evolve in the prompt — the spawned session may not have those skills.
 
-For a NEW project (0 sessions):
-- "Read all files in this repo. Understand the architecture, stack, and build system. Run any existing tests. Identify the highest-priority work items. Create .foreman/experiments/MANIFEST.md with hypothesis, methodology, and success criteria. Then start building the highest-ROI feature or fix."
+Write SPECIFIC, ACTIONABLE prompts. Do not write vague exploration prompts. Examples:
 
-For an EXISTING project:
-- "Continue improving this project. Check what was done in previous sessions. Run tests, fix any failures. Push quality forward — improve test coverage, fix bugs, add missing features. Commit your work."
+For a NEW project: "Install dependencies. Run tests. Fix any failures. Read the codebase and identify the most broken or incomplete part. Fix it. Write tests for your fix. Commit everything with descriptive commit messages. Then move to the next broken thing and repeat."
+
+For an EXISTING project: "Run tests. Fix any failures. Look at recent git log to understand what was done. Find the next highest-priority incomplete feature. Build it completely. Write tests. Commit. Push quality forward."
+
+The prompt MUST instruct claude to WRITE CODE and COMMIT. Not just analyze or summarize.
 
 ONLY pick projects listed under "Actionable Projects". Other projects are read-only.
 
@@ -285,15 +287,52 @@ async function executeSpawnSession(action: Action): Promise<ActionOutcome> {
 
     // Send claude command with the prompt piped via --prompt-file
     // Write prompt to a temp file to avoid shell escaping issues
-    const promptFile = join(FOREMAN_HOME, 'tmp', `${sessionName}-prompt.txt`)
-    const fs = await import('node:fs')
-    fs.mkdirSync(join(FOREMAN_HOME, 'tmp'), { recursive: true })
-    fs.writeFileSync(promptFile, prompt, 'utf8')
+    const nodeFs = await import('node:fs')
+    nodeFs.mkdirSync(join(FOREMAN_HOME, 'tmp'), { recursive: true })
 
-    // Start claude with initial prompt, no turn limit
+    const promptFile = join(FOREMAN_HOME, 'tmp', `${sessionName}-prompt.txt`)
+    nodeFs.writeFileSync(promptFile, prompt, 'utf8')
+
+    // Write a driver script that loops claude with progressive prompts
+    const driverFile = join(FOREMAN_HOME, 'tmp', `${sessionName}-driver.sh`)
+    nodeFs.writeFileSync(driverFile, `#!/usr/bin/env bash
+set -e
+CLAUDE="${claudeBin}"
+PROMPT_FILE="${promptFile}"
+
+echo "[foreman] Starting work on $(basename $(pwd))..."
+echo "[foreman] Initial prompt: $(head -1 $PROMPT_FILE)"
+echo ""
+
+# Round 1: Initial prompt
+$CLAUDE -p "$(cat $PROMPT_FILE)" --output-format text --dangerously-skip-permissions
+
+# Round 2+: Keep going until done
+for i in $(seq 2 20); do
+  echo ""
+  echo "[foreman] === Round $i ==="
+  echo ""
+  $CLAUDE -p "Continue working on this project. Run tests. Fix any failures. Build the next highest-priority feature or fix the most broken thing. Write tests for your changes. Commit everything with descriptive commit messages. Do not stop until you have made real progress." --output-format text --dangerously-skip-permissions
+
+  # Check if tests pass — if so, we might be done
+  if git diff --quiet HEAD 2>/dev/null; then
+    echo "[foreman] No uncommitted changes after round $i. Checking if there's more to do..."
+    $CLAUDE -p "Review the current state of this project. Are there remaining high-priority tasks? If yes, start working on them immediately — write code, fix bugs, add tests, commit. If the project is production-ready with passing tests, say DONE." --output-format text --dangerously-skip-permissions | tee /tmp/foreman-check-$$.txt
+    if grep -q "DONE" /tmp/foreman-check-$$.txt; then
+      echo "[foreman] Project marked as done."
+      break
+    fi
+  fi
+done
+
+echo ""
+echo "[foreman] Session complete after $i rounds."
+`, 'utf8')
+    nodeFs.chmodSync(driverFile, '755')
+
     execFileSync('tmux', [
       'send-keys', '-t', sessionName,
-      `${claudeBin} -p "$(cat ${promptFile})" ; echo "[foreman] Session complete."`, 'Enter',
+      `bash ${driverFile}`, 'Enter',
     ], { env, stdio: 'ignore', timeout: 5_000 })
 
     return {
