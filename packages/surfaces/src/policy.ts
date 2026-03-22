@@ -295,38 +295,39 @@ async function executeSpawnSession(action: Action): Promise<ActionOutcome> {
 
     // Write a driver script that loops claude with progressive prompts
     const driverFile = join(FOREMAN_HOME, 'tmp', `${sessionName}-driver.sh`)
+    const buildPrompt = `You are working on this project autonomously. Your job is to make it production-ready.
+
+RULES:
+1. Read the existing code to understand what exists
+2. Install dependencies (npm install, pip install, etc.)
+3. Run any existing tests
+4. Fix ALL failures — do not skip broken tests
+5. Build missing features that the codebase needs
+6. Write tests for everything you build
+7. Commit your work frequently with descriptive messages
+8. Keep going until the project builds clean and tests pass
+
+Do NOT just analyze or summarize. WRITE CODE. COMMIT IT. Make real progress.`
+
     nodeFs.writeFileSync(driverFile, `#!/usr/bin/env bash
-set -e
 CLAUDE="${claudeBin}"
-PROMPT_FILE="${promptFile}"
 
 echo "[foreman] Starting work on $(basename $(pwd))..."
-echo "[foreman] Initial prompt: $(head -1 $PROMPT_FILE)"
 echo ""
 
-# Round 1: Initial prompt
-$CLAUDE -p "$(cat $PROMPT_FILE)" --output-format text --dangerously-skip-permissions
-
-# Round 2+: Keep going until done
-for i in $(seq 2 20); do
-  echo ""
+for i in $(seq 1 20); do
   echo "[foreman] === Round $i ==="
-  echo ""
-  $CLAUDE -p "Continue working on this project. Run tests. Fix any failures. Build the next highest-priority feature or fix the most broken thing. Write tests for your changes. Commit everything with descriptive commit messages. Do not stop until you have made real progress." --output-format text --dangerously-skip-permissions
+  $CLAUDE -p '${buildPrompt.replace(/'/g, "'\\''")}' --output-format text --dangerously-skip-permissions || true
 
-  # Check if tests pass — if so, we might be done
-  if git diff --quiet HEAD 2>/dev/null; then
-    echo "[foreman] No uncommitted changes after round $i. Checking if there's more to do..."
-    $CLAUDE -p "Review the current state of this project. Are there remaining high-priority tasks? If yes, start working on them immediately — write code, fix bugs, add tests, commit. If the project is production-ready with passing tests, say DONE." --output-format text --dangerously-skip-permissions | tee /tmp/foreman-check-$$.txt
-    if grep -q "DONE" /tmp/foreman-check-$$.txt; then
-      echo "[foreman] Project marked as done."
-      break
-    fi
-  fi
+  echo ""
+  echo "[foreman] Round $i complete. Commits so far:"
+  git log --oneline | head -5
+  echo ""
+
+  sleep 2
 done
 
-echo ""
-echo "[foreman] Session complete after $i rounds."
+echo "[foreman] Session complete."
 `, 'utf8')
     nodeFs.chmodSync(driverFile, '755')
 
