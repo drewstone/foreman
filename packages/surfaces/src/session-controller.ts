@@ -193,6 +193,10 @@ ${raw}
 
 // ─── Core: spawn ────────────────────────────────────────────────────
 
+// Track recently spawned sessions to prevent immediate nudging
+const recentlySpawned = new Map<string, number>()
+const SPAWN_COOLDOWN_MS = 120_000 // 2 min cooldown before nudging a new session
+
 export function spawn(projectPath: string, prompt?: string): SessionInfo {
   const name = sessionName(projectPath)
 
@@ -226,6 +230,9 @@ export function spawn(projectPath: string, prompt?: string): SessionInfo {
   // Send the initial prompt by typing it into claude's input
   const actualPrompt = prompt ?? buildPrompt(projectPath, 1)
   sendPrompt(name, actualPrompt)
+
+  // Mark as recently spawned so nudge doesn't interfere
+  recentlySpawned.set(name, Date.now())
 
   return getSessionInfo(name, projectPath)
 }
@@ -453,6 +460,10 @@ export function nudgeIdleSessions(): Array<{ name: string; round: number }> {
   for (const session of status()) {
     if (!session.alive) continue
     if (!isIdle(session.name)) continue
+
+    // Don't nudge sessions that were just spawned — claude needs time to start
+    const spawnedAt = recentlySpawned.get(session.name)
+    if (spawnedAt && Date.now() - spawnedAt < SPAWN_COOLDOWN_MS) continue
 
     const round = session.round + 1
     const prompt = buildPrompt(session.projectPath, round)
