@@ -220,12 +220,18 @@ export function spawn(projectPath: string, prompt?: string): SessionInfo {
   // Start interactive claude with --dangerously-skip-permissions
   tmuxRunQuiet(['send-keys', '-t', name, `${CLAUDE_BIN} --dangerously-skip-permissions`, 'Enter'])
 
-  // Wait for claude to initialize (show the > prompt)
-  let ready = false
-  for (let i = 0; i < 10; i++) {
-    try { const p = tmuxRun(['capture-pane', '-t', name, '-p', '-S', '-3']); if (p.includes('>') || p.includes('Claude')) { ready = true; break } } catch {}
+  // Wait for claude to fully initialize (TUI banner + input prompt visible)
+  for (let i = 0; i < 30; i++) {
     execFileSync('sleep', ['1'], { stdio: 'ignore' })
+    try {
+      const p = tmuxRun(['capture-pane', '-t', name, '-p', '-S', '-5'])
+      // Claude TUI shows the banner with ▐▛ or the ❯ input prompt
+      if (p.includes('❯') || p.includes('▐▛')) break
+    } catch {}
   }
+
+  // Small extra wait for the input field to be ready
+  execFileSync('sleep', ['2'], { stdio: 'ignore' })
 
   // Send the initial prompt by typing it into claude's input
   const actualPrompt = prompt ?? buildPrompt(projectPath, 1)
