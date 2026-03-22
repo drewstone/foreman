@@ -60,3 +60,10 @@ export { decideAction, executeAction, gateAndExecute, runPolicyCycle, type Actio
 export { createDaemon, type ForemanDaemon, type DaemonConfig } from './foreman-daemon.js'
 export { spawnChild, listChildren, stopChild, stopAll, type ForemanChildInstance, type ForemanProviderOptions } from './foreman-provider.js'
 export { computePolicyMetrics, generatePolicyVariant, crossPollinate, type PolicyMetrics } from './policy-optimizer.js'
+export {
+  spawn as spawnSession, send as sendToSession, status as sessionStatus,
+  inspect as inspectSession, metrics as sessionMetrics, kill as killSession,
+  killAll as killAllSessions, isAlive as isSessionAlive, driveProject,
+  robotStatus, detectContextExhaustion,
+  type SessionInfo, type SessionMetrics, type InspectOptions,
+} from './session-controller.js'

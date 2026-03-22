@@ -120,12 +120,11 @@ export async function buildStateSnapshot(
   // Check which projects have active tmux sessions
   const activeTmuxSessions = new Set<string>()
   try {
-    const { execFileSync } = await import('node:child_process')
-    const out = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
-    for (const line of out.trim().split('\n')) {
-      if (line.startsWith('foreman-')) activeTmuxSessions.add(line)
+    const { status: scStatus } = await import('./session-controller.js')
+    for (const s of scStatus()) {
+      if (s.alive) activeTmuxSessions.add(s.name)
     }
-  } catch { /* tmux not running */ }
+  } catch { /* session controller may not be available */ }
 
   // Add projects from watched git dirs that aren't in session index yet
   if (options?.watchedDirs) {
