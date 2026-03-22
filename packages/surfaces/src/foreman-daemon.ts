@@ -204,6 +204,19 @@ async function triggerPolicyCycle(state: DaemonState, config: DaemonConfig): Pro
       : `NOT EXECUTED (${decision.confidenceLevel})`
 
     await log(config, `Decision: ${actionDesc} → ${execDesc}`)
+
+    // Score projects periodically (every 5th cycle)
+    if (state.recentActions.length % 5 === 0 && config.watchGitDirs.length > 0) {
+      try {
+        const { scoreAllProjects } = await import('./session-scorer.js')
+        const scores = scoreAllProjects(config.watchGitDirs)
+        for (const s of scores) {
+          if (s.scores.commits > 0) {
+            await log(config, `  Score: ${s.project} — ${s.details}`)
+          }
+        }
+      } catch {}
+    }
   } finally {
     policyRunning = false
   }
