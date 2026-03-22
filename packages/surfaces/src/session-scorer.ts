@@ -32,6 +32,10 @@ export interface SessionScore {
     succinctness: number      // 0-1 (1 = very succinct)
     no_mocks: number          // 0-1 (1 = no mocks found)
     has_session_state: number // 0 or 1
+    has_readme: number        // 0 or 1
+    has_docs: number          // 0 or 1
+    can_run: number           // 0 or 1 (has start/serve/main entry)
+    has_deploy: number        // 0 or 1 (Dockerfile, CI, deploy script)
     files_changed: number     // raw count
     lines_added: number       // raw count
   }
@@ -102,22 +106,56 @@ export function scoreSession(projectPath: string, round: number = 0): SessionSco
   // Session state exists
   const hasSessionState = existsSync(join(projectPath, '.foreman', 'session-state.md')) ? 1 : 0
 
-  // Overall: weighted composite
+  // Production-readiness signals
+  const hasReadme = existsSync(join(projectPath, 'README.md')) ? 1 : 0
+  const hasDocs = existsSync(join(projectPath, 'docs')) || existsSync(join(projectPath, 'USAGE.md')) ? 1 : 0
+
+  // Can it run? Check for entry points
+  let canRun = 0
+  const runIndicators = ['main.py', 'main.ts', 'index.ts', 'app.py', 'server.py', 'server.ts']
+  for (const f of runIndicators) {
+    if (existsSync(join(projectPath, f)) || existsSync(join(projectPath, 'src', f))) { canRun = 1; break }
+  }
+  // Also check package.json for start/serve scripts
+  try {
+    const pkg = JSON.parse(readFileSync(join(projectPath, 'package.json'), 'utf8'))
+    if (pkg.scripts?.start || pkg.scripts?.serve || pkg.scripts?.dev || pkg.main) canRun = 1
+  } catch {}
+  try {
+    const pyproject = readFileSync(join(projectPath, 'pyproject.toml'), 'utf8')
+    if (pyproject.includes('[project.scripts]') || pyproject.includes('console_scripts')) canRun = 1
+  } catch {}
+
+  // Deploy path?
+  const hasDeploy = (
+    existsSync(join(projectPath, 'Dockerfile')) ||
+    existsSync(join(projectPath, 'docker-compose.yml')) ||
+    existsSync(join(projectPath, '.github', 'workflows')) ||
+    existsSync(join(projectPath, 'fly.toml')) ||
+    existsSync(join(projectPath, 'vercel.json'))
+  ) ? 1 : 0
+
+  // Overall: weighted toward production-readiness
   const overall =
-    testsPass * 0.3 +
-    (commits > 0 ? 0.2 : 0) +
-    succinctness * 0.15 +
-    noMocks * 0.15 +
-    hasSessionState * 0.1 +
-    (filesChanged > 0 ? 0.1 : 0)
+    testsPass * 0.2 +
+    (commits > 0 ? 0.15 : 0) +
+    succinctness * 0.1 +
+    noMocks * 0.1 +
+    hasSessionState * 0.05 +
+    hasReadme * 0.1 +
+    canRun * 0.15 +
+    hasDeploy * 0.1 +
+    (filesChanged > 0 ? 0.05 : 0)
 
   const details = [
-    `Tests: ${testsPass ? 'PASS' : 'FAIL/UNKNOWN'}`,
+    `Tests: ${testsPass ? 'PASS' : 'FAIL'}`,
     `Commits: ${commits}`,
-    `Files: ${filesChanged}, +${linesAdded} lines`,
-    `Succinctness: ${(succinctness * 100).toFixed(0)}%`,
-    `Mocks: ${mockCount} files`,
-    `Session state: ${hasSessionState ? 'YES' : 'NO'}`,
+    `+${linesAdded}L`,
+    `Run: ${canRun ? 'YES' : 'NO'}`,
+    `Deploy: ${hasDeploy ? 'YES' : 'NO'}`,
+    `Docs: ${hasReadme ? 'YES' : 'NO'}`,
+    `Mocks: ${mockCount}`,
+    `State: ${hasSessionState ? 'YES' : 'NO'}`,
     `Overall: ${(overall * 100).toFixed(0)}%`,
   ].join(' | ')
 
@@ -131,6 +169,10 @@ export function scoreSession(projectPath: string, round: number = 0): SessionSco
       succinctness,
       no_mocks: noMocks,
       has_session_state: hasSessionState,
+      has_readme: hasReadme,
+      has_docs: hasDocs,
+      can_run: canRun,
+      has_deploy: hasDeploy,
       files_changed: filesChanged,
       lines_added: linesAdded,
     },
