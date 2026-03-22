@@ -252,15 +252,26 @@ export function send(nameOrProject: string, prompt: string): boolean {
 }
 
 function sendPrompt(name: string, prompt: string): boolean {
-  // Write prompt to temp file, then type it into the interactive claude session
+  // Write prompt to temp file for reference/debugging
   const promptFile = join(FOREMAN_HOME, 'tmp', `${name}-prompt.txt`)
   writeFileSync(promptFile, prompt, 'utf8')
 
-  // Use tmux load-buffer + paste to send multi-line prompts cleanly
-  // Then press Enter to submit to claude
-  tmuxRunQuiet(['load-buffer', '-b', 'foreman-prompt', promptFile])
-  tmuxRunQuiet(['paste-buffer', '-t', name, '-b', 'foreman-prompt', '-d'])
-  return tmuxRunQuiet(['send-keys', '-t', name, '', 'Enter'])
+  // For interactive claude: use send-keys with the prompt text directly
+  // Truncate to first 500 chars to avoid tmux send-keys buffer issues
+  // Claude will read CLAUDE.md and session-state.md for full context
+  const shortPrompt = prompt.length > 500
+    ? prompt.slice(0, 500) + '\n\n(Full context in CLAUDE.md and .foreman/session-state.md)'
+    : prompt
+
+  // Send line by line to avoid tmux escaping issues
+  const lines = shortPrompt.split('\n')
+  for (const line of lines) {
+    // Use send-keys -l for literal text (no tmux key interpretation)
+    tmuxRunQuiet(['send-keys', '-t', name, '-l', line])
+    tmuxRunQuiet(['send-keys', '-t', name, 'Enter'])
+  }
+
+  return true
 }
 
 function buildPrompt(projectPath: string, round: number): string {
