@@ -121,7 +121,8 @@ function buildSkillRegistry(): string {
 
 function findProjectContext(projectPath: string): string | null {
   const candidates = [
-    join(projectPath, '..', '..'),
+    join(projectPath, '..', '..'),  // ~/foreman-projects/<name>/
+    join(projectPath, '..', '..', '..'),  // ~/foreman-projects/ (if nested deeper)
     join(projectPath, '..'),
     projectPath,
   ]
@@ -205,14 +206,24 @@ export function spawn(projectPath: string, prompt?: string): SessionInfo {
   // Inject project context
   ensureClaudeMd(projectPath)
 
-  // Create tmux session
+  // Create tmux session with interactive claude (full TUI, streaming, tool calls)
   tmuxRunQuiet(['new-session', '-d', '-s', name, '-c', projectPath])
 
   // Capture output to log
   const logFile = join(FOREMAN_HOME, 'logs', `session-${name}.log`)
   tmuxRunQuiet(['pipe-pane', '-t', name, `-o cat >> ${logFile}`])
 
-  // Send initial prompt (or default build prompt)
+  // Start interactive claude with --dangerously-skip-permissions
+  tmuxRunQuiet(['send-keys', '-t', name, `${CLAUDE_BIN} --dangerously-skip-permissions`, 'Enter'])
+
+  // Wait for claude to initialize (show the > prompt)
+  let ready = false
+  for (let i = 0; i < 10; i++) {
+    try { const p = tmuxRun(['capture-pane', '-t', name, '-p', '-S', '-3']); if (p.includes('>') || p.includes('Claude')) { ready = true; break } } catch {}
+    execFileSync('sleep', ['1'], { stdio: 'ignore' })
+  }
+
+  // Send the initial prompt by typing it into claude's input
   const actualPrompt = prompt ?? buildPrompt(projectPath, 1)
   sendPrompt(name, actualPrompt)
 
@@ -228,15 +239,15 @@ export function send(nameOrProject: string, prompt: string): boolean {
 }
 
 function sendPrompt(name: string, prompt: string): boolean {
-  // Write prompt to temp file to avoid shell escaping issues
+  // Write prompt to temp file, then type it into the interactive claude session
   const promptFile = join(FOREMAN_HOME, 'tmp', `${name}-prompt.txt`)
   writeFileSync(promptFile, prompt, 'utf8')
 
-  // Send claude -p command to the tmux session
-  return tmuxRunQuiet([
-    'send-keys', '-t', name,
-    `${CLAUDE_BIN} -p "$(cat ${promptFile})" --output-format text --dangerously-skip-permissions`, 'Enter',
-  ])
+  // Use tmux load-buffer + paste to send multi-line prompts cleanly
+  // Then press Enter to submit to claude
+  tmuxRunQuiet(['load-buffer', '-b', 'foreman-prompt', promptFile])
+  tmuxRunQuiet(['paste-buffer', '-t', name, '-b', 'foreman-prompt', '-d'])
+  return tmuxRunQuiet(['send-keys', '-t', name, '', 'Enter'])
 }
 
 function buildPrompt(projectPath: string, round: number): string {
@@ -418,13 +429,19 @@ export function isAlive(nameOrProject: string): boolean {
   return tmuxRunQuiet(['has-session', '-t', name])
 }
 
-/** Check if the session's claude has finished (shell prompt visible) */
+/** Check if the session's claude is waiting for input (idle between rounds) */
 export function isIdle(nameOrProject: string): boolean {
   const name = nameOrProject.startsWith('foreman-') ? nameOrProject : sessionName(nameOrProject)
   if (!tmuxRunQuiet(['has-session', '-t', name])) return false
   try {
-    const lastLine = tmuxRun(['capture-pane', '-t', name, '-p', '-S', '-1']).trim()
-    return lastLine.endsWith('$') || lastLine.endsWith('#') || lastLine.includes('Session complete')
+    const output = tmuxRun(['capture-pane', '-t', name, '-p', '-S', '-3']).trim()
+    const lastLine = output.split('\n').pop()?.trim() ?? ''
+    // Claude interactive prompt ends with > or shows the input cursor
+    // Shell prompt ends with $ or #
+    // Also detect if claude exited (back to shell)
+    return lastLine.endsWith('$') || lastLine.endsWith('#') ||
+      lastLine === '>' || lastLine.startsWith('>') ||
+      output.includes('Session complete')
   } catch {
     return false
   }
