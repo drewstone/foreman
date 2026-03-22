@@ -270,25 +270,35 @@ async function executeSpawnSession(action: Action): Promise<ActionOutcome> {
     }
   }
 
-  // Spawn a persistent tmux session running claude
-  // Operator can attach with: tmux attach -t foreman-<project>
+  // Spawn a persistent tmux session with interactive claude
+  // 1. Create tmux session with a shell
+  // 2. Send claude command via send-keys (stays interactive, attachable)
   try {
     const env = { ...process.env, PATH: `${process.env.HOME}/.local/bin:${process.env.PATH}` }
 
-    // Build the claude command — escape the prompt for shell
-    const escapedPrompt = prompt.replace(/'/g, "'\\''")
-    const cmd = `${claudeBin} -p '${escapedPrompt}'`
-
+    // Create tmux session with bash (persists after claude exits)
     execFileSync('tmux', [
       'new-session', '-d',
       '-s', sessionName,
       '-c', projectPath,
-      cmd,
     ], { env, stdio: 'ignore', timeout: 10_000 })
+
+    // Send claude command with the prompt piped via --prompt-file
+    // Write prompt to a temp file to avoid shell escaping issues
+    const promptFile = join(FOREMAN_HOME, 'tmp', `${sessionName}-prompt.txt`)
+    const fs = await import('node:fs')
+    fs.mkdirSync(join(FOREMAN_HOME, 'tmp'), { recursive: true })
+    fs.writeFileSync(promptFile, prompt, 'utf8')
+
+    // Start claude with initial prompt, no turn limit, resume enabled
+    execFileSync('tmux', [
+      'send-keys', '-t', sessionName,
+      `${claudeBin} --resume -p "$(cat ${promptFile})" ; echo "Session complete. Attach to review."`, 'Enter',
+    ], { env, stdio: 'ignore', timeout: 5_000 })
 
     return {
       success: true,
-      summary: `Tmux session started: ${sessionName}. Attach: tmux attach -t ${sessionName}`,
+      summary: `Session started: ${sessionName}. Attach: tmux attach -t ${sessionName}`,
       evidence: [`tmux:${sessionName}`],
     }
   } catch (e: unknown) {
