@@ -26,6 +26,7 @@ function makeState(overrides?: Partial<ForemanState>): ForemanState {
     totalActiveSessions: 0,
     totalManagedProjects: 0,
     sessionIndexStats: null,
+    activeTmuxSessions: [],
     ...overrides,
   }
 }

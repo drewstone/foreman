@@ -79,13 +79,14 @@ For an EXISTING project:
 - "Continue improving this project. Check what was done in previous sessions. Run tests, fix any failures. Push quality forward — improve test coverage, fix bugs, add missing features. Commit your work."
 
 ONLY pick projects listed under "Actionable Projects". Other projects are read-only.
-If there are no actionable projects, respond with do-nothing.
+
+Actionable projects ALWAYS need work until they are production-ready with passing tests, clean builds, and shipped features. Keep spawning sessions on them. Never say do-nothing if there are actionable projects.
 
 Prioritize:
-1. Projects with 0 sessions (need initial exploration + setup)
-2. Projects with failing CI
-3. Projects needing continued development
-4. Nothing — if all projects are healthy, say do-nothing`
+1. Projects without a running session (no tmux session active)
+2. Projects with failing CI or tests
+3. Projects needing more features built
+4. do-nothing ONLY if every actionable project has an active tmux session`
 
 // ─── Versioned policy loading ────────────────────────────────────────
 

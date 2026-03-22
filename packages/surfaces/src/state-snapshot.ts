@@ -59,6 +59,7 @@ export interface ForemanState {
   totalActiveSessions: number
   totalManagedProjects: number
   sessionIndexStats: { totalMessages: number; totalSessions: number } | null
+  activeTmuxSessions: string[]
 }
 
 export interface BuildStateSnapshotOptions {
@@ -116,6 +117,16 @@ export async function buildStateSnapshot(
     })
   }
 
+  // Check which projects have active tmux sessions
+  const activeTmuxSessions = new Set<string>()
+  try {
+    const { execFileSync } = await import('node:child_process')
+    const out = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    for (const line of out.trim().split('\n')) {
+      if (line.startsWith('foreman-')) activeTmuxSessions.add(line)
+    }
+  } catch { /* tmux not running */ }
+
   // Add projects from watched git dirs that aren't in session index yet
   if (options?.watchedDirs) {
     for (const dir of options.watchedDirs) {
@@ -172,6 +183,7 @@ export async function buildStateSnapshot(
     totalActiveSessions,
     totalManagedProjects: activeProjects.length,
     sessionIndexStats: indexData.stats,
+    activeTmuxSessions: [...activeTmuxSessions],
   }
 }
 
@@ -357,7 +369,9 @@ export function formatStateForLLM(state: ForemanState): string {
           : '[BLOCKED]'
         const harness = p.harnesses.length > 0 ? ` (${p.harnesses.join(', ')})` : ''
         const branch = p.activeBranches.length > 0 ? ` [${p.activeBranches[0]}]` : ''
-        lines.push(`- ${status} **${p.name}** (${p.path})${branch} — ${p.totalSessions} sessions, CI: ${p.ciStatus}${harness}`)
+        const tmuxName = `foreman-${p.name}`.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 40)
+        const tmuxActive = state.activeTmuxSessions.includes(tmuxName) ? ' [SESSION RUNNING]' : ' [NO SESSION]'
+        lines.push(`- ${status} **${p.name}** (${p.path})${branch}${tmuxActive} — ${p.totalSessions} sessions, CI: ${p.ciStatus}${harness}`)
         if (p.recentGoals.length > 0) {
           lines.push(`  Recent: ${p.recentGoals[0].slice(0, 120)}`)
         }
