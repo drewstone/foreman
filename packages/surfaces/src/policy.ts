@@ -11,6 +11,7 @@
 import { mkdir, writeFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { spawn as nodeSpawn } from 'node:child_process'
 import type { ForemanState, ForemanEvent } from './state-snapshot.js'
 import { buildStateSnapshot, formatStateForLLM } from './state-snapshot.js'
 import { ConfidenceStore, type ConfidenceLevel, type ConfidenceSignal, type ActionType } from '@drew/foreman-memory/confidence'
@@ -236,9 +237,8 @@ async function executeSpawnSession(action: Action): Promise<ActionOutcome> {
   const prompt = action.details.prompt ?? action.goal
 
   return new Promise<ActionOutcome>((resolve) => {
-    const { spawn } = require('node:child_process') as typeof import('node:child_process')
     const claudeBin = '/home/drew/.local/bin/claude'
-    const child = spawn(claudeBin, ['-p', prompt, '--output-format', 'text', '--max-turns', '30'], {
+    const child = nodeSpawn(claudeBin, ['-p', prompt, '--output-format', 'text', '--max-turns', '30'], {
       cwd: projectPath,
       env: { ...process.env, PATH: `${process.env.HOME}/.local/bin:${process.env.PATH}` },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -455,12 +455,28 @@ export async function runPolicyCycle(options?: {
   try {
     // Build state
     log('Building state snapshot...')
+    // Use getLevel() which respects overrides, not the raw score-based level
     const confidenceScores = store.list().map((c) => ({
       actionType: c.actionType,
       project: c.project,
       score: c.score,
-      level: c.level,
+      level: store.getLevel(c.actionType, c.project),
     }))
+
+    // Also add override-only entries for projects that have overrides but no confidence data yet
+    const watchedDirs = options?.watchedDirs ?? []
+    for (const dir of watchedDirs) {
+      const name = dir.split('/').pop() ?? dir
+      const override = store.getOverride(name)
+      if (override && !confidenceScores.some((c) => c.project === name)) {
+        confidenceScores.push({
+          actionType: 'spawn-session',
+          project: name,
+          score: 0,
+          level: store.getLevel('spawn-session', name),
+        })
+      }
+    }
 
     const state = await buildStateSnapshot({
       confidenceScores,
@@ -490,8 +506,10 @@ export async function runPolicyCycle(options?: {
       return decision
     }
 
-    // Dedup: if we already proposed this exact (type, project) recently, skip
-    if (isDuplicate(action)) {
+    // Dedup: skip if already proposed recently — but only for non-autonomous projects
+    // Autonomous projects should keep working, not get stuck
+    const actionLevel = store.getLevel(action.type, action.project)
+    if (isDuplicate(action) && actionLevel !== 'autonomous') {
       log(`Policy: ${action.type} on ${action.project} — DEDUP (already proposed recently)`)
       const decision: PolicyDecision = {
         timestamp: new Date().toISOString(),
