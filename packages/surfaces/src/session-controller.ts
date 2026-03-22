@@ -411,11 +411,39 @@ export function killAll(): number {
   return killed
 }
 
-// ─── Core: is alive ─────────────────────────────────────────────────
+// ─── Core: is alive / is idle ───────────────────────────────────────
 
 export function isAlive(nameOrProject: string): boolean {
   const name = nameOrProject.startsWith('foreman-') ? nameOrProject : sessionName(nameOrProject)
   return tmuxRunQuiet(['has-session', '-t', name])
+}
+
+/** Check if the session's claude has finished (shell prompt visible) */
+export function isIdle(nameOrProject: string): boolean {
+  const name = nameOrProject.startsWith('foreman-') ? nameOrProject : sessionName(nameOrProject)
+  if (!tmuxRunQuiet(['has-session', '-t', name])) return false
+  try {
+    const lastLine = tmuxRun(['capture-pane', '-t', name, '-p', '-S', '-1']).trim()
+    return lastLine.endsWith('$') || lastLine.endsWith('#') || lastLine.includes('Session complete')
+  } catch {
+    return false
+  }
+}
+
+/** Send the next round to idle sessions — call from daemon poll cycle */
+export function nudgeIdleSessions(): Array<{ name: string; round: number }> {
+  const nudged: Array<{ name: string; round: number }> = []
+  for (const session of status()) {
+    if (!session.alive) continue
+    if (!isIdle(session.name)) continue
+
+    const round = session.round + 1
+    const prompt = buildPrompt(session.projectPath, round)
+    if (sendPrompt(session.name, prompt)) {
+      nudged.push({ name: session.name, round })
+    }
+  }
+  return nudged
 }
 
 // ─── Multi-round driver ─────────────────────────────────────────────

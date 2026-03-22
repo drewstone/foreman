@@ -205,6 +205,15 @@ async function triggerPolicyCycle(state: DaemonState, config: DaemonConfig): Pro
 
     await log(config, `Decision: ${actionDesc} → ${execDesc}`)
 
+    // Nudge idle sessions — if claude finished, send next round
+    try {
+      const { nudgeIdleSessions } = await import('./session-controller.js')
+      const nudged = nudgeIdleSessions()
+      for (const n of nudged) {
+        await log(config, `  Nudged ${n.name} → round ${n.round}`)
+      }
+    } catch {}
+
     // Score projects periodically (every 5th cycle)
     if (state.recentActions.length % 5 === 0 && config.watchGitDirs.length > 0) {
       try {
