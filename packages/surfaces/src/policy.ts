@@ -217,15 +217,40 @@ async function resolveProjectPath(project: string): Promise<string> {
   return join(home, 'code', project)
 }
 
+// ─── Tmux session management ────────────────────────────────────────
+
+function tmuxSessionName(project: string): string {
+  const name = project.split('/').pop() ?? project
+  return `foreman-${name}`.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 40)
+}
+
+function tmuxSessionExists(sessionName: string): boolean {
+  try {
+    const { execFileSync } = require('node:child_process') as typeof import('node:child_process')
+    execFileSync('tmux', ['has-session', '-t', sessionName], { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** List all active foreman tmux sessions */
+export function listTmuxSessions(): string[] {
+  try {
+    const { execFileSync } = require('node:child_process') as typeof import('node:child_process')
+    const out = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    return out.trim().split('\n').filter((s) => s.startsWith('foreman-'))
+  } catch {
+    return []
+  }
+}
+
 async function executeSpawnSession(action: Action): Promise<ActionOutcome> {
   const projectPath = await resolveProjectPath(action.project)
 
   if (action.details.harness === 'foreman') {
     const { spawnChild } = await import('./foreman-provider.js')
-    const child = await spawnChild({
-      project: action.project,
-      dryRun: true, // children always start in dry-run
-    })
+    const child = await spawnChild({ project: action.project, dryRun: true })
     return {
       success: child.status === 'running',
       summary: `Foreman child spawned for ${action.project} (PID ${child.pid})`,
@@ -233,41 +258,49 @@ async function executeSpawnSession(action: Action): Promise<ActionOutcome> {
     }
   }
 
-  // Spawn claude directly with full path
+  const sessionName = tmuxSessionName(action.project)
   const prompt = action.details.prompt ?? action.goal
+  const claudeBin = '/home/drew/.local/bin/claude'
 
-  return new Promise<ActionOutcome>((resolve) => {
-    const claudeBin = '/home/drew/.local/bin/claude'
-    const child = nodeSpawn(claudeBin, ['-p', prompt, '--output-format', 'text', '--max-turns', '30'], {
-      cwd: projectPath,
-      env: { ...process.env, PATH: `${process.env.HOME}/.local/bin:${process.env.PATH}` },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 600_000, // 10 min
-    })
+  // If tmux session already exists, it's still working
+  if (tmuxSessionExists(sessionName)) {
+    return {
+      success: true,
+      summary: `Session ${sessionName} already running. Attach: tmux attach -t ${sessionName}`,
+      evidence: [`tmux:${sessionName}`],
+    }
+  }
 
-    let stdout = ''
-    let stderr = ''
-    child.stdout?.on('data', (d: Buffer) => { stdout += d.toString() })
-    child.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
+  // Spawn a persistent tmux session running claude
+  // Operator can attach with: tmux attach -t foreman-<project>
+  try {
+    const { execFileSync } = require('node:child_process') as typeof import('node:child_process')
+    const env = { ...process.env, PATH: `${process.env.HOME}/.local/bin:${process.env.PATH}` }
 
-    child.on('error', (err: Error) => {
-      resolve({
-        success: false,
-        summary: `Session spawn error in ${action.project}: ${err.message}`,
-        evidence: [],
-      })
-    })
+    // Build the claude command — escape the prompt for shell
+    const escapedPrompt = prompt.replace(/'/g, "'\\''")
+    const cmd = `${claudeBin} -p '${escapedPrompt}'`
 
-    child.on('close', (code: number | null) => {
-      resolve({
-        success: code === 0,
-        summary: code === 0
-          ? `Session completed in ${action.project}: ${stdout.slice(0, 200)}`
-          : `Session failed in ${action.project} (exit ${code}): ${(stderr || stdout).slice(0, 200)}`,
-        evidence: [`session:${action.project}`],
-      })
-    })
-  })
+    execFileSync('tmux', [
+      'new-session', '-d',
+      '-s', sessionName,
+      '-c', projectPath,
+      cmd,
+    ], { env, stdio: 'ignore', timeout: 10_000 })
+
+    return {
+      success: true,
+      summary: `Tmux session started: ${sessionName}. Attach: tmux attach -t ${sessionName}`,
+      evidence: [`tmux:${sessionName}`],
+    }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return {
+      success: false,
+      summary: `Failed to start tmux session: ${msg.slice(0, 200)}`,
+      evidence: [],
+    }
+  }
 }
 
 async function executeResumeSession(action: Action): Promise<ActionOutcome> {
