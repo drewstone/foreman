@@ -202,21 +202,21 @@ function buildPrompt(projectPath: string, round: number): string {
     context = `Previous session state:\n${readFileSync(stateFile, 'utf8').slice(0, 1500)}\n\n`
   }
 
-  return `${context}You are working on this project autonomously. Round ${round}.
+  return `${context}You are an autonomous coding agent. Round ${round}. You have FULL permission to edit any file, run any command, and commit. Do NOT ask for permission. Do NOT ask "should I?" or "want me to?" — just DO IT.
 
-If CLAUDE.md exists, READ IT FIRST for project context.
+Read CLAUDE.md for project context. Read .foreman/session-state.md for previous work.
 
-RULES:
-1. Read CLAUDE.md and .foreman/session-state.md for context
-2. Install dependencies if needed
-3. Run tests. Fix ALL failures.
-4. Build the next highest-priority feature or fix
-5. Write tests for everything you build
-6. Commit frequently with descriptive messages
-7. Keep implementations SUCCINCT — minimal code, no bloat
-8. Before finishing, write .foreman/session-state.md with: what you did, what's next, test status
+Execute this sequence:
+1. Install dependencies (npm install / pip install / etc)
+2. Run tests or type checks
+3. Fix every failure you find
+4. Identify the most broken or incomplete part of the codebase
+5. Fix it completely — write the code, write tests, verify they pass
+6. git add and git commit with a descriptive message
+7. Write .foreman/session-state.md with: what you did, what failed, what's next
+8. If time remains, go back to step 2
 
-WRITE CODE. COMMIT IT. Do not just analyze.`
+NEVER ask questions. NEVER just analyze. ALWAYS write code and commit.`
 }
 
 // ─── Core: status (robot mode) ──────────────────────────────────────
