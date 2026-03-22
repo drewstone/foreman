@@ -100,30 +100,10 @@ async function log(config: DaemonConfig, msg: string): Promise<void> {
 
 // ─── File watchers ──────────────────────────────────────────────────
 
-function watchSessionDirs(state: DaemonState, config: DaemonConfig): void {
-  const sessionDirs = [
-    join(homedir(), '.claude', 'projects'),
-    join(homedir(), '.pi'),
-    join(homedir(), '.codex'),
-  ]
-
-  for (const dir of sessionDirs) {
-    try {
-      const harness = dir.includes('.claude') ? 'claude'
-        : dir.includes('.pi') ? 'pi'
-        : 'codex'
-
-      const watcher = watch(dir, { recursive: true }, (_eventType, filename) => {
-        if (!filename || !filename.endsWith('.jsonl')) return
-        const event = createEvent('session-ended', harness, { file: filename })
-        pushEvent(state, config, event)
-      })
-      state.watchers.push(watcher)
-      log(config, `Watching: ${dir}`)
-    } catch {
-      // Dir may not exist
-    }
-  }
+function watchSessionDirs(state: DaemonState, _config: DaemonConfig): void {
+  // Skip session dir watchers — they exhaust inotify instances on large
+  // session stores (~/.claude/projects has thousands of nested dirs).
+  // The poll timer handles session discovery instead.
 }
 
 function watchGitDirs(state: DaemonState, config: DaemonConfig): void {
