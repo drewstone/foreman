@@ -456,6 +456,28 @@ export function nudgeIdleSessions(): Array<{ name: string; round: number }> {
 
     const round = session.round + 1
     const prompt = buildPrompt(session.projectPath, round)
+
+    // Check if claude is running (> prompt) or exited ($ prompt)
+    let claudeRunning = false
+    try {
+      const output = tmuxRun(['capture-pane', '-t', session.name, '-p', '-S', '-3']).trim()
+      const lastLine = output.split('\n').pop()?.trim() ?? ''
+      claudeRunning = !(lastLine.endsWith('$') || lastLine.endsWith('#'))
+    } catch {}
+
+    if (!claudeRunning) {
+      // Claude exited — restart it first
+      tmuxRunQuiet(['send-keys', '-t', session.name, `${CLAUDE_BIN} --dangerously-skip-permissions`, 'Enter'])
+      // Wait for claude to initialize
+      for (let i = 0; i < 10; i++) {
+        try {
+          const p = tmuxRun(['capture-pane', '-t', session.name, '-p', '-S', '-3'])
+          if (p.includes('>') || p.includes('Claude')) break
+        } catch {}
+        execFileSync('sleep', ['1'], { stdio: 'ignore' })
+      }
+    }
+
     if (sendPrompt(session.name, prompt)) {
       nudged.push({ name: session.name, round })
     }
