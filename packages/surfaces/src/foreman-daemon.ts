@@ -152,13 +152,22 @@ function pushEvent(state: DaemonState, config: DaemonConfig, event: ForemanEvent
 
 // ─── Policy cycle ───────────────────────────────────────────────────
 
+let policyRunning = false
+
 async function triggerPolicyCycle(state: DaemonState, config: DaemonConfig): Promise<void> {
   if (!state.running) return
+
+  // Mutex: only one policy cycle at a time (prevents concurrent spawns)
+  if (policyRunning) return
+  policyRunning = true
 
   const now = Date.now()
 
   // Rate limit
-  if (now - state.lastPolicyCycle < config.minPolicyCycleMs) return
+  if (now - state.lastPolicyCycle < config.minPolicyCycleMs) {
+    policyRunning = false
+    return
+  }
   state.lastPolicyCycle = now
 
   // Safety: max actions per hour
@@ -171,26 +180,30 @@ async function triggerPolicyCycle(state: DaemonState, config: DaemonConfig): Pro
 
   await log(config, 'Running policy cycle...')
 
-  const decision = await runPolicyCycle({
-    dryRun: config.dryRun,
-    confidenceStore: state.confidenceStore,
-    recentEvents: state.recentEvents.slice(-10),
-    watchedDirs: config.watchGitDirs,
-    onProgress: (msg) => log(config, `  ${msg}`),
-  })
+  try {
+    const decision = await runPolicyCycle({
+      dryRun: config.dryRun,
+      confidenceStore: state.confidenceStore,
+      recentEvents: state.recentEvents.slice(-10),
+      watchedDirs: config.watchGitDirs,
+      onProgress: (msg) => log(config, `  ${msg}`),
+    })
 
-  if (decision.executed) {
-    state.recentActions.push({ timestamp: now })
+    if (decision.executed) {
+      state.recentActions.push({ timestamp: now })
+    }
+
+    const actionDesc = decision.action
+      ? `${decision.action.type} on ${decision.action.project}`
+      : 'do-nothing'
+    const execDesc = decision.executed
+      ? `EXECUTED (${decision.outcome?.success ? 'success' : 'failure'})`
+      : `NOT EXECUTED (${decision.confidenceLevel})`
+
+    await log(config, `Decision: ${actionDesc} → ${execDesc}`)
+  } finally {
+    policyRunning = false
   }
-
-  const actionDesc = decision.action
-    ? `${decision.action.type} on ${decision.action.project}`
-    : 'do-nothing'
-  const execDesc = decision.executed
-    ? `EXECUTED (${decision.outcome?.success ? 'success' : 'failure'})`
-    : `NOT EXECUTED (${decision.confidenceLevel})`
-
-  await log(config, `Decision: ${actionDesc} → ${execDesc}`)
 }
 
 // ─── Timer-based polling ────────────────────────────────────────────

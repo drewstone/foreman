@@ -241,7 +241,7 @@ async function executeSpawnSession(action: Action): Promise<ActionOutcome> {
     const child = nodeSpawn(claudeBin, ['-p', prompt, '--output-format', 'text', '--max-turns', '30'], {
       cwd: projectPath,
       env: { ...process.env, PATH: `${process.env.HOME}/.local/bin:${process.env.PATH}` },
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 600_000, // 10 min
     })
 
