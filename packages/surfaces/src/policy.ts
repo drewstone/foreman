@@ -290,10 +290,10 @@ async function executeSpawnSession(action: Action): Promise<ActionOutcome> {
     fs.mkdirSync(join(FOREMAN_HOME, 'tmp'), { recursive: true })
     fs.writeFileSync(promptFile, prompt, 'utf8')
 
-    // Start claude with initial prompt, no turn limit, resume enabled
+    // Start claude with initial prompt, no turn limit
     execFileSync('tmux', [
       'send-keys', '-t', sessionName,
-      `${claudeBin} --resume -p "$(cat ${promptFile})" ; echo "Session complete. Attach to review."`, 'Enter',
+      `${claudeBin} -p "$(cat ${promptFile})" ; echo "[foreman] Session complete."`, 'Enter',
     ], { env, stdio: 'ignore', timeout: 5_000 })
 
     return {
