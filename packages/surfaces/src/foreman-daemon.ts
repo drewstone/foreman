@@ -26,7 +26,8 @@ export interface DaemonConfig {
   minPolicyCycleMs: number         // rate limit: min gap between policy calls
   maxActionsPerHour: number        // safety: max actions in rolling hour
   watchSessionDirs: boolean        // watch ~/.claude, ~/.pi, etc.
-  watchGitDirs: string[]           // managed repo paths to watch
+  watchGitDirs: string[]           // project paths to watch + work on
+  onlyWatchedDirs: boolean         // if true, ONLY show watchGitDirs to the policy (ignore session index)
   logPath: string
 }
 
@@ -37,6 +38,7 @@ const DEFAULT_CONFIG: DaemonConfig = {
   maxActionsPerHour: 30,
   watchSessionDirs: true,
   watchGitDirs: [],
+  onlyWatchedDirs: false,
   logPath: LOG_PATH,
 }
 
@@ -186,6 +188,7 @@ async function triggerPolicyCycle(state: DaemonState, config: DaemonConfig): Pro
       confidenceStore: state.confidenceStore,
       recentEvents: state.recentEvents.slice(-10),
       watchedDirs: config.watchGitDirs,
+      onlyWatchedDirs: config.onlyWatchedDirs,
       onProgress: (msg) => log(config, `  ${msg}`),
     })
 

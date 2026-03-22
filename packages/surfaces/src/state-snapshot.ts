@@ -65,6 +65,7 @@ export interface BuildStateSnapshotOptions {
   confidenceScores?: Array<{ actionType: string; project: string; score: number; level: string }>
   recentEvents?: ForemanEvent[]
   watchedDirs?: string[]
+  onlyWatchedDirs?: boolean  // if true, skip session index — only show watchedDirs
 }
 
 export async function buildStateSnapshot(
@@ -83,10 +84,11 @@ export async function buildStateSnapshot(
     loadSkillPerformance(),
   ])
 
-  // Build project states from session index
+  // Build project states
   const activeProjects: ProjectState[] = []
 
-  for (const [repo, data] of indexData.projects) {
+  // If onlyWatchedDirs, skip session index projects entirely
+  if (!options?.onlyWatchedDirs) for (const [repo, data] of indexData.projects) {
     // Resolve path from repo name
     const path = resolveRepoPath(repo)
 
@@ -338,24 +340,38 @@ export function formatStateForLLM(state: ForemanState): string {
     })
   }
 
-  // Active Projects — highest priority
+  // Projects — only show actionable ones (autonomous/act-notify) to avoid wasting LLM decisions
   if (state.activeProjects.length > 0) {
-    const lines = ['## Projects', '']
-    for (const p of state.activeProjects.slice(0, 10)) {
-      const status = p.momentum === 'active' ? '[ACTIVE]'
-        : p.momentum === 'stalled' ? '[STALLED]'
-        : '[BLOCKED]'
-      const harness = p.harnesses.length > 0 ? ` (${p.harnesses.join(', ')})` : ''
-      const branch = p.activeBranches.length > 0 ? ` [${p.activeBranches[0]}]` : ''
-      // Show confidence level for this project if available
-      const confEntry = state.confidenceScores.find((c) => c.project === p.name && c.actionType === 'spawn-session')
-      const confLabel = confEntry ? ` {${confEntry.level}}` : ''
-      lines.push(`- ${status} **${p.name}** (${p.path})${branch}${confLabel} — ${p.totalSessions} sessions, CI: ${p.ciStatus}${harness}`)
-      if (p.recentGoals.length > 0) {
-        lines.push(`  Recent: ${p.recentGoals[0].slice(0, 120)}`)
+    const actionableLevels = new Set(['autonomous', 'act-notify'])
+    const actionable = state.activeProjects.filter((p) => {
+      const conf = state.confidenceScores.find((c) => c.project === p.name && c.actionType === 'spawn-session')
+      return conf && actionableLevels.has(conf.level)
+    })
+    const other = state.activeProjects.filter((p) => !actionable.includes(p))
+
+    if (actionable.length > 0) {
+      const lines = ['## Actionable Projects (you CAN act on these)', '']
+      for (const p of actionable) {
+        const status = p.momentum === 'active' ? '[ACTIVE]'
+          : p.momentum === 'stalled' ? '[STALLED]'
+          : '[BLOCKED]'
+        const harness = p.harnesses.length > 0 ? ` (${p.harnesses.join(', ')})` : ''
+        const branch = p.activeBranches.length > 0 ? ` [${p.activeBranches[0]}]` : ''
+        lines.push(`- ${status} **${p.name}** (${p.path})${branch} — ${p.totalSessions} sessions, CI: ${p.ciStatus}${harness}`)
+        if (p.recentGoals.length > 0) {
+          lines.push(`  Recent: ${p.recentGoals[0].slice(0, 120)}`)
+        }
       }
+      sections.push({ key: 'projects', priority: 1, content: lines.join('\n') })
     }
-    sections.push({ key: 'projects', priority: 1, content: lines.join('\n') })
+
+    if (other.length > 0) {
+      sections.push({
+        key: 'other-projects',
+        priority: 5,
+        content: `## Other Projects (${other.length} — read-only, do NOT act on these)`,
+      })
+    }
   }
 
   // Budget

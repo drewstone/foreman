@@ -3,10 +3,10 @@
  * Foreman daemon CLI.
  *
  * Usage:
- *   npm run foreman:daemon                    # start in dry-run (safe default)
- *   npm run foreman:daemon -- --live          # start with actions enabled
- *   npm run foreman:daemon -- --poll 300000   # poll every 5 min
- *   npm run foreman:daemon -- --watch /path   # watch a git repo
+ *   npm run foreman:daemon -- --dir /path/to/project          # work on ONE project (dry-run)
+ *   npm run foreman:daemon -- --dir /path --live               # work on ONE project (live)
+ *   npm run foreman:daemon -- --dir /a --dir /b --dir /c --live  # work on specific projects
+ *   npm run foreman:daemon                                     # watch all known projects (dry-run)
  */
 
 import { createDaemon } from './foreman-daemon.js'
@@ -20,10 +20,11 @@ const pollIntervalMs = pollIdx !== -1 && args[pollIdx + 1]
   ? parseInt(args[pollIdx + 1], 10)
   : undefined
 
-const watchGitDirs: string[] = []
+// --dir replaces --watch — specifies exactly which projects to work on
+const dirs: string[] = []
 for (let i = 0; i < args.length; i++) {
-  if (args[i] === '--watch' && args[i + 1]) {
-    watchGitDirs.push(args[i + 1])
+  if ((args[i] === '--dir' || args[i] === '--watch') && args[i + 1]) {
+    dirs.push(args[i + 1])
     i++
   }
 }
@@ -31,8 +32,15 @@ for (let i = 0; i < args.length; i++) {
 const daemon = createDaemon({
   dryRun,
   pollIntervalMs,
-  watchGitDirs,
+  watchGitDirs: dirs,
+  onlyWatchedDirs: dirs.length > 0, // if dirs specified, ONLY show those to the policy
 })
 
-console.log(`Foreman daemon — ${dryRun ? 'DRY-RUN (pass --live to enable actions)' : 'LIVE'}`)
+const mode = dryRun ? 'DRY-RUN' : 'LIVE'
+if (dirs.length > 0) {
+  console.log(`Foreman daemon — ${mode} — ${dirs.length} project(s):`)
+  for (const d of dirs) console.log(`  ${d}`)
+} else {
+  console.log(`Foreman daemon — ${mode} — all known projects`)
+}
 daemon.start()

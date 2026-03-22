@@ -78,14 +78,14 @@ For a NEW project (0 sessions):
 For an EXISTING project:
 - "Continue improving this project. Check what was done in previous sessions. Run tests, fix any failures. Push quality forward — improve test coverage, fix bugs, add missing features. Commit your work."
 
-CRITICAL: Each project has a confidence level shown as {autonomous}, {act-notify}, {propose}, or {dry-run}.
-ONLY pick projects marked {autonomous} or {act-notify}. Projects marked {dry-run} or {propose} will be blocked — do not waste a decision on them.
+ONLY pick projects listed under "Actionable Projects". Other projects are read-only.
+If there are no actionable projects, respond with do-nothing.
 
 Prioritize:
-1. {autonomous} projects with 0 sessions (need initial exploration)
-2. {autonomous} projects with failing CI
-3. {autonomous} projects with stalled work
-4. Nothing — if no autonomous projects need work, say do-nothing`
+1. Projects with 0 sessions (need initial exploration + setup)
+2. Projects with failing CI
+3. Projects needing continued development
+4. Nothing — if all projects are healthy, say do-nothing`
 
 // ─── Versioned policy loading ────────────────────────────────────────
 
@@ -445,6 +445,7 @@ export async function runPolicyCycle(options?: {
   confidenceStore?: ConfidenceStore
   recentEvents?: ForemanEvent[]
   watchedDirs?: string[]
+  onlyWatchedDirs?: boolean
   provider?: { run(prompt: string): Promise<{ stdout: string }> }
   onProgress?: (msg: string) => void
 }): Promise<PolicyDecision> {
@@ -482,6 +483,7 @@ export async function runPolicyCycle(options?: {
       confidenceScores,
       recentEvents: options?.recentEvents,
       watchedDirs: options?.watchedDirs,
+      onlyWatchedDirs: options?.onlyWatchedDirs,
     })
 
     log(`State: ${state.totalManagedProjects} projects, ${state.totalActiveSessions} sessions`)
