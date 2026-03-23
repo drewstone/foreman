@@ -139,6 +139,31 @@ Foreman runs many things simultaneously:
 - Skills that decompose into parallel sub-goals (/evolve can run parallel experiments)
 - Cross-pollination: learnings from one goal inform dispatches on another
 
+## The universal agent shape
+
+Every pipeline in Foreman follows the same shape:
+
+```
+Input → Agent (Identity | LLM | GEPA-optimized) → Structured Output → Stored → Feeds next cycle
+```
+
+This applies to everything:
+
+| Pipeline | Input | Agent | Output |
+|---|---|---|---|
+| Prompt composition | task + context | composePrompt() | dispatch prompt |
+| Post-completion | session output | digest/audit agent | quality score, learnings, next action |
+| Deep analysis | operator sessions | LLM analysis | flows, taste, anti-patterns |
+| Template evolution | dispatch outcomes | Identity/GEPA | better prompt template |
+| Session mining | JSONL files | pattern extraction | exemplars, skill patterns |
+| Decision capture | session history | /reflect | structured decision records |
+
+Each pipeline is pluggable — the `Identity` agent passes through unchanged, LLM agents analyze and enrich, GEPA agents optimize over time. All outputs are stored (SQLite decisions, learnings, taste), traced, and feed the next cycle.
+
+This means **every surface in Foreman is optimizable**. The post-completion digest prompt can be GEPA-optimized for better quality assessments. The session mining filters can be GEPA-optimized for higher-signal exemplars. The prompt composition template can be GEPA-optimized for higher dispatch success rates. The architecture is the same — only the input/output shapes differ.
+
+The long-term direction: a `TracedAgent` abstraction that wraps any pipeline with input/output logging, version tracking, and GEPA optimization. Every agent in the system becomes self-improving through the same mechanism.
+
 ## What Foreman is NOT
 
 - Not a daemon that makes policy decisions (the conversation is the policy)
