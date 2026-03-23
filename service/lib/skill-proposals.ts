@@ -14,9 +14,12 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
-import { join, basename } from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { join, basename, dirname } from 'node:path'
+import { execFileSync, execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { homedir } from 'node:os'
+
+const execFileAsync = promisify(execFile)
 
 const FOREMAN_HOME = process.env.FOREMAN_HOME ?? join(homedir(), '.foreman')
 const PROPOSALS_DIR = join(FOREMAN_HOME, 'skill-proposals')
@@ -76,6 +79,7 @@ export interface SkillProposal {
   currentMetrics: SkillMetrics | null
   proposedMetrics: SkillMetrics
   diff: SkillDiff
+  prUrl?: string
 }
 
 // ─── Skill analysis ──────────────────────────────────────────────────
@@ -258,6 +262,85 @@ export function updateProposalStatus(id: string, status: 'approved' | 'rejected'
   proposal.status = status
   writeFileSync(jsonPath, JSON.stringify(proposal, null, 2))
   return true
+}
+
+// ─── Draft PR for skill proposal ─────────────────────────────────────
+// Finds the skill's source repo (via symlink resolution), creates a branch
+// with the proposed change, and opens a draft PR with the REVIEW.md as body.
+
+export async function openProposalPR(id: string): Promise<string | null> {
+  const jsonPath = join(PROPOSALS_DIR, id, 'proposal.json')
+  if (!existsSync(jsonPath)) return null
+
+  const proposal = JSON.parse(readFileSync(jsonPath, 'utf8')) as SkillProposal
+
+  // Find the source repo for this skill by resolving symlinks
+  const skillSymlink = join(CLAUDE_SKILLS_DIR, proposal.skillName)
+  let skillSourceDir: string
+  let repoDir: string
+
+  try {
+    // Resolve symlink: ~/.claude/skills/evolve → ~/code/dotfiles/claude/skills/evolve/
+    const resolved = execFileSync('readlink', ['-f', skillSymlink], { encoding: 'utf8' }).trim()
+    skillSourceDir = resolved
+    // Walk up to find the git repo root
+    const { stdout } = await execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd: resolved, timeout: 5_000 })
+    repoDir = stdout.trim()
+  } catch {
+    // Skill isn't a symlink or isn't in a git repo — can't open PR
+    return null
+  }
+
+  // Create a branch for the proposal
+  const branchName = `foreman/skill-${proposal.skillName}-${Date.now().toString(36)}`
+  try {
+    await execFileAsync('git', ['checkout', '-b', branchName], { cwd: repoDir, timeout: 5_000 })
+  } catch {
+    return null
+  }
+
+  try {
+    // Write the proposed skill
+    const skillMdPath = join(skillSourceDir, 'SKILL.md')
+    writeFileSync(skillMdPath, proposal.proposedSkillMd)
+
+    // Stage and commit
+    await execFileAsync('git', ['add', skillMdPath], { cwd: repoDir, timeout: 5_000 })
+    await execFileAsync('git', ['commit', '-m', `foreman: propose ${proposal.type} to /${proposal.skillName}\n\n${proposal.whatImproves.join('\n')}`], { cwd: repoDir, timeout: 5_000 })
+
+    // Push
+    await execFileAsync('git', ['push', '-u', 'origin', branchName], { cwd: repoDir, timeout: 15_000 })
+
+    // Build PR body from REVIEW.md
+    const reviewPath = join(PROPOSALS_DIR, id, 'REVIEW.md')
+    const reviewBody = existsSync(reviewPath) ? readFileSync(reviewPath, 'utf8') : ''
+
+    // Open draft PR
+    const { stdout: prUrl } = await execFileAsync('gh', [
+      'pr', 'create',
+      '--draft',
+      '--base', 'main',
+      '--head', branchName,
+      '--title', `foreman: ${proposal.type} /${proposal.skillName}`,
+      '--body', reviewBody.slice(0, 10000),
+    ], { cwd: repoDir, timeout: 15_000 })
+
+    const url = prUrl.trim()
+
+    // Update proposal with PR URL
+    proposal.prUrl = url
+    writeFileSync(jsonPath, JSON.stringify(proposal, null, 2))
+
+    return url
+  } catch (e) {
+    // Revert to the original branch on failure
+    try { await execFileAsync('git', ['checkout', '-'], { cwd: repoDir, timeout: 5_000 }) } catch {}
+    try { await execFileAsync('git', ['branch', '-D', branchName], { cwd: repoDir, timeout: 5_000 }) } catch {}
+    return null
+  } finally {
+    // Always go back to the original branch
+    try { await execFileAsync('git', ['checkout', '-'], { cwd: repoDir, timeout: 5_000 }) } catch {}
+  }
 }
 
 // ─── Render human-readable review ────────────────────────────────────

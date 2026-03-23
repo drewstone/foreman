@@ -19,7 +19,7 @@ import Database from 'better-sqlite3'
 const execFileAsync = promisify(execFile)
 
 // ─── Skill proposals ─────────────────────────────────────────────────
-import { createProposal, listProposals, updateProposalStatus } from './lib/skill-proposals.js'
+import { createProposal, listProposals, updateProposalStatus, openProposalPR } from './lib/skill-proposals.js'
 
 // ─── Confidence store (from packages/memory) ─────────────────────────
 // Tracks per-(skill, project) confidence that earns autonomy through evidence.
@@ -2998,6 +2998,18 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         whatWouldBeRemoved: (body.whatWouldBeRemoved as string[]) ?? [],
       })
       return json(res, proposal, 201)
+    }
+
+    if (path.startsWith('/api/proposals/') && path.endsWith('/pr') && method === 'POST') {
+      // Open a draft PR for this proposal against the skill's source repo
+      const id = decodeURIComponent(path.slice('/api/proposals/'.length).replace(/\/pr$/, ''))
+      try {
+        const prUrl = await openProposalPR(id)
+        if (!prUrl) return error(res, 'Could not open PR — skill may not be in a git repo', 400)
+        return json(res, { ok: true, id, prUrl })
+      } catch (e) {
+        return error(res, e instanceof Error ? e.message : String(e), 500)
+      }
     }
 
     if (path.startsWith('/api/proposals/') && method === 'PATCH') {
