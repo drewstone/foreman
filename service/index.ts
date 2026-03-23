@@ -298,25 +298,36 @@ const tmuxBackend: ExecutionBackend = {
     // This prevents side effects while keeping auth/config working.
     const realHome = homedir()
 
-    // Read-only file symlinks (auth, config — sessions read these, never write)
-    const fileSymlinks = [
-      [join(realHome, '.gitconfig'), join(sessionHome, '.gitconfig')],
-      [join(realHome, '.npmrc'), join(sessionHome, '.npmrc')],
+    // Read-only symlinks — sessions read these but shouldn't modify them.
+    // Files and directories that provide auth, config, toolchains, and caches.
+    const readOnlySymlinks = [
+      // Git
+      '.gitconfig',
+      // SSH keys (git push, remote access)
+      '.ssh',
+      // Node.js
+      '.nvm', '.npmrc',
+      // Rust
+      '.cargo', '.rustup',
+      // Python
+      '.local',       // pip installs to ~/.local/bin
+      '.cache/pip',   // pip cache
+      '.pyenv',
+      // API keys
+      '.anthropic',
+      // Other agents (read-only — sessions shouldn't install extensions)
+      '.codex',
+      '.opencode',
     ]
-    for (const [src, dst] of fileSymlinks) {
-      try { if (existsSync(src) && !existsSync(dst)) execFileSync('ln', ['-sf', src, dst], { stdio: 'ignore' }) } catch {}
+    for (const name of readOnlySymlinks) {
+      const src = join(realHome, name)
+      const dst = join(sessionHome, name)
+      if (!existsSync(src)) continue
+      // For nested paths like .cache/pip, create parent dirs
+      const dstDir = join(dst, '..')
+      mkdirSync(dstDir, { recursive: true })
+      try { if (!existsSync(dst)) execFileSync('ln', ['-sf', src, dst], { stdio: 'ignore' }) } catch {}
     }
-
-    // Read-only directory symlinks (SSH keys, nvm — sessions need these but shouldn't modify)
-    const dirSymlinks = [
-      [join(realHome, '.ssh'), join(sessionHome, '.ssh')],
-      [join(realHome, '.nvm'), join(sessionHome, '.nvm')],
-      [join(realHome, '.anthropic'), join(sessionHome, '.anthropic')],
-    ]
-    for (const [src, dst] of dirSymlinks) {
-      try { if (existsSync(src) && !existsSync(dst)) execFileSync('ln', ['-sf', src, dst], { stdio: 'ignore' }) } catch {}
-    }
-
     // Claude Code: create a session-specific .claude/ dir with selective symlinks.
     // Auth + skills are shared (read-only). Projects/sessions/cache are session-local.
     const claudeDir = join(sessionHome, '.claude')
