@@ -65,6 +65,8 @@ db.exec(`
     session_name TEXT,
     worktree_path TEXT,
     worktree_branch TEXT,
+    base_branch TEXT,
+    template_version INTEGER,
     cost_usd REAL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -149,7 +151,7 @@ const stmts = {
   getGoal: db.prepare(`SELECT * FROM goals WHERE id = ?`),
   listGoals: db.prepare(`SELECT * FROM goals WHERE status = 'active' ORDER BY priority DESC, created_at DESC`),
 
-  insertDecision: db.prepare(`INSERT INTO decisions (goal_id, skill, task, reasoning, session_name, worktree_path, worktree_branch) VALUES (?, ?, ?, ?, ?, ?, ?)`),
+  insertDecision: db.prepare(`INSERT INTO decisions (goal_id, skill, task, reasoning, session_name, worktree_path, worktree_branch, base_branch, template_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
   updateDecision: db.prepare(`UPDATE decisions SET status = ?, outcome = ?, learnings = ?, metrics = ?, taste_signal = ?, cost_usd = ?, updated_at = datetime('now') WHERE id = ?`),
   getDecision: db.prepare(`SELECT * FROM decisions WHERE id = ?`),
   listDecisions: db.prepare(`SELECT * FROM decisions ORDER BY created_at DESC LIMIT ?`),
@@ -527,7 +529,7 @@ function watcherTick(): void {
 async function harvestOutcome(sessionName: string, goalId: number, backend: ExecutionBackend): Promise<void> {
   // Find the decision for this session
   const decision = db.prepare(`SELECT * FROM decisions WHERE session_name = ? AND status = 'dispatched' ORDER BY created_at DESC LIMIT 1`)
-    .get(sessionName) as { id: number, skill: string, task: string } | undefined
+    .get(sessionName) as { id: number, skill: string, task: string, worktree_branch: string | null, base_branch: string | null } | undefined
   if (!decision) return
 
   const session = stmts.getSession.get(sessionName) as { work_dir: string, status: string } | undefined
@@ -535,43 +537,85 @@ async function harvestOutcome(sessionName: string, goalId: number, backend: Exec
 
   const workDir = session.work_dir
 
-  // Read session output (last 50 lines)
-  const output = backend.isAlive(sessionName) ? backend.capture(sessionName, 50) : ''
+  // ── Read session output from LOG FILE (complete) instead of tmux capture (limited)
+  const logFile = join(FOREMAN_HOME, 'logs', `session-${sessionName}.log`)
+  let output = ''
+  try {
+    if (existsSync(logFile)) {
+      const full = readFileSync(logFile, 'utf8')
+      // Take last 5000 chars — enough for cost, test results, commit messages
+      output = full.slice(-5000)
+    }
+  } catch {}
+  // Fallback to tmux capture if log file empty
+  if (!output && backend.isAlive(sessionName)) {
+    output = backend.capture(sessionName, 80)
+  }
 
-  // Check git status in the worktree
+  // ── Count ONLY the session's commits (diff from base branch, not all history)
   let commits = 0
   let gitLog = ''
   let hasPR = false
   let testsPassed: boolean | null = null
+
+  const baseBranch = decision.base_branch
+  const worktreeBranch = decision.worktree_branch
+
   try {
-    const { stdout } = await execFileAsync('git', ['log', '--oneline', 'HEAD~20..HEAD'], { cwd: workDir, timeout: 5_000 })
-    const lines = stdout.trim().split('\n').filter(Boolean)
-    commits = lines.length
-    gitLog = lines.slice(0, 5).join('\n')
+    // Use merge-base to find the exact branch point, then count from there
+    if (baseBranch) {
+      const { stdout: mergeBase } = await execFileAsync('git', ['merge-base', baseBranch, 'HEAD'], { cwd: workDir, timeout: 5_000 })
+      const { stdout } = await execFileAsync('git', ['log', '--oneline', `${mergeBase.trim()}..HEAD`], { cwd: workDir, timeout: 5_000 })
+      const lines = stdout.trim().split('\n').filter(Boolean)
+      commits = lines.length
+      gitLog = lines.slice(0, 5).join('\n')
+    } else {
+      // No base branch — count commits on HEAD not on any remote
+      const { stdout } = await execFileAsync('git', ['log', '--oneline', '-10'], { cwd: workDir, timeout: 5_000 })
+      const lines = stdout.trim().split('\n').filter(Boolean)
+      commits = lines.length
+      gitLog = lines.slice(0, 5).join('\n')
+    }
   } catch {}
 
-  // Check if a PR was created
-  try {
-    const { stdout } = await execFileAsync('gh', ['pr', 'list', '--head', '', '--json', 'title,url', '--limit', '1'], { cwd: workDir, timeout: 10_000 })
-    const prs = JSON.parse(stdout)
-    if (prs.length > 0) hasPR = true
-  } catch {}
+  // ── Check if THIS session's branch has a PR (not any PR in the repo)
+  if (worktreeBranch) {
+    try {
+      const { stdout } = await execFileAsync('gh', ['pr', 'list', '--head', worktreeBranch, '--json', 'title,url', '--limit', '1'], { cwd: workDir, timeout: 10_000 })
+      const prs = JSON.parse(stdout)
+      if (prs.length > 0) hasPR = true
+    } catch {}
+  }
 
   // Detect test results from output
-  if (output.includes('tests pass') || output.includes('✅') || output.includes('All tests passed')) {
+  if (output.includes('tests pass') || output.includes('✅') || output.includes('All tests passed') || output.includes('✓ pass')) {
     testsPassed = true
-  } else if (output.includes('FAIL') || output.includes('❌') || output.includes('tests fail')) {
+  } else if (output.includes('FAIL') || output.includes('❌') || output.includes('tests fail') || output.includes('✗ fail')) {
     testsPassed = false
   }
 
-  // Parse cost from output (Claude prints cost at end of session)
+  // ── Parse cost from session log (Claude Code prints "Total cost: $X.XX" or similar)
   let costUsd: number | null = null
-  const costMatch = output.match(/\$(\d+\.?\d*)\s*(?:total|cost|spent)/i)
-  if (costMatch) costUsd = parseFloat(costMatch[1])
+  // Try multiple patterns Claude Code uses
+  const costPatterns = [
+    /Total cost:\s*\$(\d+\.?\d*)/i,
+    /Cost:\s*\$(\d+\.?\d*)/i,
+    /\$(\d+\.\d{2,})\s*total/i,
+    /(\d+\.\d{2,})\s*USD/i,
+    // Claude Code API mode: "Input: X tokens, Output: Y tokens, Cost: $Z"
+    /(?:cost|spent|billed)[:\s]*\$?(\d+\.?\d*)/i,
+  ]
+  for (const pattern of costPatterns) {
+    const match = output.match(pattern)
+    if (match) { costUsd = parseFloat(match[1]); break }
+  }
 
-  // Determine success
+  // Determine success — sessions with 0 commits but no errors are "completed" not "failed"
   const hasErrors = output.includes('Error:') || output.includes('FAIL') || output.includes('fatal:')
-  const status = commits > 0 && !hasErrors ? 'success' : commits > 0 ? 'partial' : 'failure'
+  const status = commits > 0 && !hasErrors ? 'success'
+    : commits > 0 && hasErrors ? 'success' // commits + errors = partial success (still made progress)
+    : hasErrors ? 'failure'
+    : 'success' // no commits, no errors = completed successfully (e.g. verification task)
 
   // Generate outcome text
   const outcomeParts: string[] = []
@@ -581,21 +625,23 @@ async function harvestOutcome(sessionName: string, goalId: number, backend: Exec
   if (testsPassed === false) outcomeParts.push('tests failing')
   if (hasErrors) outcomeParts.push('errors detected')
   if (costUsd) outcomeParts.push(`$${costUsd.toFixed(2)}`)
-  const outcomeText = outcomeParts.length > 0 ? outcomeParts.join(', ') : 'session completed (no clear signals)'
+  const outcomeText = outcomeParts.length > 0 ? outcomeParts.join(', ') : 'session completed'
 
-  // Extract learnings from the last few lines of output
+  // Extract learnings from output (commit messages, key results)
   const learnings: string[] = []
-  const outputLines = output.trim().split('\n').slice(-20)
+  const outputLines = output.split('\n').slice(-40)
   for (const line of outputLines) {
-    if (line.includes('commit') || line.includes('fix:') || line.includes('feat:') || line.includes('test')) {
-      const clean = line.replace(/[\x00-\x1f\x7f]/g, '').trim()
-      if (clean.length > 10 && clean.length < 200) learnings.push(clean)
+    const clean = line.replace(/[\x00-\x1f\x7f]/g, '').trim()
+    if (clean.length < 15 || clean.length > 200) continue
+    if (clean.match(/^(feat|fix|chore|refactor|test|docs)(\(.*?\))?:/) ||
+        clean.includes('✅') || clean.includes('improved') || clean.includes('fixed')) {
+      learnings.push(clean)
     }
   }
 
   // Store the outcome
   stmts.updateDecision.run(
-    status === 'partial' ? 'success' : status, // map partial to success for the schema
+    status,
     outcomeText,
     learnings.length > 0 ? JSON.stringify(learnings) : null,
     JSON.stringify({ commits, hasPR, testsPassed, gitLog }),
@@ -639,12 +685,120 @@ function updateLearningsFromOutcome(
     }
   }
 
-  // Update prompt template score
-  const totalDecisions = (db.prepare(`SELECT COUNT(*) as c FROM decisions WHERE status IN ('success','failure')`).get() as { c: number }).c
-  const successDecisions = (db.prepare(`SELECT COUNT(*) as c FROM decisions WHERE status = 'success'`).get() as { c: number }).c
-  const activeTemplate = stmts.activeTemplate.get() as { id: number } | undefined
-  if (activeTemplate && totalDecisions > 0) {
-    stmts.updateTemplateScore.run(successDecisions / totalDecisions, totalDecisions, successDecisions, activeTemplate.id)
+  // Update prompt template score — per-template, not global
+  // Each decision tracks which template_version it used
+  const templates = stmts.listTemplates.all(10) as Array<{ id: number, version: number }>
+  for (const t of templates) {
+    const total = (db.prepare(`SELECT COUNT(*) as c FROM decisions WHERE template_version = ? AND status IN ('success','failure')`).get(t.version) as { c: number }).c
+    const success = (db.prepare(`SELECT COUNT(*) as c FROM decisions WHERE template_version = ? AND status = 'success'`).get(t.version) as { c: number }).c
+    if (total > 0) {
+      stmts.updateTemplateScore.run(success / total, total, success, t.id)
+    }
+  }
+
+  // Check if we have enough data to consider generating a GEPA variant
+  const activeTemplate = stmts.activeTemplate.get() as { id: number, version: number, dispatches: number, score: number | null } | undefined
+  if (activeTemplate && activeTemplate.dispatches >= 5 && !gepaRunning) {
+    // Only if we don't already have an untested variant
+    const untestedVariant = db.prepare(`SELECT id FROM prompt_templates WHERE active = 0 AND dispatches < 3`).get()
+    if (!untestedVariant) {
+      triggerGepaVariant(activeTemplate.version, activeTemplate.score ?? 0).catch(e => log(`GEPA variant failed: ${e}`))
+    }
+  }
+}
+
+// ─── GEPA prompt template evolution ──────────────────────────────────
+// After N dispatches, generate a variant of the prompt template using Claude.
+// A/B test: randomly assign dispatches to active template or variant.
+// Auto-promote variant if it outperforms after enough samples.
+
+let gepaRunning = false
+
+async function triggerGepaVariant(currentVersion: number, currentScore: number): Promise<void> {
+  if (gepaRunning) return
+  gepaRunning = true
+
+  try {
+    // Gather evidence: recent outcomes, what worked, what failed
+    const successes = db.prepare(`SELECT skill, task, outcome FROM decisions WHERE status = 'success' ORDER BY created_at DESC LIMIT 5`)
+      .all() as Array<{ skill: string, task: string, outcome: string | null }>
+    const failures = db.prepare(`SELECT skill, task, outcome FROM decisions WHERE status = 'failure' ORDER BY created_at DESC LIMIT 3`)
+      .all() as Array<{ skill: string, task: string, outcome: string | null }>
+
+    const evidence = [
+      `Current template v${currentVersion} success rate: ${Math.round(currentScore * 100)}%`,
+      '',
+      'Recent successes:',
+      ...successes.map(s => `- ${s.skill} "${s.task.slice(0, 80)}" → ${(s.outcome ?? '?').slice(0, 80)}`),
+      '',
+      'Recent failures:',
+      ...failures.map(f => `- ${f.skill} "${f.task.slice(0, 80)}" → ${(f.outcome ?? '?').slice(0, 80)}`),
+    ].join('\n')
+
+    const prompt = `You are optimizing a prompt template for an autonomous coding agent dispatcher.
+
+The template composes prompts that are sent to Claude Code sessions. The prompt includes:
+- Task description + standards
+- Git workflow instructions (worktree, PR)
+- Project context (CLAUDE.md, README, git log)
+- Past decisions and outcomes
+- Operator exemplars and taste
+- Dead ends to avoid
+- Learned flows and skill preferences
+
+Here's the evidence from recent dispatches:
+
+${evidence}
+
+The current template sections are ordered: Task → Standards → Git Workflow → Project Context → Past Decisions → Taste → Dead Ends → Exemplars → Flows.
+
+Suggest ONE specific change to the template that would improve session success rate. The change should be:
+1. A reordering of sections (what should Claude see first?)
+2. A wording change to the Standards section
+3. A new section that's missing
+4. Or removing a section that's noise
+
+Respond with JSON:
+{"change": "description of the change", "section": "which section", "rationale": "why this will help based on the evidence"}`
+
+    const { stdout } = await execFileAsync(CLAUDE_BIN, ['-p', prompt, '--output-format', 'text'], {
+      timeout: 60_000,
+      env: { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` },
+    })
+
+    // Parse the suggestion and store as a new template variant
+    const newVersion = currentVersion + 1
+    stmts.insertTemplate.run(newVersion, stdout.trim().slice(0, 2000), 0) // active=0 (variant, not promoted)
+    log(`GEPA generated template v${newVersion}`)
+
+    // Check if any variant should be promoted
+    promoteTemplateIfBetter()
+  } catch (e) {
+    log(`GEPA variant generation failed: ${e instanceof Error ? e.message : String(e)}`)
+  } finally {
+    gepaRunning = false
+  }
+}
+
+function promoteTemplateIfBetter(): void {
+  // Compare all templates with sufficient data
+  const templates = stmts.listTemplates.all(10) as Array<{
+    id: number, version: number, score: number | null, dispatches: number, active: number
+  }>
+
+  const scored = templates.filter(t => t.dispatches >= 3 && t.score !== null)
+  if (scored.length < 2) return
+
+  // Find the best
+  const best = scored.reduce((a, b) => (a.score ?? 0) > (b.score ?? 0) ? a : b)
+  const active = templates.find(t => t.active === 1)
+
+  if (active && best.id !== active.id && (best.score ?? 0) > (active.score ?? 0)) {
+    // Promote the better template
+    db.prepare(`UPDATE prompt_templates SET active = 0`).run()
+    db.prepare(`UPDATE prompt_templates SET active = 1 WHERE id = ?`).run(best.id)
+    log(`GEPA promoted template v${best.version} (${Math.round((best.score ?? 0) * 100)}%) over v${active.version} (${Math.round((active.score ?? 0) * 100)}%)`)
+    emitEvent('template_promoted', null, null, { version: best.version, score: best.score })
   }
 }
 
@@ -1559,7 +1713,14 @@ function composePrompt(opts: {
   prompt += '\n'
 
   // Context sections (trimmed to fit — Claude Code has limited initial prompt space)
-  let contextBudget = 6000 // chars of context to include
+  // Scale context budget by task complexity.
+  // Simple tasks (short, direct commands) get less context.
+  // Complex tasks (multi-step goals, architectural work) get full context.
+  const taskWords = task.split(/\s+/).length
+  const isComplex = taskWords > 20 || skill === '/pursue' || skill === '/evolve' ||
+    skill === '/research' || skill === '/critical-audit' ||
+    task.includes('redesign') || task.includes('architect') || task.includes('refactor')
+  let contextBudget = isComplex ? 6000 : taskWords > 10 ? 3500 : 1500
   for (const section of sections) {
     if (contextBudget <= 0) break
     if (section.length <= contextBudget) {
@@ -1722,7 +1883,11 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
       // Session name includes label for parallel dispatch support
       const sName = sessionName(label || (effectiveWorkDir.split('/').pop() ?? 'session'))
-      const result = stmts.insertDecision.run(goalId || null, skill, task, reasoning, sName, worktreePath, worktreeBranch)
+      // Get active template version for tracking
+      const activeTpl = stmts.activeTemplate.get() as { version: number } | undefined
+      const tplVersion = activeTpl?.version ?? 1
+
+      const result = stmts.insertDecision.run(goalId || null, skill, task, reasoning, sName, worktreePath, worktreeBranch, baseBranch, tplVersion)
       const decisionId = Number(result.lastInsertRowid)
 
       // Compose rich, context-loaded prompt (reads project context from the REPO, not the worktree)

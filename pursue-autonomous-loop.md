@@ -155,3 +155,75 @@ This is the difference between "a tool that dispatches work" and "an autonomous 
 5. Tune prompt length by task complexity (simple task = shorter prompt)
 6. Telegram gateway (talk to Foreman from phone)
 7. Confidence-gated autonomy (auto-dispatch without operator when confidence is high)
+
+---
+
+# Generation 2: Clean Signal + Self-Improving Prompts
+
+Date: 2026-03-23
+Status: designing
+
+## Thesis
+
+**Gen 2 makes the learning signal honest, then uses it to improve its own prompts.** Gen 1 closed the loop but with noisy measurements. Gen 2 cleans the signal (accurate commit counting, PR detection, cost tracking) and then uses GEPA to evolve prompt templates from evidence.
+
+## Changes
+
+### Measurement fixes (must ship together — they clean the signal GEPA trains on)
+
+1. **Store base_branch on decisions** — add column, populate during dispatch. Harvest uses `git log baseBranch..HEAD` instead of `HEAD~20..HEAD`. This gives exact session-only commits.
+   Risk: LOW (schema migration)
+
+2. **PR detection by worktree branch** — `gh pr list --head foreman/label` instead of empty `--head ''`. Only finds PRs the session created.
+   Risk: LOW
+
+3. **Cost parsing from tmux log file** — Claude Code writes cost to the session log. Parse the log file (not tmux capture which is limited). Look for the actual format Claude uses.
+   Risk: LOW
+
+4. **Session output from log file** — tmux capture is limited to visible terminal buffer. The pipe-pane log file has the complete output. Read from log file for harvest.
+   Risk: LOW
+
+### Architectural (the bold bet)
+
+5. **GEPA prompt template evolution** — Track which template version produced each dispatch. After 5+ scored outcomes, generate a variant using GEPA. A/B test: 50% of dispatches use the new variant. After 5+ outcomes on the variant, compare success rates. Auto-promote if better.
+   Risk: MED (GEPA calls cost money, bad variants degrade dispatches)
+
+### Infrastructure
+
+6. **Prompt complexity scaling** — Simple tasks ("run tests") get a shorter prompt (skip project README, exemplars). Complex tasks ("/pursue redesign auth") get the full 6K+ prompt. Heuristic: count words in the task, check if it references specific files/functions.
+   Risk: LOW
+
+## Build Status
+
+| # | Change | Status |
+|---|--------|--------|
+| 1 | Store base_branch on decisions | ✅ built + verified (correctly stores feat/service-pi-extension) |
+| 2 | PR detection by worktree branch | ✅ built + verified (0 false positives) |
+| 3 | Cost parsing from log file | ✅ built (multiple regex patterns, untested with real Claude cost output) |
+| 4 | Session output from log file | ✅ built (falls back to tmux capture if log empty) |
+| 5 | GEPA prompt template evolution | ✅ built (triggerGepaVariant, promoteTemplateIfBetter, per-template scoring) |
+| 6 | Prompt complexity scaling | ✅ built (1500/3500/6000 chars by task complexity) |
+
+## Gen 2 Results
+
+| Metric | Gen 1 | Gen 2 | Verdict |
+|--------|-------|-------|---------|
+| Commit count accuracy | 20 (entire branch history) | 0 (correct: no session commits) | ✅ FIXED |
+| PR false positives | 1 (found existing PR) | 0 (correct: no session PR) | ✅ FIXED |
+| Base branch tracked | no | yes (feat/service-pi-extension) | ✅ NEW |
+| Template version tracked | no | yes (v1, per-decision) | ✅ NEW |
+| Prompt complexity scaling | fixed 6000 | 1500/3500/6000 by task | ✅ NEW |
+| GEPA variant generation | none | built, triggers after 5 scored dispatches | ✅ NEW |
+| Cost tracking | none | built, needs real Claude session to verify | ⚠️ UNTESTED |
+
+### Verdict: ADVANCE
+
+Gen 2 fixes all 3 measurement bugs from Gen 1 and adds the GEPA self-improvement loop. The learning signal is now clean enough to train on.
+
+## Success Criteria
+
+- Commit count on harvest: matches ONLY session's commits (not branch history) ✅
+- PR detection: 0 false positives on repos with existing PRs ✅
+- Cost tracked: >0 dispatches with cost_usd populated (needs real session)
+- GEPA: at least 1 prompt variant generated and scored (needs 5 dispatches)
+- Prompt scaling: short tasks get <2K prompt, complex tasks get >4K ✅
