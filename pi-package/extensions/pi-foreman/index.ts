@@ -14,8 +14,12 @@ import type {
 } from '@mariozechner/pi-coding-agent'
 import { truncateToWidth, matchesKey, type Component } from '@mariozechner/pi-tui'
 
-function text(content: string): Component { return { render: () => [content] } }
-function lines(content: string[]): Component { return { render: () => content } }
+function text(content: string): Component {
+  return { render: (w: number) => [truncateToWidth(content, w)] }
+}
+function multiline(content: string[]): Component {
+  return { render: (w: number) => content.map(l => truncateToWidth(l, w)) }
+}
 import { Type, type TUnsafe } from '@sinclair/typebox'
 
 function StringEnum<T extends readonly string[]>(values: T, opts?: { description?: string }): TUnsafe<T[number]> {
@@ -163,11 +167,11 @@ export default function foremanExtension(pi: ExtensionAPI) {
 
         if (!st) {
           lines.push(`  ${theme.fg('error', 'Service not running. Start: tsx service/index.ts')}`)
-          return { render: () => lines }
+          return { render: (w: number) => lines.map((l: string) => truncateToWidth(l, w)) }
         }
 
         lines.push(...renderDashboard(st, width, theme))
-        return { render: () => lines }
+        return { render: (w: number) => lines.map((l: string) => truncateToWidth(l, w)) }
       })
     } else {
       ctx.ui.setWidget('foreman', (_tui, theme) => {
@@ -386,7 +390,7 @@ export default function foremanExtension(pi: ExtensionAPI) {
       }
     },
     renderCall(_a, theme) { return text(theme.fg('toolTitle', theme.bold('portfolio_status'))) },
-    renderResult(r, _o, theme) { const t = r.content[0]; return text(theme.fg('muted', t?.type === 'text' ? t.text.split('\n').slice(0, 6).join('\n') : '')) },
+    renderResult(r, _o, theme) { const t = r.content[0]; const txt = t?.type === 'text' ? t.text : ''; return multiline(txt.split('\n').slice(0, 6).map((l: string) => theme.fg('muted', l))) },
   })
 
   // ── Tool: dispatch_skill ────────────────────────────────────────────
@@ -556,7 +560,7 @@ export default function foremanExtension(pi: ExtensionAPI) {
       }
     },
     renderCall(args, theme) { return text(theme.fg('toolTitle', theme.bold('project_context ')) + theme.fg('accent', (args.path ?? '').split('/').pop() ?? '')) },
-    renderResult(r, _o, theme) { return text(theme.fg('muted', r.content[0]?.type === 'text' ? r.content[0].text.split('\n').slice(0, 3).join('\n') : '')) },
+    renderResult(r, _o, theme) { const txt = r.content[0]?.type === 'text' ? r.content[0].text : ''; return multiline(txt.split('\n').slice(0, 3).map((l: string) => theme.fg('muted', l))) },
   })
 
   // ── Tool: search_history ────────────────────────────────────────────
