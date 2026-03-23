@@ -147,6 +147,14 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_decisions_goal ON decisions(goal_id);
   CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status);
+`)
+
+// Migrations for existing databases
+try { db.exec(`ALTER TABLE decisions ADD COLUMN origin TEXT NOT NULL DEFAULT 'operator'`) } catch {}
+try { db.exec(`ALTER TABLE decisions ADD COLUMN base_branch TEXT`) } catch {}
+try { db.exec(`ALTER TABLE decisions ADD COLUMN template_version INTEGER`) } catch {}
+
+db.exec(`
   CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
   CREATE INDEX IF NOT EXISTS idx_events_type ON events(type);
   CREATE INDEX IF NOT EXISTS idx_operator_sessions_repo ON operator_sessions(repo);
