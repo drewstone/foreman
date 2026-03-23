@@ -25,10 +25,13 @@ export interface ConfidenceEntry {
   lastUpdated: string
 }
 
+// Calibrated from Experiment 2 (2026-03-23): at success=0.05, system
+// reaches 0.60 after 12 successes, but actual success rate is 94% by
+// the 3rd dispatch. Doubled success weight so graduation tracks reality.
 const SIGNAL_WEIGHTS: Record<ConfidenceSignal, number> = {
   agree: 0.1,
   disagree: -0.15,
-  success: 0.05,
+  success: 0.10,     // was 0.05 — too conservative, system was under-confident
   failure: -0.1,
   transfer: 0.02,
 }
