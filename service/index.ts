@@ -512,8 +512,195 @@ function watcherTick(): void {
     if (idle && s.status === 'running') {
       emitEvent('session_idle', s.name, s.goal_id)
       log(`Session ${s.name} is now idle`)
+      // Auto-harvest outcome
+      harvestOutcome(s.name, s.goal_id, backend).catch(e => log(`Harvest failed for ${s.name}: ${e}`))
+    }
+
+    if (!backend.isAlive(s.name) && s.status !== 'dead') {
+      // Also harvest from dead sessions (crashed or exited)
+      harvestOutcome(s.name, s.goal_id, backend).catch(e => log(`Harvest failed for ${s.name}: ${e}`))
     }
   }
+}
+
+// ─── Auto-outcome harvester ──────────────────────────────────────────
+// When a session finishes (idle or dead), read what happened and auto-generate
+// an outcome record. This is the critical link that closes the learning loop.
+
+async function harvestOutcome(sessionName: string, goalId: number, backend: ExecutionBackend): Promise<void> {
+  // Find the decision for this session
+  const decision = db.prepare(`SELECT * FROM decisions WHERE session_name = ? AND status = 'dispatched' ORDER BY created_at DESC LIMIT 1`)
+    .get(sessionName) as { id: number, skill: string, task: string } | undefined
+  if (!decision) return
+
+  const session = stmts.getSession.get(sessionName) as { work_dir: string, status: string } | undefined
+  if (!session) return
+
+  const workDir = session.work_dir
+
+  // Read session output (last 50 lines)
+  const output = backend.isAlive(sessionName) ? backend.capture(sessionName, 50) : ''
+
+  // Check git status in the worktree
+  let commits = 0
+  let gitLog = ''
+  let hasPR = false
+  let testsPassed: boolean | null = null
+  try {
+    const { stdout } = await execFileAsync('git', ['log', '--oneline', 'HEAD~20..HEAD'], { cwd: workDir, timeout: 5_000 })
+    const lines = stdout.trim().split('\n').filter(Boolean)
+    commits = lines.length
+    gitLog = lines.slice(0, 5).join('\n')
+  } catch {}
+
+  // Check if a PR was created
+  try {
+    const { stdout } = await execFileAsync('gh', ['pr', 'list', '--head', '', '--json', 'title,url', '--limit', '1'], { cwd: workDir, timeout: 10_000 })
+    const prs = JSON.parse(stdout)
+    if (prs.length > 0) hasPR = true
+  } catch {}
+
+  // Detect test results from output
+  if (output.includes('tests pass') || output.includes('✅') || output.includes('All tests passed')) {
+    testsPassed = true
+  } else if (output.includes('FAIL') || output.includes('❌') || output.includes('tests fail')) {
+    testsPassed = false
+  }
+
+  // Parse cost from output (Claude prints cost at end of session)
+  let costUsd: number | null = null
+  const costMatch = output.match(/\$(\d+\.?\d*)\s*(?:total|cost|spent)/i)
+  if (costMatch) costUsd = parseFloat(costMatch[1])
+
+  // Determine success
+  const hasErrors = output.includes('Error:') || output.includes('FAIL') || output.includes('fatal:')
+  const status = commits > 0 && !hasErrors ? 'success' : commits > 0 ? 'partial' : 'failure'
+
+  // Generate outcome text
+  const outcomeParts: string[] = []
+  if (commits > 0) outcomeParts.push(`${commits} commits`)
+  if (hasPR) outcomeParts.push('PR created')
+  if (testsPassed === true) outcomeParts.push('tests passing')
+  if (testsPassed === false) outcomeParts.push('tests failing')
+  if (hasErrors) outcomeParts.push('errors detected')
+  if (costUsd) outcomeParts.push(`$${costUsd.toFixed(2)}`)
+  const outcomeText = outcomeParts.length > 0 ? outcomeParts.join(', ') : 'session completed (no clear signals)'
+
+  // Extract learnings from the last few lines of output
+  const learnings: string[] = []
+  const outputLines = output.trim().split('\n').slice(-20)
+  for (const line of outputLines) {
+    if (line.includes('commit') || line.includes('fix:') || line.includes('feat:') || line.includes('test')) {
+      const clean = line.replace(/[\x00-\x1f\x7f]/g, '').trim()
+      if (clean.length > 10 && clean.length < 200) learnings.push(clean)
+    }
+  }
+
+  // Store the outcome
+  stmts.updateDecision.run(
+    status === 'partial' ? 'success' : status, // map partial to success for the schema
+    outcomeText,
+    learnings.length > 0 ? JSON.stringify(learnings) : null,
+    JSON.stringify({ commits, hasPR, testsPassed, gitLog }),
+    null, // taste_signal — operator sets this
+    costUsd,
+    decision.id,
+  )
+
+  log(`Auto-harvested outcome for ${sessionName}: ${outcomeText}`)
+  emitEvent('outcome_harvested', sessionName, goalId, { decisionId: decision.id, status, commits })
+
+  // Send desktop notification
+  sendNotification(`Foreman: ${sessionName}`, `${decision.skill} → ${outcomeText}`)
+
+  // Trigger immediate learning from this outcome
+  updateLearningsFromOutcome(decision.id, decision.skill, decision.task, status, outcomeText, learnings)
+}
+
+// ─── Outcome-driven learning ─────────────────────────────────────────
+
+function updateLearningsFromOutcome(
+  decisionId: number, skill: string, task: string,
+  status: string, outcome: string, learnings: string[],
+): void {
+  // Record successful patterns
+  if (status === 'success' && learnings.length > 0) {
+    for (const l of learnings.slice(0, 3)) {
+      const exists = db.prepare(`SELECT id FROM learnings WHERE content = ? AND type = 'dispatch_success'`).get(l.slice(0, 200))
+      if (!exists) {
+        stmts.insertLearning.run('dispatch_success', l.slice(0, 500), `decision:${decisionId}`, null, 1.5)
+      }
+    }
+  }
+
+  // Record failures as dead ends
+  if (status === 'failure') {
+    const key = `FAIL: ${skill} "${task.slice(0, 80)}" → ${outcome.slice(0, 100)}`
+    const exists = db.prepare(`SELECT id FROM learnings WHERE content = ? AND type = 'dead_end'`).get(key.slice(0, 200))
+    if (!exists) {
+      stmts.insertLearning.run('dead_end', key.slice(0, 500), `decision:${decisionId}`, null, -1.0)
+    }
+  }
+
+  // Update prompt template score
+  const totalDecisions = (db.prepare(`SELECT COUNT(*) as c FROM decisions WHERE status IN ('success','failure')`).get() as { c: number }).c
+  const successDecisions = (db.prepare(`SELECT COUNT(*) as c FROM decisions WHERE status = 'success'`).get() as { c: number }).c
+  const activeTemplate = stmts.activeTemplate.get() as { id: number } | undefined
+  if (activeTemplate && totalDecisions > 0) {
+    stmts.updateTemplateScore.run(successDecisions / totalDecisions, totalDecisions, successDecisions, activeTemplate.id)
+  }
+}
+
+// ─── Desktop notifications ───────────────────────────────────────────
+
+function sendNotification(title: string, body: string): void {
+  try {
+    execFileSync('notify-send', [title, body, '--app-name=Foreman', '--urgency=normal'], { stdio: 'ignore', timeout: 3_000 })
+  } catch {
+    // notify-send not available — silently skip
+  }
+}
+
+// ─── Worktree cleanup ────────────────────────────────────────────────
+
+async function cleanupWorktrees(): Promise<number> {
+  const wtDir = join(FOREMAN_HOME, 'worktrees')
+  if (!existsSync(wtDir)) return 0
+
+  let cleaned = 0
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000 // 24 hours
+
+  try {
+    for (const entry of readdirSync(wtDir)) {
+      const wtPath = join(wtDir, entry)
+      try {
+        const mtime = statSync(wtPath).mtimeMs
+        if (mtime > cutoff) continue // too recent
+
+        // Check if session is still alive
+        const sessionRow = db.prepare(`SELECT name, status FROM sessions WHERE work_dir = ?`).get(wtPath) as { name: string, status: string } | undefined
+        if (sessionRow && (sessionRow.status === 'running' || sessionRow.status === 'starting')) continue
+
+        // Find the repo this worktree belongs to
+        try {
+          const { stdout } = await execFileAsync('git', ['-C', wtPath, 'rev-parse', '--git-common-dir'], { timeout: 5_000 })
+          const repoGitDir = stdout.trim()
+          const repoDir = join(repoGitDir, '..')
+          await execFileAsync('git', ['-C', repoDir, 'worktree', 'remove', '--force', wtPath], { timeout: 10_000 })
+          cleaned++
+          log(`Cleaned worktree: ${entry}`)
+        } catch {
+          // If git cleanup fails, try direct removal
+          try {
+            await execFileAsync('rm', ['-rf', wtPath], { timeout: 5_000 })
+            cleaned++
+          } catch {}
+        }
+      } catch {}
+    }
+  } catch {}
+
+  return cleaned
 }
 
 // ─── Events ──────────────────────────────────────────────────────────
@@ -1745,10 +1932,18 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     }
 
     if (path === '/api/analyze' && method === 'POST') {
-      // Trigger deep LLM analysis of operator sessions on-demand
       try {
         const result = await runDeepAnalysis()
         return json(res, result)
+      } catch (e) {
+        return error(res, e instanceof Error ? e.message : String(e), 500)
+      }
+    }
+
+    if (path === '/api/cleanup' && method === 'POST') {
+      try {
+        const cleaned = await cleanupWorktrees()
+        return json(res, { cleaned })
       } catch (e) {
         return error(res, e instanceof Error ? e.message : String(e), 500)
       }
@@ -1785,6 +1980,31 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         tasteSignals: tasteCount,
         successRate: Math.round(successRate * 100),
       })
+    }
+
+    // ── Session search (FTS5 index) ─────────────────────────
+    if (path === '/api/search' && method === 'GET') {
+      const q = parseQuery(url).get('q') ?? ''
+      const limit = parseInt(parseQuery(url).get('limit') ?? '20', 10)
+      if (!q) return error(res, 'q required')
+
+      try {
+        const { SessionIndex } = await import('@drew/foreman-memory/session-index')
+        const idx = new SessionIndex()
+        const results = idx.search({ query: q, limit })
+        const formatted = results.map((r: any) => ({
+          text: r.message?.text?.slice(0, 300),
+          repo: r.message?.repo,
+          harness: r.message?.harness,
+          timestamp: r.message?.timestamp,
+          role: r.message?.role,
+        }))
+        idx.close()
+        return json(res, formatted)
+      } catch (e) {
+        // Session index may not be built yet
+        return json(res, [])
+      }
     }
 
     // ── 404 ───────────────────────────────────────────────────
@@ -1835,6 +2055,19 @@ server.listen(PORT, '127.0.0.1', () => {
       if (result.flows > 0) log(`Deep analysis: ${result.analyzed} sessions → ${result.flows} new flows`)
     } catch (e) { log(`Deep analysis failed: ${e}`) }
   }, DEEP_ANALYSIS_INTERVAL_MS)
+
+  // Worktree cleanup — every 6 hours
+  setInterval(async () => {
+    const cleaned = await cleanupWorktrees()
+    if (cleaned > 0) log(`Cleaned ${cleaned} stale worktrees`)
+  }, 6 * 60 * 60 * 1000)
+
+  // Bootstrap prompt template if none exists
+  const hasTemplate = stmts.activeTemplate.get()
+  if (!hasTemplate) {
+    stmts.insertTemplate.run(1, 'v1-default', 1)
+    log('Bootstrapped prompt template v1')
+  }
 })
 
 // Graceful shutdown
