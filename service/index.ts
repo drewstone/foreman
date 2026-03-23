@@ -677,7 +677,13 @@ async function harvestOutcome(sessionName: string, goalId: number, backend: Exec
   sendNotification(`Foreman: ${sessionName}`, `${decision.skill} → ${notifyText.slice(0, 200)}`)
 
   // Update confidence for this (skill, project)
-  const projectName = workDir.split('/').pop() ?? workDir
+  // Use the GOAL's workspace path (the real repo), not the worktree path.
+  // This way all dispatches on the same project accumulate confidence together.
+  let projectName = workDir.split('/').pop() ?? workDir
+  if (goalId) {
+    const goal = stmts.getGoal.get(goalId) as { workspace_path?: string } | undefined
+    if (goal?.workspace_path) projectName = goal.workspace_path.split('/').pop() ?? projectName
+  }
   // Use pipeline's quality score if available, otherwise fall back to binary
   const confSignal = (digest.qualityScore ?? 0) >= 7 ? 'success' as const
     : status === 'success' ? 'success' as const : 'failure' as const
