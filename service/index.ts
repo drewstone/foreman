@@ -287,7 +287,29 @@ const tmuxBackend: ExecutionBackend = {
       tmuxQuiet(['kill-session', '-t', name])
     }
 
+    // Isolate session: override HOME so side effects (npm, pip, configs,
+    // extension installs) don't leak into the operator's real HOME.
+    // The worktree handles git isolation; this handles everything else.
+    const sessionHome = join(FOREMAN_HOME, 'session-homes', name)
+    mkdirSync(sessionHome, { recursive: true })
+    // Seed with minimal config so Claude can find its auth
+    const claudeDir = join(sessionHome, '.claude')
+    mkdirSync(claudeDir, { recursive: true })
+    // Symlink auth credentials from real HOME (read-only access to API keys)
+    const realClaudeDir = join(homedir(), '.claude')
+    for (const f of ['credentials.json', 'settings.json', 'settings.local.json']) {
+      const src = join(realClaudeDir, f)
+      const dst = join(claudeDir, f)
+      try { if (existsSync(src) && !existsSync(dst)) execFileSync('ln', ['-sf', src, dst], { stdio: 'ignore' }) } catch {}
+    }
+    // Symlink skills so dispatched sessions have access to /evolve etc.
+    const realSkills = join(realClaudeDir, 'skills')
+    const sessionSkills = join(claudeDir, 'skills')
+    try { if (existsSync(realSkills) && !existsSync(sessionSkills)) execFileSync('ln', ['-sf', realSkills, sessionSkills], { stdio: 'ignore' }) } catch {}
+
     tmuxQuiet(['new-session', '-d', '-s', name, '-c', workDir])
+    // Set isolated HOME in the tmux session
+    tmuxQuiet(['send-keys', '-t', name, `export HOME=${sessionHome}`, 'Enter'])
 
     const logFile = join(FOREMAN_HOME, 'logs', `session-${name}.log`)
     tmuxQuiet(['pipe-pane', '-t', name, `-o cat >> ${logFile}`])
@@ -296,7 +318,7 @@ const tmuxBackend: ExecutionBackend = {
 
     pendingPrompts.set(name, req)
     stmts.insertSession.run(name, req.goalId, req.decisionId, workDir, prompt)
-    log(`Spawned session ${name} in ${workDir}${model ? ` (model: ${model})` : ''}`)
+    log(`Spawned session ${name} in ${workDir} (HOME=${sessionHome})${model ? ` (model: ${model})` : ''}`)
   },
 
   isAlive: isTmuxAlive,
@@ -310,32 +332,54 @@ const tmuxBackend: ExecutionBackend = {
 
 // ─── Tangle Sandbox backend ──────────────────────────────────────────
 // Uses @tangle-network/sandbox SDK for remote container execution.
-// Supports Claude Code, Codex, OpenCode backends in Tangle sandboxes.
+// Full isolation — each dispatch runs in its own container.
 // Sandboxes persist between dispatches (hibernate when idle, wake on demand).
+
+import type {
+  SandboxClientConfig,
+  CreateSandboxOptions,
+  TaskOptions,
+  TaskResult,
+  BackendConfig,
+} from '@tangle-network/sandbox'
+
+// Use import() for the class since it may not be installed
+type SandboxClientType = import('@tangle-network/sandbox').SandboxClient
+type SandboxInstanceType = import('@tangle-network/sandbox').SandboxInstance
 
 interface TangleSandboxState {
   sandboxId: string
   sessionId?: string
-  status: string
+  status: 'creating' | 'running' | 'idle' | 'dead'
 }
 
 const tangleSandboxes = new Map<string, TangleSandboxState>()
 
+function getTangleConfig(): SandboxClientConfig {
+  const apiKey = process.env.TANGLE_API_KEY
+  if (!apiKey) throw new Error('TANGLE_API_KEY required for sandbox backend')
+  return { apiKey }
+}
+
+async function createTangleClient(): Promise<SandboxClientType> {
+  const { Sandbox } = await import('@tangle-network/sandbox')
+  return new Sandbox(getTangleConfig())
+}
+
 const tangleBackend: ExecutionBackend = {
   spawn(req: SpawnRequest): void {
-    // Tangle spawning is async — we track intent and let the watcher handle it.
-    // The actual SDK call happens in spawnTangleSandbox() below.
     tangleSandboxes.set(req.name, { sandboxId: '', status: 'creating' })
     stmts.insertSession.run(req.name, req.goalId, req.decisionId, req.workDir, req.prompt)
 
     spawnTangleSandbox(req).catch(e => {
-      log(`Tangle spawn failed for ${req.name}: ${e}`)
+      const msg = e instanceof Error ? e.message : String(e)
+      log(`Tangle spawn failed for ${req.name}: ${msg}`)
       tangleSandboxes.set(req.name, { sandboxId: '', status: 'dead' })
-      stmts.updateSession.run('dead', `spawn failed: ${e}`, req.name)
+      stmts.updateSession.run('dead', `spawn failed: ${msg}`, req.name)
       emitEvent('session_died', req.name, req.goalId)
     })
 
-    log(`Tangle sandbox queued for ${req.name} in ${req.workDir}`)
+    log(`Tangle sandbox queued for ${req.name}`)
   },
 
   isAlive(name: string): boolean {
@@ -344,91 +388,84 @@ const tangleBackend: ExecutionBackend = {
   },
 
   isIdle(name: string): boolean {
-    const state = tangleSandboxes.get(name)
-    return state?.status === 'idle'
+    return tangleSandboxes.get(name)?.status === 'idle'
   },
 
   capture(name: string, _lines: number): string {
     const state = tangleSandboxes.get(name)
     if (!state) return ''
-    return `[tangle:${state.sandboxId}] status: ${state.status}`
+    return `[tangle:${state.sandboxId || 'creating'}] status: ${state.status}`
   },
 
   kill(name: string): void {
     const state = tangleSandboxes.get(name)
     if (state?.sandboxId) {
-      // Stop is async but we fire and forget
       stopTangleSandbox(state.sandboxId).catch(() => {})
     }
-    tangleSandboxes.delete(name)
+    tangleSandboxes.set(name, { ...state!, status: 'dead' })
   },
 }
 
 async function spawnTangleSandbox(req: SpawnRequest): Promise<void> {
-  // Dynamic import — @tangle-network/sandbox may not be installed in all environments
-  let SandboxClass: any
-  try {
-    const mod: any = await import('@tangle-network/sandbox')
-    SandboxClass = mod.Sandbox ?? mod.default
-  } catch {
-    throw new Error('@tangle-network/sandbox not installed. Run: npm install @tangle-network/sandbox')
-  }
+  const client = await createTangleClient()
 
-  const client = new SandboxClass({
-    apiUrl: process.env.TANGLE_API_URL ?? 'https://api.tangle.tools',
-    apiKey: process.env.TANGLE_API_KEY ?? '',
-  } as any)
+  const backendType: BackendConfig['type'] = req.model === 'codex' ? 'codex' : 'claude-code'
 
-  const backendType = req.model === 'codex' ? 'codex' : 'claude-code'
-
-  const sandbox = await client.create({
+  const createOpts: CreateSandboxOptions = {
     name: `foreman-${req.name}`,
-    git: req.workDir.startsWith('/') ? undefined : { url: req.workDir },
     backend: { type: backendType },
     metadata: {
       foremanSession: req.name,
       foremanDecision: String(req.decisionId),
     },
-  } as any)
+  }
 
-  tangleSandboxes.set(req.name, { sandboxId: sandbox.id, status: 'running' })
-  stmts.updateSession.run('running', `sandbox:${sandbox.id}`, req.name)
-  emitEvent('session_started', req.name, req.goalId, { sandboxId: sandbox.id })
+  // If workDir is a URL (git repo), clone it. If local path, skip (sandbox can't access local fs).
+  if (req.workDir.startsWith('http') || req.workDir.startsWith('git@')) {
+    createOpts.git = { url: req.workDir }
+  }
 
-  const result = await sandbox.task(req.prompt, {
+  const sandbox = await client.create(createOpts)
+  const sandboxId = sandbox.id
+
+  tangleSandboxes.set(req.name, { sandboxId, status: 'running' })
+  stmts.updateSession.run('running', `sandbox:${sandboxId}`, req.name)
+  emitEvent('session_started', req.name, req.goalId, { sandboxId })
+
+  // Send the task to the sandbox agent
+  const taskOpts: TaskOptions = {
     backend: { type: backendType },
-  } as any)
+  }
+  const result: TaskResult = await sandbox.task(req.prompt, taskOpts)
 
-  // Task completed
+  const finalStatus: TangleSandboxState['status'] = result.success ? 'idle' : 'dead'
   tangleSandboxes.set(req.name, {
-    sandboxId: sandbox.id,
+    sandboxId,
     sessionId: result.sessionId,
-    status: result.success ? 'idle' : 'dead',
+    status: finalStatus,
   })
   stmts.updateSession.run(
-    result.success ? 'idle' : 'dead',
+    finalStatus,
     result.response?.slice(0, 500) ?? '',
     req.name,
   )
   emitEvent(result.success ? 'session_idle' : 'session_died', req.name, req.goalId, {
-    sandboxId: sandbox.id,
+    sandboxId,
     success: result.success,
+    sessionId: result.sessionId,
   })
 
-  log(`Tangle sandbox ${sandbox.id} ${result.success ? 'completed' : 'failed'} for ${req.name}`)
+  log(`Tangle sandbox ${sandboxId} ${result.success ? 'completed' : 'failed'} for ${req.name}`)
 }
 
 async function stopTangleSandbox(sandboxId: string): Promise<void> {
   try {
-    const mod: any = await import('@tangle-network/sandbox')
-    const SandboxClass = mod.Sandbox ?? mod.default
-    const client = new SandboxClass({
-      apiUrl: process.env.TANGLE_API_URL ?? 'https://api.tangle.tools',
-      apiKey: process.env.TANGLE_API_KEY ?? '',
-    } as any)
+    const client = await createTangleClient()
     const sandbox = await client.get(sandboxId)
     if (sandbox) await sandbox.stop()
-  } catch {}
+  } catch (e) {
+    log(`Failed to stop sandbox ${sandboxId}: ${e instanceof Error ? e.message : String(e)}`)
+  }
 }
 
 // ─── Backend registry ────────────────────────────────────────────────
