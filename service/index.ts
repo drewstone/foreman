@@ -663,21 +663,227 @@ async function harvestOutcome(sessionName: string, goalId: number, backend: Exec
   log(`Auto-harvested outcome for ${sessionName}: ${outcomeText}`)
   emitEvent('outcome_harvested', sessionName, goalId, { decisionId: decision.id, status, commits })
 
-  // Send desktop notification
-  sendNotification(`Foreman: ${sessionName}`, `${decision.skill} → ${outcomeText}`)
+  // Run post-completion pipeline (sub-agents that analyze the session)
+  const digest = await runPostCompletionPipeline(decision.id, sessionName, decision.skill, decision.task, workDir, output, status, outcomeText)
+
+  // If pipeline produced a richer outcome, update the decision
+  if (digest.summary) {
+    db.prepare(`UPDATE decisions SET outcome = ?, learnings = ?, updated_at = datetime('now') WHERE id = ?`)
+      .run(digest.summary.slice(0, 2000), digest.learnings ? JSON.stringify(digest.learnings) : null, decision.id)
+  }
+
+  // Send notification with enriched summary
+  const notifyText = digest.summary ?? outcomeText
+  sendNotification(`Foreman: ${sessionName}`, `${decision.skill} → ${notifyText.slice(0, 200)}`)
 
   // Update confidence for this (skill, project)
   const projectName = workDir.split('/').pop() ?? workDir
-  const confSignal = status === 'success' ? 'success' as const : 'failure' as const
+  // Use pipeline's quality score if available, otherwise fall back to binary
+  const confSignal = (digest.qualityScore ?? 0) >= 7 ? 'success' as const
+    : status === 'success' ? 'success' as const : 'failure' as const
   confidence.update(decision.skill || 'direct', projectName, confSignal)
   const newLevel = confidence.getLevel(decision.skill || 'direct', projectName)
   log(`Confidence: ${decision.skill || 'direct'}@${projectName} → ${newLevel} (${confSignal})`)
 
   // Trigger immediate learning from this outcome
-  updateLearningsFromOutcome(decision.id, decision.skill, decision.task, status, outcomeText, learnings)
+  const enrichedLearnings = digest.learnings ?? learnings
+  updateLearningsFromOutcome(decision.id, decision.skill, decision.task, status, digest.summary ?? outcomeText, enrichedLearnings)
 
-  // Auto-dispatch next work if confidence is high enough
+  // Auto-dispatch next work — use pipeline's recommended next action if available
+  if (digest.nextAction) {
+    log(`Pipeline recommends: ${digest.nextAction.skill} — ${digest.nextAction.task.slice(0, 80)}`)
+  }
   maybeAutoDispatch(decision.skill, projectName, goalId).catch(e => log(`Auto-dispatch failed: ${e}`))
+}
+
+// ─── Post-completion pipeline ─────────────────────────────────────────
+// After a session completes, run sub-agents to analyze what happened.
+// Each agent in the pipeline produces structured output that enriches
+// the outcome record. Foreman gets a rich digest instead of raw git stats.
+//
+// Pluggable: Identity (passthrough), Digest (LLM summary), Full (audit + plan).
+// Controlled by FOREMAN_POST_COMPLETION env var: 'identity' | 'digest' | 'full'
+//
+// The digest is stored on the decision. If Foreman needs more detail,
+// it can read the full session log at ~/.foreman/logs/session-*.log
+
+const POST_COMPLETION_STRATEGY = process.env.FOREMAN_POST_COMPLETION ?? 'digest'
+
+interface PostCompletionDigest {
+  summary: string | null          // human-readable summary of what the session did
+  qualityScore: number | null     // 1-10 quality assessment
+  goalAchieved: boolean | null    // did the session achieve its stated goal?
+  learnings: string[] | null      // extracted learnings for future dispatches
+  nextAction: { skill: string, task: string } | null  // recommended next dispatch
+  fullLogPath: string | null      // path to full session log if Foreman needs more
+}
+
+interface PostCompletionAgent {
+  name: string
+  run(ctx: {
+    decisionId: number
+    sessionName: string
+    skill: string
+    task: string
+    workDir: string
+    output: string           // last ~5000 chars of session output
+    status: string
+    outcomeText: string
+  }): Promise<Partial<PostCompletionDigest>>
+}
+
+// Identity: returns nothing, passthrough
+const identityPostAgent: PostCompletionAgent = {
+  name: 'identity',
+  async run() { return {} },
+}
+
+// Digest: dispatches Claude to summarize the session, assess quality, recommend next steps
+const digestPostAgent: PostCompletionAgent = {
+  name: 'digest',
+  async run(ctx) {
+    // Read git diff from worktree for richer context
+    let gitDiff = ''
+    try {
+      const { stdout } = await execFileAsync('git', ['diff', '--stat', 'HEAD~5..HEAD'], { cwd: ctx.workDir, timeout: 5_000 })
+      gitDiff = stdout.trim().slice(0, 1000)
+    } catch {}
+
+    const prompt = `You are a post-completion reviewer for an autonomous coding agent session.
+
+Session: ${ctx.sessionName}
+Skill: ${ctx.skill}
+Task: ${ctx.task}
+Status: ${ctx.status}
+Outcome: ${ctx.outcomeText}
+
+${gitDiff ? `Git diff stat:\n${gitDiff}\n` : ''}
+Session output (last portion):
+${ctx.output.slice(-3000)}
+
+Analyze this session and respond with JSON only:
+{
+  "summary": "2-3 sentence summary of what was accomplished",
+  "qualityScore": 1-10,
+  "goalAchieved": true/false,
+  "learnings": ["specific reusable insight 1", "insight 2"],
+  "nextAction": {"skill": "/skill-name", "task": "specific next task"} or null
+}`
+
+    try {
+      const { stdout } = await execFileAsync(CLAUDE_BIN, ['-p', prompt, '--output-format', 'text', '--model', 'claude-sonnet-4-6'], {
+        timeout: 90_000,
+        env: { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` },
+      })
+
+      const jsonMatch = stdout.match(/\{[\s\S]*\}/)
+      if (!jsonMatch) return {}
+
+      const parsed = JSON.parse(jsonMatch[0])
+      return {
+        summary: parsed.summary ?? null,
+        qualityScore: typeof parsed.qualityScore === 'number' ? parsed.qualityScore : null,
+        goalAchieved: typeof parsed.goalAchieved === 'boolean' ? parsed.goalAchieved : null,
+        learnings: Array.isArray(parsed.learnings) ? parsed.learnings.map(String) : null,
+        nextAction: parsed.nextAction?.skill ? parsed.nextAction : null,
+      }
+    } catch (e) {
+      log(`Digest agent failed: ${e instanceof Error ? e.message : String(e)}`)
+      return {}
+    }
+  },
+}
+
+// Full: runs digest + audit + plan as separate sub-agents, merges results
+const fullPostAgent: PostCompletionAgent = {
+  name: 'full',
+  async run(ctx) {
+    // Run digest first
+    const digest = await digestPostAgent.run(ctx)
+
+    // Then run an audit sub-agent that checks for issues
+    let auditFindings: string[] = []
+    try {
+      const auditPrompt = `Review this completed coding session for quality issues.
+
+Task: ${ctx.task}
+Output (last portion):
+${ctx.output.slice(-2000)}
+
+List specific issues found (security, correctness, style). Respond with JSON:
+{"issues": ["issue 1", "issue 2"]}
+If no issues, return {"issues": []}`
+
+      const { stdout } = await execFileAsync(CLAUDE_BIN, ['-p', auditPrompt, '--output-format', 'text', '--model', 'claude-sonnet-4-6'], {
+        timeout: 60_000,
+        env: { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` },
+      })
+      const match = stdout.match(/\{[\s\S]*\}/)
+      if (match) {
+        const parsed = JSON.parse(match[0])
+        auditFindings = Array.isArray(parsed.issues) ? parsed.issues.map(String) : []
+      }
+    } catch {}
+
+    // Merge: lower quality score if audit found issues
+    const adjustedScore = auditFindings.length > 0
+      ? Math.max(1, (digest.qualityScore ?? 7) - auditFindings.length)
+      : digest.qualityScore
+
+    const enrichedLearnings = [
+      ...(digest.learnings ?? []),
+      ...auditFindings.map(f => `AUDIT: ${f}`),
+    ]
+
+    return {
+      ...digest,
+      qualityScore: adjustedScore,
+      learnings: enrichedLearnings.length > 0 ? enrichedLearnings : null,
+      summary: digest.summary
+        ? `${digest.summary}${auditFindings.length > 0 ? ` (${auditFindings.length} audit findings)` : ''}`
+        : null,
+    }
+  },
+}
+
+const postCompletionAgents: Record<string, PostCompletionAgent> = {
+  identity: identityPostAgent,
+  digest: digestPostAgent,
+  full: fullPostAgent,
+}
+
+async function runPostCompletionPipeline(
+  decisionId: number, sessionName: string, skill: string, task: string,
+  workDir: string, output: string, status: string, outcomeText: string,
+): Promise<PostCompletionDigest> {
+  const agent = postCompletionAgents[POST_COMPLETION_STRATEGY] ?? identityPostAgent
+  const logPath = join(FOREMAN_HOME, 'logs', `session-${sessionName}.log`)
+
+  if (agent.name === 'identity') {
+    return {
+      summary: null, qualityScore: null, goalAchieved: null,
+      learnings: null, nextAction: null, fullLogPath: existsSync(logPath) ? logPath : null,
+    }
+  }
+
+  log(`Post-completion: running ${agent.name} agent on ${sessionName}`)
+  const startMs = Date.now()
+
+  const result = await agent.run({ decisionId, sessionName, skill, task, workDir, output, status, outcomeText })
+  const elapsed = Date.now() - startMs
+
+  log(`Post-completion: ${agent.name} completed in ${(elapsed / 1000).toFixed(1)}s` +
+    (result.qualityScore ? ` quality=${result.qualityScore}/10` : '') +
+    (result.goalAchieved !== null ? ` goal=${result.goalAchieved}` : ''))
+
+  return {
+    summary: result.summary ?? null,
+    qualityScore: result.qualityScore ?? null,
+    goalAchieved: result.goalAchieved ?? null,
+    learnings: result.learnings ?? null,
+    nextAction: result.nextAction ?? null,
+    fullLogPath: existsSync(logPath) ? logPath : null,
+  }
 }
 
 // ─── Outcome-driven learning ─────────────────────────────────────────
