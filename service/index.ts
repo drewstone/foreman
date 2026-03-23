@@ -293,16 +293,42 @@ const tmuxBackend: ExecutionBackend = {
     const sessionHome = join(FOREMAN_HOME, 'session-homes', name)
     mkdirSync(sessionHome, { recursive: true })
     // Seed with minimal config so Claude can find its auth
+    // Symlink read-only config from real HOME so sessions can function.
+    // Strategy: symlink individual FILES (read-only), create fresh DIRS for mutable state.
+    // This prevents side effects while keeping auth/config working.
+    const realHome = homedir()
+
+    // Read-only file symlinks (auth, config — sessions read these, never write)
+    const fileSymlinks = [
+      [join(realHome, '.gitconfig'), join(sessionHome, '.gitconfig')],
+      [join(realHome, '.npmrc'), join(sessionHome, '.npmrc')],
+    ]
+    for (const [src, dst] of fileSymlinks) {
+      try { if (existsSync(src) && !existsSync(dst)) execFileSync('ln', ['-sf', src, dst], { stdio: 'ignore' }) } catch {}
+    }
+
+    // Read-only directory symlinks (SSH keys, nvm — sessions need these but shouldn't modify)
+    const dirSymlinks = [
+      [join(realHome, '.ssh'), join(sessionHome, '.ssh')],
+      [join(realHome, '.nvm'), join(sessionHome, '.nvm')],
+      [join(realHome, '.anthropic'), join(sessionHome, '.anthropic')],
+    ]
+    for (const [src, dst] of dirSymlinks) {
+      try { if (existsSync(src) && !existsSync(dst)) execFileSync('ln', ['-sf', src, dst], { stdio: 'ignore' }) } catch {}
+    }
+
+    // Claude Code: create a session-specific .claude/ dir with selective symlinks.
+    // Auth + skills are shared (read-only). Projects/sessions/cache are session-local.
     const claudeDir = join(sessionHome, '.claude')
     mkdirSync(claudeDir, { recursive: true })
-    // Symlink auth credentials from real HOME (read-only access to API keys)
-    const realClaudeDir = join(homedir(), '.claude')
+    const realClaudeDir = join(realHome, '.claude')
+    // Symlink individual read-only files
     for (const f of ['credentials.json', 'settings.json', 'settings.local.json']) {
       const src = join(realClaudeDir, f)
       const dst = join(claudeDir, f)
       try { if (existsSync(src) && !existsSync(dst)) execFileSync('ln', ['-sf', src, dst], { stdio: 'ignore' }) } catch {}
     }
-    // Symlink skills so dispatched sessions have access to /evolve etc.
+    // Symlink skills directory (read-only — sessions use skills but don't install new ones)
     const realSkills = join(realClaudeDir, 'skills')
     const sessionSkills = join(claudeDir, 'skills')
     try { if (existsSync(realSkills) && !existsSync(sessionSkills)) execFileSync('ln', ['-sf', realSkills, sessionSkills], { stdio: 'ignore' }) } catch {}
