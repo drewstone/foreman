@@ -1,107 +1,64 @@
 # Foreman
 
-Autonomous operator for agentic harnesses. Manages sessions across Claude Code, Codex, Pi, and any CLI-based agent. Scans your repos, resumes stalled work, validates with skepticism, drives improvement cycles, learns from every run.
+Autonomous operating system for the operator. Give it a goal in any domain — code, research, marketing, strategy — and it decomposes, dispatches, tracks, learns, and drives to completion.
 
-You talk to 10+ agent sessions a day. 80-90% of what you say is "continue", "review this", "polish it", "10/10". Foreman says it for you — across all your sessions, all your repos, all the time.
+## Architecture
 
-## Install
+```
+Operator ↔ Conversation (Pi/Slack/CLI) ↔ Foreman Service ↔ Execution Backends
+```
+
+**Service** (`service/index.ts`) — Standalone daemon. SQLite state, session manager, event detection, learning loop, HTTP API. Runs 24/7. Never makes policy decisions.
+
+**Pi Extension** (`pi-package/`) — Thin client. 7 tools + dashboard widget + /foreman command. The conversation IS the policy.
+
+**Skill** (`pi-package/skills/foreman/SKILL.md`) — Behavioral instructions for the LLM. Taste, first-principles thinking, skill selection.
+
+## Quick Start
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/drewstone/foreman/main/install.sh | bash
+# Start the service
+cd ~/code/foreman && npm run service
+
+# In Pi
+/foreman drive phony voice cloning to SOTA, track experiments, write a paper
 ```
 
-Requires Node.js 20+. Installs to `~/.foreman/`.
+## What It Does
 
-## Usage
+- **Dispatches work** to Claude Code sessions with rich, context-loaded prompts (6,000+ chars of project state, past decisions, learned flows, dead ends, operator exemplars)
+- **Learns from you** — scans your Claude/Pi/Codex sessions, extracts workflows, taste, anti-patterns via LLM analysis
+- **Works in isolation** — every dispatch uses a git worktree, opens PRs against your branch
+- **Tracks everything** — SQLite decisions log, goal progress, cost, taste signals
+- **Never stops** — always has work in flight, monitors sessions, dispatches more when idle
 
-```bash
-foreman init              # set up ~/.foreman/ (auto-discovers your repos)
-foreman status            # what's happening across all your repos
-foreman heartbeat         # scan repos, check CI, trace results
-foreman resume <id>       # resume a session with full context
-foreman fix-ci            # auto-fix all failing CI
-```
+## Service API
 
-## What it does
+| Endpoint | Method | What |
+|---|---|---|
+| `/api/status` | GET | Portfolio overview |
+| `/api/goals` | POST/GET | Create/list goals |
+| `/api/dispatch` | POST | Dispatch work (non-blocking) |
+| `/api/sessions` | GET | List active sessions |
+| `/api/sessions/:name` | GET/DELETE | Check/kill session |
+| `/api/outcomes` | POST | Log outcome + learnings |
+| `/api/decisions` | GET | Search decision history |
+| `/api/taste` | GET/POST | Taste model |
+| `/api/learn` | POST | Trigger fast learning loop |
+| `/api/analyze` | POST | Trigger deep LLM analysis |
+| `/api/context` | GET | Read project context |
+| `/api/events` | GET | SSE event stream |
 
-**Sees everything.** Every 15 minutes, Foreman scans your repos for active branches, open PRs, CI status, and recent Claude/Codex sessions. It builds a prioritized portfolio of all your in-flight work.
+## Pi Extension Tools
 
-**Drives sessions forward.** Foreman resumes agent sessions with context-rich instructions generated from memory, product docs, CI requirements, and your working patterns. It dispatches the skills your agents already have — `/evolve`, `/polish`, `/verify`, or just "continue."
+| Tool | What |
+|---|---|
+| `portfolio_status` | See all goals, sessions, decisions |
+| `dispatch_skill` | Spawn Claude Code session with a skill |
+| `check_session` | Inspect running session |
+| `log_outcome` | Record what happened + learnings |
+| `project_context` | Deep read of a project |
+| `search_history` | Search past decisions |
+| `analyze_sessions` | Deep LLM analysis of operator sessions |
 
-**Validates with skepticism.** Foreman never trusts agent self-report. It runs checks independently, dispatches separate validator sessions, and treats "done" as a claim that needs proof.
-
-**Runs improvement cycles.** Foreman notices where autonomous optimization should exist but doesn't. It builds experiment infrastructure, drives discover → measure → diagnose → hypothesize → implement → test → promote → repeat cycles on any measurable project.
-
-**Learns from everything.** Every heartbeat is traced. Every session outcome is scored. CI failures become repair recipes with confidence scores. Your working patterns become context for future sessions.
-
-## How it works
-
-Foreman is a meta-layer above your agents, not a replacement for them.
-
-```
-You ← talk to → Foreman ← drives → Claude Code, Codex, Pi, any agent
-                    ↓
-              Generates context-rich instructions (CLAUDE.md)
-              Spawns/resumes sessions with those instructions
-              Validates results independently
-              Records traces for learning
-              Repeats until verified complete
-```
-
-Foreman generates a CLAUDE.md for each session from:
-- **Memory** — what it learned from prior runs on this repo
-- **Product context** — README, ARCHITECTURE.md, CI config
-- **Session insights** — your reading patterns, common commands, recent goals
-- **CI requirements** — extracted from GitHub Actions workflows
-
-The agent gets the best possible context on turn 1. Foreman checks the results on the last turn.
-
-## Configuration
-
-```
-~/.foreman/
-  config.json           # repos to manage, heartbeat settings
-  soul.md               # operating principles (edit this!)
-  operator-state.json   # session portfolio (managed by Foreman)
-  traces/heartbeats/    # every scan traced for learning
-```
-
-Edit `soul.md` to define how skeptical Foreman should be, when to escalate to you, and what quality bar to enforce.
-
-Edit `config.json` to add/remove repos and tune heartbeat behavior:
-
-```json
-{
-  "repos": ["/path/to/repo1", "/path/to/repo2"],
-  "heartbeat": {
-    "intervalMinutes": 15,
-    "dryRun": true,
-    "minConfidence": 0.7
-  }
-}
-```
-
-## Cron
-
-The install script does NOT add cron automatically. To enable:
-
-```bash
-crontab -e
-# Add:
-*/15 * * * * ~/.foreman/src/scripts/run-heartbeat.sh
-```
-
-Start with `dryRun: true` in config. Review `~/.foreman/traces/heartbeats/` to validate decisions. Set `dryRun: false` when confident.
-
-## Pi extension
-
-```bash
-npm install -g @mariozechner/pi-coding-agent
-ln -s ~/.foreman/src/extensions/pi/foreman.ts ~/.pi/agent/extensions/foreman.ts
-```
-
-In Pi: `/foreman` for status, `/heartbeat` to scan, or let the agent use `foreman_status`, `foreman_resume`, `foreman_validate` as tools.
-
-## License
-
-MIT
+See `VISION.md` for full architecture and philosophy.

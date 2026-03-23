@@ -2,79 +2,69 @@
 
 ## Purpose
 
-This repo builds `Foreman`, an autonomous agent that learns from its operator and acts across their projects.
+Foreman is an autonomous operating system for the operator. It takes goals in any domain — code, research, marketing, strategy — decomposes them, dispatches work to agent sessions, tracks outcomes, learns taste, and drives everything to completion.
 
-Foreman = state + policy + actions. The policy function is the product. Everything else is infrastructure.
-
-See `VISION.md` for the full architecture, confidence graduation system, and event-driven design.
+See `VISION.md` for the full vision.
 
 ## Architecture
 
 ```
-event → state update → policy (LLM reasoning) → confidence gate → action → outcome → learn
+Operator ↔ Conversation (Pi/Claude) ↔ Foreman Service ↔ Execution backends
 ```
 
-**State:** Session index, traces, memory, operator model, experiment results, confidence scores.
-**Policy:** LLM call that reasons about what to do given current state. ~200 lines. This is the brain.
-**Actions:** Spawn sessions, run experiments, invoke skills, create PRs, send notifications.
+**Service** (`service/`): Standalone daemon. SQLite state store, session manager (tmux), event detection, HTTP API. Runs 24/7. Never makes policy decisions.
 
-The policy function replaces all pre-decided workflows. The agent reasons, it doesn't follow scripts.
+**Pi Extension** (`pi-package/`): Thin client. 6 tools (portfolio_status, dispatch_skill, check_session, log_outcome, project_context, search_history) + dashboard widget + /foreman command. The conversation IS the policy.
+
+**Skill** (`pi-package/skills/foreman/`): Behavioral instructions that teach Pi how to be an autonomous operator — first-principles thinking, taste learning, skill selection.
+
+**Legacy packages** (`packages/`): Session index, confidence store, cost monitor, CI tools. Infrastructure the service wraps.
+
+## The autoresearch pattern
+
+Everything follows autoresearch: dispatch work (experiment), measure outcome (metric), keep what works, discard what doesn't, log learnings, never stop. Applied at the goal level across all domains.
 
 ## What belongs where
 
-**Deterministic code** handles: file discovery, timestamp filtering, schema validation, trace loading, report formatting, artifact collection, event routing, confidence math.
+**Service (deterministic):** session management, state storage, event detection, cost tracking, API endpoints. No judgment calls.
 
-**LLM reasoning** handles: what to work on next, which skill to invoke, whether to continue or abandon, how to repair a failure, what the operator would do, whether an outcome is good enough.
+**Conversation (LLM reasoning):** what to work on, which skill to use, whether to continue or pivot, what the operator would do, whether an outcome is good enough. The operator + LLM in conversation = the policy.
 
-If you're writing `if/else` branches that make judgment calls, stop — that's policy work for the LLM.
+**Skill (behavioral knowledge):** how to think about goals, when to use /evolve vs /pursue, how taste works, the meta-autoresearch loop.
+
+If you're writing `if/else` branches that make judgment calls, stop — that's conversation work for the LLM.
+
+## Goals, not projects
+
+The unit of work is a goal, not a git repo. "Drive phony to SOTA" is a goal. "Run the GTM launch" is a goal. "Write a latex paper from experiment results" is a goal. Goals decompose into tasks dispatched to different backends.
+
+## Taste
+
+Foreman learns operator judgment from approval/rejection signals, goal language, correction patterns, and priority signals. The taste model is injected into conversation context.
 
 ## Confidence graduation
 
-Every action type starts in dry-run mode. Confidence grows from evidence:
-
-- 0.0–0.3: **dry-run** — log what you would do
-- 0.3–0.6: **propose** — show operator, wait for approval
-- 0.6–0.8: **act-notify** — execute, notify immediately
-- 0.8–1.0: **autonomous** — execute silently, report in digest
-
-Per-action-type, per-project. The operator never flips a switch — the system graduates itself.
-
-## Event-driven, not cron-driven
-
-Primary triggers are file watchers and webhooks, not polling. Cron is a fallback for things that genuinely lack push events (CI status).
-
-## What Foreman learns from
-
-- User messages and task goals
-- Prior agent sessions and traces
-- Experiment results (autoresearch, eval, skill outcomes)
-- Recurring operator patterns across projects
-- Approval/rejection signals (confidence updates)
-- Observed completion behavior
-
-The goal is to model how the operator works, predict what they'd do, and do it better.
-
-## Product boundary
-
-Foreman is a general, publishable product. It must not hardcode one user's machine, one repo, one vendor, or one local workflow into the kernel. Personalization comes from data and profiles, not code.
+Actions earn autonomy through evidence. Per goal, per action type:
+- 0.0–0.3: dry-run
+- 0.3–0.6: propose and wait
+- 0.6–0.8: act and notify
+- 0.8–1.0: autonomous
 
 ## Execution stance
 
-Never stop. Never ask "should I continue?" — yes, always. If something fails, diagnose it, fix it, and re-run. Keep going until independently verified as complete.
+Never stop. If something fails, diagnose and fix. Keep going until independently verified as complete.
 
 When working in this repo:
-
-- Prefer building the policy layer and its supporting infrastructure
-- Don't add more pre-decided workflows or foreman variants
-- Don't add standalone CLIs — add tools the policy agent can invoke
-- Keep pushing the next highest-ROI gap
-- Treat "what should Foreman do next?" as part of the job
+- Build the service and its API
+- Build the Pi extension as a thin client
+- Don't add pre-decided workflows — the conversation decides
+- Don't assume git repos — goals span domains
+- Keep the autoresearch pattern: dispatch, measure, keep/revert, learn, repeat
 
 ## Anti-goals
 
+- Policy decisions in the service (service executes, conversation decides)
+- Code-only thinking (goals span all domains)
 - Pre-decided workflows disguised as intelligence
-- Keyword-matching heuristics for judgment calls
-- Prompt theater without evidence and validation
-- More surface area without depth (we have 80+ surface files already)
-- Cron jobs where events would work
-- Hardcoded strategies where the agent should reason
+- More infrastructure without depth
+- Hardcoded strategies where the LLM should reason
