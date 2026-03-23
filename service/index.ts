@@ -161,6 +161,16 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_operator_sessions_repo ON operator_sessions(repo);
   CREATE INDEX IF NOT EXISTS idx_learnings_type ON learnings(type);
   CREATE INDEX IF NOT EXISTS idx_prompt_templates_active ON prompt_templates(active);
+
+  CREATE TABLE IF NOT EXISTS mcp_servers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    command TEXT NOT NULL,
+    args TEXT NOT NULL DEFAULT '[]',
+    env TEXT,
+    scope TEXT NOT NULL DEFAULT 'global',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `)
 
 // ─── Prepared statements ─────────────────────────────────────────────
@@ -190,6 +200,13 @@ const stmts = {
 
   insertEvent: db.prepare(`INSERT INTO events (type, session_name, goal_id, data) VALUES (?, ?, ?, ?)`),
   recentEvents: db.prepare(`SELECT * FROM events ORDER BY created_at DESC LIMIT ?`),
+
+  // MCP servers
+  upsertMcp: db.prepare(`INSERT OR REPLACE INTO mcp_servers (id, name, command, args, env, scope) VALUES (?, ?, ?, ?, ?, ?)`),
+  deleteMcp: db.prepare(`DELETE FROM mcp_servers WHERE id = ?`),
+  listMcp: db.prepare(`SELECT * FROM mcp_servers ORDER BY name`),
+  getMcp: db.prepare(`SELECT * FROM mcp_servers WHERE id = ?`),
+  mcpByScope: db.prepare(`SELECT * FROM mcp_servers WHERE scope = ? OR scope = 'global'`),
 
   // Operator sessions
   upsertOperatorSession: db.prepare(`INSERT OR REPLACE INTO operator_sessions (id, harness, repo, timestamp, message_count, user_messages, skills_used, outcome_signals) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`),
@@ -363,11 +380,14 @@ const tmuxBackend: ExecutionBackend = {
     // pipe-pane captures all tmux pane output to a log file
     tmuxQuiet(['pipe-pane', '-t', name, `-o`, `cat >> "${logFile}"`])
 
-    tmuxQuiet(['send-keys', '-t', name, `${CLAUDE_BIN} --dangerously-skip-permissions${modelFlag}`, 'Enter'])
+    // Generate MCP config for this session (if any MCP servers are registered)
+    const mcpFlag = generateMcpConfig(name)
+
+    tmuxQuiet(['send-keys', '-t', name, `${CLAUDE_BIN} --dangerously-skip-permissions${modelFlag}${mcpFlag}`, 'Enter'])
 
     pendingPrompts.set(name, req)
     stmts.insertSession.run(name, req.goalId, req.decisionId, workDir, prompt)
-    log(`Spawned session ${name} in ${workDir} (HOME=${sessionHome})${model ? ` (model: ${model})` : ''}`)
+    log(`Spawned session ${name} in ${workDir} (HOME=${sessionHome})${model ? ` (model: ${model})` : ''}${mcpFlag ? ' +mcp' : ''}`)
   },
 
   isAlive: isTmuxAlive,
@@ -377,6 +397,34 @@ const tmuxBackend: ExecutionBackend = {
   kill(name: string): void {
     tmuxQuiet(['kill-session', '-t', name])
   },
+}
+
+// ─── MCP config generation ───────────────────────────────────────────
+// Generates a temporary MCP config file for a session from registered servers.
+// Claude Code loads it via --mcp-config flag.
+
+import { writeFileSync } from 'node:fs'
+
+function generateMcpConfig(sessionName: string): string {
+  const servers = stmts.listMcp.all() as Array<{
+    id: string, name: string, command: string, args: string, env: string | null
+  }>
+  if (servers.length === 0) return ''
+
+  const mcpConfig: Record<string, { command: string, args: string[], env?: Record<string, string> }> = {}
+  for (const s of servers) {
+    mcpConfig[s.id] = {
+      command: s.command,
+      args: JSON.parse(s.args),
+      ...(s.env ? { env: JSON.parse(s.env) } : {}),
+    }
+  }
+
+  const configPath = join(FOREMAN_HOME, 'mcp', `${sessionName}.json`)
+  mkdirSync(join(FOREMAN_HOME, 'mcp'), { recursive: true })
+  writeFileSync(configPath, JSON.stringify({ mcpServers: mcpConfig }, null, 2))
+
+  return ` --mcp-config ${configPath}`
 }
 
 // ─── Tangle Sandbox backend ──────────────────────────────────────────
@@ -2904,6 +2952,30 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           bySkill: costBySkill,
         },
       })
+    }
+
+    // ── MCP servers ─────────────────────────────────────────
+    if (path === '/api/mcp' && method === 'GET') {
+      return json(res, stmts.listMcp.all())
+    }
+
+    if (path === '/api/mcp' && method === 'POST') {
+      const body = await readBody(req)
+      const id = String(body.id ?? '')
+      const name = String(body.name ?? id)
+      const command = String(body.command ?? '')
+      const args = body.args ? JSON.stringify(body.args) : '[]'
+      const env = body.env ? JSON.stringify(body.env) : null
+      const scope = String(body.scope ?? 'global')
+      if (!id || !command) return error(res, 'id and command required')
+      stmts.upsertMcp.run(id, name, command, args, env, scope)
+      return json(res, { ok: true, id }, 201)
+    }
+
+    if (path.startsWith('/api/mcp/') && method === 'DELETE') {
+      const id = decodeURIComponent(path.slice('/api/mcp/'.length))
+      stmts.deleteMcp.run(id)
+      return json(res, { ok: true, deleted: id })
     }
 
     // ── Session search (FTS5 index) ─────────────────────────
