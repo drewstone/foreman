@@ -227,3 +227,46 @@ Gen 2 fixes all 3 measurement bugs from Gen 1 and adds the GEPA self-improvement
 - Cost tracked: >0 dispatches with cost_usd populated (needs real session)
 - GEPA: at least 1 prompt variant generated and scored (needs 5 dispatches)
 - Prompt scaling: short tasks get <2K prompt, complex tasks get >4K ✅
+
+---
+
+# Generation 3: Confidence-Gated Autonomy
+
+Date: 2026-03-23
+Status: building
+
+## Thesis
+
+**Foreman earns autonomy through evidence.** Each (skill, project) pair has a confidence score from 0.0 to 1.0 that increases from successful outcomes and decreases from failures. At low confidence, Foreman proposes and waits. At high confidence, Foreman dispatches autonomously and notifies. The operator never flips a switch — Foreman graduates itself.
+
+## Changes
+
+### Architectural (must ship together)
+
+1. **Integrate ConfidenceStore** — wire `packages/memory/src/confidence.ts` (197 lines, tested, proven) into the service. On dispatch: check confidence for (skill, project). On outcome: update confidence with success/failure signal. On operator taste_signal: update with agree/disagree.
+   Risk: LOW (existing tested code, just needs import + wiring)
+
+2. **Confidence-gated dispatch** — add `confidence_level` to dispatch response. The Pi extension shows the level to the operator. At 'propose' level, the conversation asks "should I dispatch this?" At 'act-notify' and 'autonomous', it dispatches without asking. This changes how the skill SKILL.md instructs Pi to behave.
+   Risk: MED (changes the UX — operator might not trust autonomous dispatches early on)
+
+3. **Auto-dispatch loop** — when the service detects an idle session with a successful outcome on a project, AND confidence for that (skill, project) is >= 0.6, automatically queue the next highest-value dispatch. The operator gets a notification. This is the "Foreman runs overnight" capability.
+   Risk: HIGH (runaway dispatches if confidence is wrong — mitigate with cost caps and max-concurrent limits)
+
+### Infrastructure
+
+4. **Confidence API endpoints** — `GET /api/confidence`, `POST /api/confidence/override`. Pi extension shows confidence per (skill, project). Operator can override.
+   Risk: LOW
+
+5. **Cost cap** — add `MAX_DAILY_COST_USD` (default $20). Auto-dispatch stops when daily spend exceeds the cap. Prevents runaway.
+   Risk: LOW (safety rail)
+
+6. **Max concurrent sessions** — add `MAX_CONCURRENT_SESSIONS` (default 5). Auto-dispatch won't spawn if too many sessions are running.
+   Risk: LOW (safety rail)
+
+## Success Criteria
+
+- Confidence scores populated for at least 1 (skill, project) pair after 1 dispatch
+- Auto-dispatch triggers at least once when confidence >= 0.6
+- Cost cap prevents dispatch when exceeded
+- Concurrent cap prevents dispatch when exceeded
+- Operator override works (never-auto, always-auto)

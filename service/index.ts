@@ -18,6 +18,10 @@ import Database from 'better-sqlite3'
 
 const execFileAsync = promisify(execFile)
 
+// ─── Confidence store (from packages/memory) ─────────────────────────
+// Tracks per-(skill, project) confidence that earns autonomy through evidence.
+import { ConfidenceStore } from '@drew/foreman-memory/confidence'
+
 // ─── Config ──────────────────────────────────────────────────────────
 
 const PORT = parseInt(process.env.FOREMAN_PORT ?? '7374', 10)
@@ -27,10 +31,16 @@ const CLAUDE_BIN = process.env.CLAUDE_PATH ?? join(homedir(), '.local/bin/claude
 const ENV = { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` }
 const WATCHER_INTERVAL_MS = 10_000
 const CLAUDE_BOOT_POLL_MS = 3_000
+const MAX_DAILY_COST_USD = parseFloat(process.env.FOREMAN_MAX_DAILY_COST ?? '20')
+const MAX_CONCURRENT_SESSIONS = parseInt(process.env.FOREMAN_MAX_SESSIONS ?? '5', 10)
 const CLAUDE_BOOT_TIMEOUT_MS = 60_000
 
 mkdirSync(join(FOREMAN_HOME, 'logs'), { recursive: true })
 mkdirSync(join(FOREMAN_HOME, 'worktrees'), { recursive: true })
+
+// ─── Confidence (per-skill, per-project autonomy) ────────────────────
+
+const confidence = new ConfidenceStore(join(FOREMAN_HOME, 'confidence.db'))
 
 // ─── Database ────────────────────────────────────────────────────────
 
@@ -656,8 +666,18 @@ async function harvestOutcome(sessionName: string, goalId: number, backend: Exec
   // Send desktop notification
   sendNotification(`Foreman: ${sessionName}`, `${decision.skill} → ${outcomeText}`)
 
+  // Update confidence for this (skill, project)
+  const projectName = workDir.split('/').pop() ?? workDir
+  const confSignal = status === 'success' ? 'success' as const : 'failure' as const
+  confidence.update(decision.skill || 'direct', projectName, confSignal)
+  const newLevel = confidence.getLevel(decision.skill || 'direct', projectName)
+  log(`Confidence: ${decision.skill || 'direct'}@${projectName} → ${newLevel} (${confSignal})`)
+
   // Trigger immediate learning from this outcome
   updateLearningsFromOutcome(decision.id, decision.skill, decision.task, status, outcomeText, learnings)
+
+  // Auto-dispatch next work if confidence is high enough
+  maybeAutoDispatch(decision.skill, projectName, goalId).catch(e => log(`Auto-dispatch failed: ${e}`))
 }
 
 // ─── Outcome-driven learning ─────────────────────────────────────────
@@ -705,6 +725,84 @@ function updateLearningsFromOutcome(
       triggerGepaVariant(activeTemplate.version, activeTemplate.score ?? 0).catch(e => log(`GEPA variant failed: ${e}`))
     }
   }
+}
+
+// ─── Confidence-gated auto-dispatch ──────────────────────────────────
+// When a session completes successfully and confidence is high enough,
+// automatically dispatch the next highest-value work on that project.
+// Safety rails: cost cap + concurrent session limit.
+
+async function maybeAutoDispatch(skill: string, project: string, goalId: number): Promise<void> {
+  const level = confidence.getLevel(skill || 'direct', project)
+
+  // Only auto-dispatch at act-notify (0.6+) or autonomous (0.8+)
+  if (level === 'dry-run' || level === 'propose') return
+
+  // Safety rail: check daily cost
+  const today = new Date().toISOString().slice(0, 10)
+  const dailyCost = (db.prepare(`SELECT COALESCE(SUM(cost_usd), 0) as total FROM decisions WHERE date(created_at) = ?`).get(today) as { total: number }).total
+  if (dailyCost >= MAX_DAILY_COST_USD) {
+    log(`Auto-dispatch blocked: daily cost $${dailyCost.toFixed(2)} >= $${MAX_DAILY_COST_USD} cap`)
+    return
+  }
+
+  // Safety rail: check concurrent sessions
+  const activeSessions = stmts.activeSessions.all() as Array<{ name: string }>
+  if (activeSessions.length >= MAX_CONCURRENT_SESSIONS) {
+    log(`Auto-dispatch blocked: ${activeSessions.length} sessions >= ${MAX_CONCURRENT_SESSIONS} cap`)
+    return
+  }
+
+  // Find the goal to continue working on
+  const goal = goalId ? stmts.getGoal.get(goalId) as { id: number, intent: string, workspace_path: string | null } | undefined : undefined
+  if (!goal?.workspace_path) return
+
+  // Check what was last done and what should be next
+  const lastDecisions = stmts.goalDecisions.all(goal.id) as Array<{ skill: string, status: string, outcome: string | null }>
+  const lastSuccessful = lastDecisions.find(d => d.status === 'success')
+  if (!lastSuccessful) return
+
+  // Simple heuristic for next skill: if last was /evolve and succeeded, do /verify.
+  // If last was /verify and succeeded, do /evolve again. The conversation overrides this.
+  const nextSkill = lastSuccessful.skill === '/evolve' ? '/verify'
+    : lastSuccessful.skill === '/verify' ? '/evolve'
+    : lastSuccessful.skill === '/converge' ? '/verify'
+    : '/evolve'
+
+  const nextTask = `Continue: ${goal.intent.slice(0, 200)}`
+
+  log(`Auto-dispatching: ${nextSkill} on ${project} (confidence: ${level})`)
+  sendNotification('Foreman: Auto-dispatch', `${nextSkill} on ${project} (${level})`)
+
+  // Dispatch through the internal function (not the API — avoid HTTP overhead)
+  const repoDir = goal.workspace_path
+  const autoLabel = `auto-${nextSkill.replace(/^\//, '')}-${Date.now().toString(36)}`
+  const wt = await createWorktree(repoDir, autoLabel)
+  if (!wt) return
+
+  const sName = sessionName(autoLabel)
+  const activeTpl = stmts.activeTemplate.get() as { version: number } | undefined
+  const result = stmts.insertDecision.run(
+    goal.id, nextSkill, nextTask, `auto-dispatch: confidence ${level}`,
+    sName, wt.path, wt.branch, wt.baseBranch, activeTpl?.version ?? 1,
+  )
+  const decisionId = Number(result.lastInsertRowid)
+
+  const prompt = composePrompt({
+    skill: nextSkill,
+    task: nextTask,
+    workDir: wt.path,
+    goalIntent: goal.intent,
+    goalId: goal.id,
+    worktreeBranch: wt.branch,
+    baseBranch: wt.baseBranch,
+    repoDir,
+  })
+
+  const model = selectModel(nextSkill, nextTask)
+  spawnSession({ name: sName, workDir: wt.path, prompt, goalId: goal.id, decisionId, model: model ?? undefined })
+
+  emitEvent('auto_dispatched', sName, goal.id, { skill: nextSkill, confidence: level })
 }
 
 // ─── GEPA prompt template evolution ──────────────────────────────────
@@ -1922,7 +2020,12 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       })
 
       const decision = stmts.getDecision.get(decisionId)
-      return json(res, { decision, session: sName, backend: backendName, model: effectiveModel, worktree: worktreePath, branch: worktreeBranch, baseBranch, promptLength: prompt.length, promptPreview: prompt.slice(0, 300) }, 201)
+      // Confidence level for this dispatch
+      const dispatchProject = (worktreePath ?? effectiveWorkDir).split('/').pop() ?? ''
+      const confidenceLevel = confidence.getLevel(skill || 'direct', dispatchProject)
+      const confidenceScore = confidence.getConfidence(skill || 'direct', dispatchProject)
+
+      return json(res, { decision, session: sName, backend: backendName, model: effectiveModel, worktree: worktreePath, branch: worktreeBranch, baseBranch, confidenceLevel, confidenceScore, promptLength: prompt.length, promptPreview: prompt.slice(0, 300) }, 201)
     }
 
     // ── Sessions ──────────────────────────────────────────────
@@ -1986,12 +2089,17 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
       stmts.updateDecision.run(status, outcome, learnings, metrics, tasteSignal, costUsd, decisionId)
 
-      // Record taste if signal provided
+      // Record taste if signal provided + update confidence
       if (tasteSignal && tasteSignal !== 'neutral') {
-        const decision = stmts.getDecision.get(decisionId) as { skill: string, task: string } | undefined
+        const decision = stmts.getDecision.get(decisionId) as { skill: string, task: string, worktree_path: string | null } | undefined
         if (decision) {
           const pattern = `${tasteSignal}: ${decision.skill} for "${decision.task.slice(0, 100)}"`
           stmts.insertTaste.run(pattern, `decision:${decisionId}`, tasteSignal === 'approved' ? 1.0 : -1.0)
+
+          // Operator taste → confidence signal
+          const projectName = (decision.worktree_path ?? '').split('/').pop() ?? 'unknown'
+          const confSignal = tasteSignal === 'approved' ? 'agree' as const : 'disagree' as const
+          confidence.update(decision.skill || 'direct', projectName, confSignal)
         }
       }
 
@@ -2109,6 +2217,27 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       } catch (e) {
         return error(res, e instanceof Error ? e.message : String(e), 500)
       }
+    }
+
+    // ── Confidence ─────────────────────────────────────────────
+    if (path === '/api/confidence' && method === 'GET') {
+      const project = parseQuery(url).get('project') ?? undefined
+      const entries = confidence.list(project)
+      return json(res, entries)
+    }
+
+    if (path === '/api/confidence/override' && method === 'POST') {
+      const body = await readBody(req)
+      const project = String(body.project ?? '')
+      const override = body.override ? String(body.override) : null
+      if (!project) return error(res, 'project required')
+      confidence.setOverride(project, override as any)
+      return json(res, { ok: true, project, override })
+    }
+
+    if (path === '/api/confidence/log' && method === 'GET') {
+      const limit = parseInt(parseQuery(url).get('limit') ?? '30', 10)
+      return json(res, confidence.getLog(limit))
     }
 
     if (path === '/api/learnings' && method === 'GET') {
@@ -2233,5 +2362,5 @@ server.listen(PORT, '127.0.0.1', () => {
 })
 
 // Graceful shutdown
-process.on('SIGTERM', () => { log('Shutting down'); db.close(); server.close(); process.exit(0) })
-process.on('SIGINT', () => { log('Shutting down'); db.close(); server.close(); process.exit(0) })
+process.on('SIGTERM', () => { log('Shutting down'); confidence.close(); db.close(); server.close(); process.exit(0) })
+process.on('SIGINT', () => { log('Shutting down'); confidence.close(); db.close(); server.close(); process.exit(0) })
