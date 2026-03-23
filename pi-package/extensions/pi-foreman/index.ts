@@ -665,7 +665,37 @@ export default function foremanExtension(pi: ExtensionAPI) {
     },
   })
 
-  // No registerCommand — the skill (foreman-operator/SKILL.md) handles /foreman-operator.
-  // The extension provides tools only. Foreman mode activates automatically when
-  // the service is healthy (detected on session_start via reconstruct()).
+  // ── Command: /f ─────────────────────────────────────────────────────
+  // Short alias. The skill provides /foreman-operator for behavioral context.
+  // This command handles the UX: health check, mode toggle, pass prompt through.
+
+  pi.registerCommand('f', {
+    description: 'Foreman — give a goal, dispatch work, manage portfolio.',
+    handler: async (args, ctx) => {
+      const rt = getRuntime(ctx)
+      const trimmed = (args ?? '').trim()
+
+      if (!trimmed) {
+        ctx.ui.notify(
+          '/f <your goal> — give Foreman a mission\n/f off — exit foreman mode\n\n' +
+          'Examples:\n  /f drive phony to SOTA\n  /f manage all projects\n  /f status', 'info')
+        return
+      }
+
+      if (trimmed.toLowerCase() === 'off') {
+        rt.foremanMode = false; updateWidget(ctx); ctx.ui.notify('Foreman OFF', 'info'); return
+      }
+
+      const healthy = await serviceHealthy()
+      if (!healthy) {
+        ctx.ui.notify('Foreman service not running.\nStart: systemctl --user start foreman', 'error')
+        return
+      }
+
+      rt.foremanMode = true
+      await refreshCache()
+      updateWidget(ctx)
+      pi.sendUserMessage(trimmed)
+    },
+  })
 }
