@@ -665,43 +665,7 @@ export default function foremanExtension(pi: ExtensionAPI) {
     },
   })
 
-  // ── Command: /foreman ───────────────────────────────────────────────
-
-  pi.registerCommand('foreman', {
-    description: 'Give Foreman a goal. Your prompt IS the mission.',
-    handler: async (args, ctx) => {
-      const rt = getRuntime(ctx)
-      const trimmed = (args ?? '').trim()
-
-      if (!trimmed) {
-        ctx.ui.notify(
-          '/foreman <your goal> — give Foreman a mission\n/foreman off — exit\n/foreman clear — reset\n\n' +
-          'Examples:\n  /foreman drive phony to SOTA, track experiments, write a paper\n  /foreman manage all projects\n  /foreman make foreman better', 'info')
-        return
-      }
-
-      if (trimmed.toLowerCase() === 'off') { rt.foremanMode = false; updateWidget(ctx); ctx.ui.notify('Foreman OFF', 'info'); return }
-      if (trimmed.toLowerCase() === 'clear') {
-        rt.foremanMode = false; updateWidget(ctx)
-        // Note: clearing DB requires service restart or a clear endpoint
-        ctx.ui.notify('Foreman OFF (clear DB: restart service with --reset)', 'info')
-        return
-      }
-
-      // Check service health
-      const healthy = await serviceHealthy()
-      if (!healthy) {
-        ctx.ui.notify('Foreman service not running.\nStart: cd ~/code/foreman && tsx service/index.ts', 'error')
-        return
-      }
-
-      rt.foremanMode = true
-      await refreshCache()
-      updateWidget(ctx)
-      ctx.ui.notify('Foreman ON', 'info')
-
-      // The operator's prompt IS the goal. Pass through.
-      pi.sendUserMessage(trimmed)
-    },
-  })
+  // No registerCommand — the skill (foreman-operator/SKILL.md) handles /foreman-operator.
+  // The extension provides tools only. Foreman mode activates automatically when
+  // the service is healthy (detected on session_start via reconstruct()).
 }
