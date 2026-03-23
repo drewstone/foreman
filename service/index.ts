@@ -786,6 +786,46 @@ async function harvestOutcome(sessionName: string, goalId: number, backend: Exec
     }
   }
 
+  // Snapshot evolve state BEFORE it gets overwritten by the next dispatch.
+  // Extract scores, trajectory, and experiment learnings from files that
+  // will be replaced. Save to the learnings table so the knowledge persists.
+  try {
+    const evolveFile = join(workDir, 'evolve-progress.md')
+    if (existsSync(evolveFile)) {
+      const evolveContent = readFileSync(evolveFile, 'utf8')
+      // Extract score from "Score: X.XX → target Y.YY"
+      const scoreMatch = evolveContent.match(/Score:\s*([\d.]+)\s*→\s*target\s*([\d.]+)/i)
+      if (scoreMatch) {
+        learnings.push(`evolve-snapshot: score ${scoreMatch[1]} (target ${scoreMatch[2]})`)
+      }
+      // Extract round info
+      const roundMatch = evolveContent.match(/Round\s*(\d+)/i)
+      if (roundMatch) {
+        learnings.push(`evolve-snapshot: round ${roundMatch[1]}`)
+      }
+    }
+
+    const expFile = join(workDir, '.evolve', 'experiments.jsonl')
+    if (existsSync(expFile)) {
+      const expLines = readFileSync(expFile, 'utf8').trim().split('\n').filter(Boolean)
+      // Extract the latest experiment's learnings
+      for (const line of expLines.slice(-3)) {
+        try {
+          const exp = JSON.parse(line)
+          if (exp.learnings) {
+            for (const l of exp.learnings.slice(0, 2)) {
+              const key = `exp-learning: ${String(l).slice(0, 150)}`
+              if (!learnings.includes(key)) learnings.push(key)
+            }
+          }
+          if (exp.verdict && exp.hypothesis) {
+            learnings.push(`exp-result: ${exp.verdict} — ${exp.hypothesis.slice(0, 100)}`)
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+
   // Store the outcome
   stmts.updateDecision.run(
     status,
@@ -2249,18 +2289,113 @@ function composePrompt(opts: {
     if (status) sections.push(`## Uncommitted Changes\n${status}`)
   } catch {}
 
-  // Evolve/autoresearch state
+  // Evolve state + experiment trajectory
   const evolveProgress = readProjectFile(workDir, 'evolve-progress.md', 1000)
   const autoresearchMd = readProjectFile(workDir, 'autoresearch.md', 1000)
   if (evolveProgress) sections.push(`## Current Evolve State\n${evolveProgress}`)
   if (autoresearchMd) sections.push(`## Autoresearch Config\n${autoresearchMd}`)
 
-  // Pursue docs
+  // Experiment history — extract trajectory and learnings from .evolve/experiments.jsonl
+  // This is the data that gets LOST when evolve-progress.md is overwritten.
+  // We extract: what was tried, what worked, what failed, and the score trajectory.
+  const experimentsPath = join(workDir, '.evolve', 'experiments.jsonl')
   try {
-    for (const f of readdirSync(workDir)) {
-      if (f.startsWith('pursue-') && f.endsWith('.md')) {
-        const content = readProjectFile(workDir, f, 800)
-        if (content) sections.push(`## ${f}\n${content}`)
+    if (existsSync(experimentsPath)) {
+      const expContent = readFileSync(experimentsPath, 'utf8')
+      const expLines = expContent.trim().split('\n').filter(Boolean)
+      const experiments: Array<{
+        hypothesis?: string, category?: string, verdict?: string,
+        delta?: number, baseline?: Record<string, number>, result?: Record<string, number>,
+        learnings?: string[], round?: number
+      }> = []
+      for (const line of expLines) {
+        try { experiments.push(JSON.parse(line)) } catch {}
+      }
+      if (experiments.length > 0) {
+        const lines = ['## Experiment History (from .evolve/experiments.jsonl)']
+
+        // Score trajectory
+        const trajectory = experiments
+          .filter(e => e.result && e.round)
+          .map(e => {
+            const score = e.result ? Object.values(e.result)[0] : null
+            return `Round ${e.round}: ${score ?? '?'}`
+          })
+        if (trajectory.length > 0) {
+          lines.push(`\nTrajectory: ${trajectory.join(' → ')}`)
+        }
+
+        // What worked (KEEP verdicts)
+        const kept = experiments.filter(e => e.verdict === 'KEEP')
+        if (kept.length > 0) {
+          lines.push('\nWhat worked:')
+          for (const e of kept.slice(-5)) {
+            lines.push(`- ✓ ${e.hypothesis ?? '?'} (${e.category ?? '?'}, Δ${e.delta ?? '?'})`)
+          }
+        }
+
+        // What failed (ABANDON/REGRESSION)
+        const failed = experiments.filter(e => e.verdict === 'ABANDON' || e.verdict === 'REGRESSION')
+        if (failed.length > 0) {
+          lines.push('\nWhat failed (DO NOT RETRY):')
+          for (const f of failed.slice(-3)) {
+            lines.push(`- ✗ ${f.hypothesis ?? '?'} (${f.category ?? '?'})`)
+            if (f.learnings) for (const l of f.learnings.slice(0, 2)) lines.push(`    ${l.slice(0, 100)}`)
+          }
+        }
+
+        // Accumulated learnings
+        const allLearnings = experiments.flatMap(e => e.learnings ?? [])
+        if (allLearnings.length > 0) {
+          const unique = [...new Set(allLearnings)].slice(-5)
+          lines.push('\nAccumulated learnings:')
+          for (const l of unique) lines.push(`- ${l.slice(0, 120)}`)
+        }
+
+        sections.push(lines.join('\n'))
+      }
+    }
+  } catch {}
+
+  // Pursue docs — extract key findings, not the whole file
+  try {
+    const pursueFiles = readdirSync(workDir).filter(f => f.startsWith('pursue-') && f.endsWith('.md'))
+    for (const f of pursueFiles) {
+      const content = readProjectFile(workDir, f, 2000)
+      if (!content) continue
+
+      // Extract: status, thesis, what worked, what didn't, next seeds
+      const lines = [`## ${f}`]
+      const statusMatch = content.match(/Status:\s*(.+)/i)
+      const thesisMatch = content.match(/###?\s*Thesis\n+(.+)/i)
+      if (statusMatch) lines.push(`Status: ${statusMatch[1]}`)
+      if (thesisMatch) lines.push(`Thesis: ${thesisMatch[1].slice(0, 200)}`)
+
+      // Extract "What Worked" / "What Didn't Work" sections
+      const workedMatch = content.match(/###?\s*What Worked\n([\s\S]*?)(?=\n###?\s|\n---|\n$)/i)
+      if (workedMatch) lines.push(`What worked: ${workedMatch[1].trim().slice(0, 300)}`)
+      const failedMatch = content.match(/###?\s*What Didn't Work\n([\s\S]*?)(?=\n###?\s|\n---|\n$)/i)
+      if (failedMatch) lines.push(`What didn't: ${failedMatch[1].trim().slice(0, 200)}`)
+      const seedsMatch = content.match(/###?\s*Next Generation Seeds\n([\s\S]*?)(?=\n---|\n$)/i)
+      if (seedsMatch) lines.push(`Next seeds: ${seedsMatch[1].trim().slice(0, 200)}`)
+
+      sections.push(lines.join('\n'))
+    }
+  } catch {}
+
+  // Scorecard snapshot
+  const scorecardPath = join(workDir, '.evolve', 'scorecard.json')
+  try {
+    if (existsSync(scorecardPath)) {
+      const scorecard = JSON.parse(readFileSync(scorecardPath, 'utf8'))
+      if (scorecard.flows) {
+        const lines = ['## Product Scorecard']
+        for (const flow of scorecard.flows) {
+          const icon = flow.status === 'pass' ? '✓' : flow.status === 'fail' ? '✗' : '○'
+          lines.push(`${icon} ${flow.name}: ${flow.score ?? 'unmeasured'} (target: ${flow.target})`)
+        }
+        if (scorecard.aggregate) lines.push(`Aggregate: ${scorecard.aggregate}`)
+        sections.push(lines.join('\n'))
       }
     }
   } catch {}
