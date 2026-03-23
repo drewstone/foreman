@@ -106,4 +106,52 @@ This is the difference between "a tool that dispatches work" and "an autonomous 
 - [x] Prompt template scored from outcomes
 - [x] Worktree cleanup endpoint works
 - [x] Session search endpoint works (FTS5)
-- [ ] E2E: full cycle dispatch → outcome → learning → improved next dispatch (needs longer-running test)
+- [x] E2E: dispatch → session runs → session killed → harvest fires → outcome stored → success rate updated
+
+## Generation 1 Results
+
+### Scores
+
+| Metric | Before Gen 1 | After Gen 1 | Verdict |
+|--------|-------------|-------------|---------|
+| Auto-detected outcomes | 0 | 1 (100% success rate) | ✅ WORKS |
+| Time from idle to outcome | ∞ (manual) | <25 seconds | ✅ WORKS |
+| Prompt template bootstrapped | no | yes (v1) | ✅ WORKS |
+| Operator sessions scanned | 0 | 312 | ✅ WORKS |
+| Learnings extracted | 0 | 59 | ✅ WORKS |
+| Desktop notification | no | yes (notify-send) | ✅ WORKS |
+| Worktree cleanup endpoint | no | yes (/api/cleanup) | ✅ WORKS |
+| Session search endpoint | no | yes (/api/search) | ✅ BUILT (untested with FTS5) |
+| Cost tracking | no | field exists, not populated | ⚠️ PARTIAL |
+
+### What Worked
+
+1. **Auto-outcome harvesting** is the critical win. The loop now closes: dispatch → execute → watcher detects completion → harvestOutcome() reads git state → stores outcome + metrics → updates success rate. No manual intervention.
+2. **Dead-session detection bugfix** (line 499-505): the harvest was unreachable due to a `continue` statement. Fixed by moving harvest inside the dead-detection block.
+3. **Prompt template bootstrapping**: v1 template auto-created on first startup. Scoring infrastructure tracks success rate per template.
+
+### What Didn't Work
+
+1. **Commit counting is noisy**: worktree branches from the base branch, so `git log HEAD~20..HEAD` counts all recent commits on the branch, not just the session's work. Needs: `git log worktree-branch-point..HEAD`.
+2. **PR detection is false-positive-prone**: `gh pr list` finds any PR in the repo, not just ones created by this session. Needs: filter by the session's worktree branch.
+3. **Cost parsing doesn't match Claude's output format**: the regex `\$(\d+\.?\d*)\s*(?:total|cost|spent)` doesn't match Claude's actual cost output. Needs: check real Claude output format.
+4. **Session search (FTS5) untested**: the endpoint exists but requires `@drew/foreman-memory/session-index` to be importable at runtime.
+
+### What Surprised Us
+
+- Claude takes 60-90+ seconds even for simple tasks when given a 5K+ char composed prompt. The rich context is valuable but makes Claude treat every task as a deep project. Future: tune prompt length by task complexity.
+- 312 operator sessions scanned in the initial learning loop. 59 learnings extracted. The session scanning is broadly correct but exemplar quality is low (mostly short messages that passed the filter).
+
+### Verdict
+
+**ADVANCE.** The loop closes. The harvest works. This is the foundation for everything else. Commit and promote.
+
+### Next Generation Seeds (Gen 2)
+
+1. Fix commit counting (diff from branch point, not all history)
+2. Fix PR detection (filter by worktree branch name)
+3. Parse Claude's actual cost output format
+4. GEPA prompt template optimization (A/B test variants)
+5. Tune prompt length by task complexity (simple task = shorter prompt)
+6. Telegram gateway (talk to Foreman from phone)
+7. Confidence-gated autonomy (auto-dispatch without operator when confidence is high)

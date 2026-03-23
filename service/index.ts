@@ -497,10 +497,12 @@ function watcherTick(): void {
     if (pendingPrompts.has(s.name)) continue
 
     if (!backend.isAlive(s.name)) {
-      stmts.updateSession.run('dead', '', s.name)
       if (s.status !== 'dead') {
+        stmts.updateSession.run('dead', '', s.name)
         emitEvent('session_died', s.name, s.goal_id)
         log(`Session ${s.name} died`)
+        // Harvest outcome from dead session
+        harvestOutcome(s.name, s.goal_id, backend).catch(e => log(`Harvest failed for ${s.name}: ${e}`))
       }
       continue
     }
@@ -512,12 +514,7 @@ function watcherTick(): void {
     if (idle && s.status === 'running') {
       emitEvent('session_idle', s.name, s.goal_id)
       log(`Session ${s.name} is now idle`)
-      // Auto-harvest outcome
-      harvestOutcome(s.name, s.goal_id, backend).catch(e => log(`Harvest failed for ${s.name}: ${e}`))
-    }
-
-    if (!backend.isAlive(s.name) && s.status !== 'dead') {
-      // Also harvest from dead sessions (crashed or exited)
+      // Harvest outcome from completed session
       harvestOutcome(s.name, s.goal_id, backend).catch(e => log(`Harvest failed for ${s.name}: ${e}`))
     }
   }
