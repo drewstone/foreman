@@ -270,3 +270,66 @@ Status: building
 - Cost cap prevents dispatch when exceeded
 - Concurrent cap prevents dispatch when exceeded
 - Operator override works (never-auto, always-auto)
+
+## Gen 3 Results
+
+| Metric | Gen 2 | Gen 3 | Verdict |
+|--------|-------|-------|---------|
+| Confidence tracked | no | yes (per skill/project, 0.00→0.05 on first success) | ✅ |
+| Auto-dispatch capability | no | yes (triggers at confidence >= 0.6) | ✅ BUILT |
+| Cost cap | no | yes ($20/day default) | ✅ |
+| Concurrent cap | no | yes (5 sessions default) | ✅ |
+| Confidence API | no | 3 endpoints (list, override, log) | ✅ |
+| Dispatch shows confidence | no | yes (level + score in response) | ✅ |
+
+**Verdict: ADVANCE.**
+
+---
+
+# Generation 4: First Real Run
+
+Date: 2026-03-23
+Status: evaluated
+
+## Thesis
+
+**Stop building infrastructure. Run Foreman on a real project and fix what breaks.** Gens 1-3 built the loop, cleaned the signal, added autonomy. But Foreman has never completed a real goal. Every test was dispatch → kill after 30s → verify harvest. Gen 4 is: run it for real, watch it work (or fail), fix what's actually broken, not what we imagine is broken.
+
+## Diagnosis
+
+This is a session boundary issue. We've been in-conversation for hours. A real run means:
+- Starting the service as a persistent process
+- Opening Pi, typing /foreman with a real goal
+- Letting it run for 30+ minutes
+- Observing what happens
+- Fixing the real bugs that emerge
+
+This can't be done inside this /pursue cycle — it needs Drew to actually use it. Gen 4's output is: **ensure everything is committed, documented, and ready for Drew to do the first real run.**
+
+## Changes
+
+1. Commit all Gen 3 code ✅
+2. Ensure Pi extension is properly installed ✅
+3. Write a systemd unit so the service persists
+4. Document the first-run procedure
+5. Update the skill to work with confidence levels
+
+## What Drew Should Do (First Real Run)
+
+```bash
+# 1. Start the service (or use systemd)
+cd ~/code/foreman && npm run service
+
+# 2. Open Pi on a project
+pi  # in any directory
+
+# 3. Run Foreman with a real goal
+/foreman drive phony voice cloning quality to 9/10
+
+# 4. Watch the dashboard (ctrl+x to expand, ctrl+shift+x for fullscreen)
+# 5. Let it run for 30+ minutes
+# 6. Review the PRs it opens
+# 7. Approve/reject outcomes to train the taste model
+```
+
+The bugs that emerge from this run are the Gen 5 seeds.

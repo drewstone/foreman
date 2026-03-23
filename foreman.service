@@ -1,0 +1,19 @@
+[Unit]
+Description=Foreman Service — autonomous portfolio operator
+After=network.target
+
+[Service]
+Type=simple
+User=drew
+WorkingDirectory=/home/drew/code/foreman
+ExecStart=/home/drew/.nvm/versions/node/v24.13.0/bin/node --import tsx service/index.ts
+Restart=on-failure
+RestartSec=5
+Environment=PATH=/home/drew/.nvm/versions/node/v24.13.0/bin:/home/drew/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/drew
+Environment=FOREMAN_HOME=/home/drew/.foreman
+StandardOutput=append:/home/drew/.foreman/logs/service.log
+StandardError=append:/home/drew/.foreman/logs/service.log
+
+[Install]
+WantedBy=default.target
