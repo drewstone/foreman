@@ -85,6 +85,7 @@ export default function foremanExtension(pi: ExtensionAPI) {
   const reconstruct = async (ctx: ExtensionContext) => {
     const rt = getRuntime(ctx)
     rt.foremanMode = await serviceHealthy()
+    if (rt.foremanMode) await refreshCache()
     updateWidget(ctx)
   }
 
@@ -386,7 +387,7 @@ export default function foremanExtension(pi: ExtensionAPI) {
         updateWidget(ctx)
         return { content: [{ type: 'text' as const, text }], details: st }
       } catch (e) {
-        return { content: [{ type: 'text' as const, text: `❌ Foreman service not reachable at ${SERVICE_URL}\nStart: cd ~/code/foreman && tsx service/index.ts` }], details: {} }
+        return { content: [{ type: 'text' as const, text: `❌ Foreman service not reachable at ${SERVICE_URL}\nError: ${e instanceof Error ? e.message : String(e)}\nStart: cd ~/code/foreman && npm run service` }], details: {} }
       }
     },
     renderCall(_a, theme) { return text(theme.fg('toolTitle', theme.bold('portfolio_status'))) },
