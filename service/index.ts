@@ -33,6 +33,7 @@ const WATCHER_INTERVAL_MS = 10_000
 const CLAUDE_BOOT_POLL_MS = 3_000
 const MAX_DAILY_COST_USD = parseFloat(process.env.FOREMAN_MAX_DAILY_COST ?? '20')
 const MAX_CONCURRENT_SESSIONS = parseInt(process.env.FOREMAN_MAX_SESSIONS ?? '5', 10)
+const AUTO_MERGE = process.env.FOREMAN_AUTO_MERGE === 'true' // default: false — operator reviews PRs
 const CLAUDE_BOOT_TIMEOUT_MS = 60_000
 
 mkdirSync(join(FOREMAN_HOME, 'logs'), { recursive: true })
@@ -748,6 +749,12 @@ async function harvestOutcome(sessionName: string, goalId: number, backend: Exec
   log(`Auto-harvested outcome for ${sessionName}: ${outcomeText}`)
   emitEvent('outcome_harvested', sessionName, goalId, { decisionId: decision.id, status, commits })
 
+  // Ensure work is pushed and a PR exists — the operator reviews via PR, not worktree diffs.
+  if (commits > 0 && worktreeBranch && baseBranch) {
+    const prUrl = await ensurePushAndPR(workDir, worktreeBranch, baseBranch, decision.skill, decision.task)
+    if (prUrl) log(`PR created/found: ${prUrl}`)
+  }
+
   // Run post-completion pipeline (sub-agents that analyze the session)
   const digest = await runPostCompletionPipeline(decision.id, sessionName, decision.skill, decision.task, workDir, output, status, outcomeText)
 
@@ -785,6 +792,65 @@ async function harvestOutcome(sessionName: string, goalId: number, backend: Exec
     log(`Pipeline recommends: ${digest.nextAction.skill} — ${digest.nextAction.task.slice(0, 80)}`)
   }
   maybeAutoDispatch(decision.skill, projectName, goalId).catch(e => log(`Auto-dispatch failed: ${e}`))
+}
+
+// ─── Ensure push + PR ────────────────────────────────────────────────
+// After a session with commits, guarantee the branch is pushed and a PR exists.
+// The operator reviews all Foreman work via PRs — this is the safety gate.
+
+async function ensurePushAndPR(workDir: string, branch: string, baseBranch: string, skill: string, task: string): Promise<string | null> {
+  // Push the branch
+  try {
+    await execFileAsync('git', ['push', '-u', 'origin', branch], { cwd: workDir, timeout: 30_000 })
+  } catch (e) {
+    // Push might fail if remote doesn't exist or branch already pushed
+    log(`Push failed for ${branch}: ${e instanceof Error ? e.message : String(e)}`)
+  }
+
+  // Check if a PR already exists for this branch
+  try {
+    const { stdout } = await execFileAsync('gh', ['pr', 'list', '--head', branch, '--json', 'url', '--limit', '1'], { cwd: workDir, timeout: 10_000 })
+    const prs = JSON.parse(stdout)
+    if (prs.length > 0) return prs[0].url // PR already exists
+  } catch {}
+
+  // Create PR
+  try {
+    const title = `foreman: ${skill || 'work'} — ${task.slice(0, 60)}`
+    const body = `Automated Foreman dispatch.\n\nSkill: ${skill || 'direct'}\nTask: ${task.slice(0, 200)}\n\n---\n*This PR was created by Foreman. Review the changes before merging.*`
+
+    const { stdout } = await execFileAsync('gh', [
+      'pr', 'create',
+      '--base', baseBranch,
+      '--head', branch,
+      '--title', title.slice(0, 100),
+      '--body', body,
+    ], { cwd: workDir, timeout: 15_000 })
+
+    const url = stdout.trim()
+    log(`Created PR: ${url}`)
+
+    // Auto-merge if flag is set AND confidence is autonomous (0.8+)
+    if (AUTO_MERGE) {
+      const projectName = workDir.split('/').pop() ?? ''
+      const confLevel = confidence.getLevel(skill || 'direct', projectName)
+      if (confLevel === 'autonomous') {
+        try {
+          await execFileAsync('gh', ['pr', 'merge', url, '--squash', '--auto'], { cwd: workDir, timeout: 15_000 })
+          log(`Auto-merged PR: ${url} (confidence: autonomous)`)
+        } catch (e) {
+          log(`Auto-merge failed: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      } else {
+        log(`Auto-merge skipped: confidence is ${confLevel}, need autonomous (0.8+)`)
+      }
+    }
+
+    return url
+  } catch (e) {
+    log(`PR creation failed for ${branch}: ${e instanceof Error ? e.message : String(e)}`)
+    return null
+  }
 }
 
 // ─── Post-completion pipeline ─────────────────────────────────────────
