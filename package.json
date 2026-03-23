@@ -15,6 +15,8 @@
   },
   "scripts": {
     "service": "tsx service/index.ts",
+    "gateway:telegram": "tsx gateway/telegram.ts",
+    "gateway:slack": "tsx gateway/slack.ts",
     "test": "node --import tsx --test packages/*/src/*.test.ts",
     "check": "npm run check:types",
     "check:types": "npm run check --workspaces --if-present",
