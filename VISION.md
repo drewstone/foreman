@@ -1,252 +1,186 @@
 # Foreman Vision
 
+## One sentence
+
+Foreman is your autonomous operating system. You tell it what you want — in any domain — and it decomposes, dispatches, tracks, learns, and drives it to completion.
+
 ## What Foreman is
 
-Foreman is the policy layer between an operator and their agents.
+Foreman is autoresearch applied to your entire life.
 
-It watches all sessions across all projects. It builds a model of how the operator works. It decides what to do next. It acts — spawning sessions, running experiments, invoking skills, creating PRs. It scores outcomes and improves its own decision-making.
+In autoresearch, an agent modifies code, runs a benchmark, keeps what improves the metric, discards what doesn't, and loops forever. The agent never stops. The metric is the judge. History prevents repeating dead ends.
 
-The operator explores. Foreman exploits what works.
+Foreman does this at the level of goals. The "experiment" is dispatching work — a Claude Code session with /evolve, a Pi session for GTM strategy, a research session for a paper, a skill invocation for code quality. The "metric" is whether the goal moved forward, judged by operator taste. The history is a structured decision log that prevents repeating mistakes and enables cross-pollination.
 
-## The operator's workflow
+The operator provides goals and taste. Foreman provides decomposition, execution, tracking, and learning. The conversation between them IS the policy function. Everything else is infrastructure.
 
-This is the loop Foreman must model and amplify:
+## The operator
 
-1. **Explore.** Start sessions for real work. Ideas emerge from the work itself — a marketing session becomes a GTM agent product, a tax session becomes a tax agent product.
+The operator works across dozens of domains simultaneously — code, marketing, research, business strategy, product design, sales, content, operations. They explore by starting sessions. Ideas emerge from the work. A marketing session becomes a GTM product. A training session becomes a voice cloning paper. A tax session becomes a tax agent.
 
-2. **Productize.** Branch it. The session pattern becomes a product or skill.
-
-3. **Amplify.** Invoke /evolve, /polish, /critical-audit, /pursue — aimlessly, like a monkey with skills. Build environments that maximize evolution success. Push everything to improve without a predetermined plan.
-
-4. **Compound.** Each skill makes future sessions more powerful. Better skills generate better sessions. Better sessions generate better skills.
-
+The operator's workflow:
+1. **Explore.** Start sessions. Ideas emerge from work.
+2. **Productize.** The session pattern becomes a product, skill, or deliverable.
+3. **Amplify.** Throw skills at everything — /evolve /pursue /polish /research — like a monkey with tools. No predetermined plan.
+4. **Compound.** Each skill makes future work better. Each outcome trains Foreman's taste model.
 5. **Repeat** with expanding capability.
 
-The "aimless monkey with skills" is deliberate. It's exploration-heavy because the search space is large and the optimal strategy is unknown. Skills provide a growing action space. /evolve provides selection pressure. The operator provides reward signal by accepting or rejecting results. This is reinforcement learning at the human level.
+Foreman's job: learn this workflow, model the operator's taste, predict what they'd do, and do it — faster, more consistently, across more domains simultaneously.
 
-## What Foreman actually is (technically)
-
-```
-Foreman = state + policy + actions
-```
-
-**State** — everything Foreman knows:
-- Session histories across all projects and harnesses
-- Experiment results (autoresearch.jsonl, eval traces, skill outcomes)
-- Operator model (how they work, what they prioritize, patterns)
-- Project states (active, stalled, blocked, momentum)
-- Confidence scores per action type per project
-
-**Policy** — given state, what's the highest-value action?
-- This is an LLM call with full state as context
-- It improves over time as outcomes are scored
-- THIS IS THE PRODUCT. Everything else is infrastructure.
-
-**Actions** — things the policy can do:
-- Spawn a Pi/Claude/Codex session with a goal
-- Continue or resume a stalled session
-- Start an autoresearch/evolve loop on a metric
-- Run GEPA optimization on a tunable surface
-- Create a skill from observed patterns
-- Cross-pollinate a learning across projects
-- Send a notification or create a PR
-- Spawn another Foreman instance (recursion)
-- Do nothing (important — explore/exploit tradeoff)
-
-Most of the existing codebase is state collection or action execution. The policy — the actual brain — is a single LLM call with good context preparation. That's ~200 lines of core logic.
-
-## Event-driven architecture
-
-Foreman runs as a daemon that reacts to events, not a cron job that polls.
-
-### Event sources
-
-**File watchers** (primary — zero latency):
-- Session JSONL directories (~/.claude/, ~/.pi/, ~/.codex/) — detect session start/end/activity
-- autoresearch.jsonl files in project dirs — detect experiment results
-- Git refs across managed repos — detect pushes, branch creation, merges
-- ~/.foreman/ state files — detect external state changes
-
-**Webhooks** (external events):
-- GitHub webhook receiver (CI status, PR events, issue events)
-- Slack/Telegram incoming (operator messages about priorities)
-- Custom webhook endpoint for integrations
-
-**Session lifecycle hooks**:
-- Pi extension hooks (before_agent_start, agent_end) — real-time session awareness
-- Claude Code hooks (PreToolUse, PostToolUse, Notification) — tool-level awareness
-
-**Polling** (fallback for things without push):
-- CI status checks (gh pr checks) — every 5 minutes when active PRs exist
-- Cost tracking aggregation — every hour
-- Session index reindex — every 15 minutes
-
-### Event → Policy → Action flow
+## Architecture
 
 ```
-event arrives (session ended, CI failed, experiment completed, ...)
-    |
-    v
-state update (incorporate event into current state snapshot)
-    |
-    v
-policy call (LLM: given updated state, should I act? what action?)
-    |
-    v
-confidence gate (is my confidence high enough for this action type?)
-    |
-    ├─ below threshold → log (dry-run)
-    ├─ in approval zone → propose to operator, wait
-    ├─ in notify zone → act, notify immediately
-    └─ above threshold → act silently, report in digest
-    |
-    v
-execute action
-    |
-    v
-observe outcome → update state → update confidence
+Operator ↔ Conversation (Pi/Claude/any client) ↔ Foreman Service ↔ Execution backends
 ```
 
-## Confidence graduation (dry-run → live)
+### Foreman Service (runs 24/7)
 
-Every action type starts in dry-run. Confidence increases through evidence. Each action type graduates independently per project.
+A standalone process. Manages state, sessions, and events. Never makes policy decisions — only executes them.
 
-### Confidence levels
+- **State store** (SQLite): goals, decisions, sessions, taste model, costs
+- **Session manager**: spawn/monitor/kill sessions across backends (tmux → Claude Code, Pi, Codex)
+- **Event detection**: session completion, CI changes, experiment results, cost alerts
+- **Notifications**: surface what needs attention (Slack, desktop, Pi widget)
+- **HTTP API**: ~10 endpoints, any client can connect
+
+### Clients (the policy layer)
+
+The conversation IS the policy. Any client that can talk to the service API can be Foreman's interface.
+
+- **Pi extension** (primary): tools + dashboard + /foreman command. The operator talks to Pi, Pi calls the service.
+- **Slack bot** (future): notifications + approve/reject from phone
+- **Claude Code hooks** (future): detect session outcomes, inject Foreman context
+- **Web dashboard** (future): visual portfolio
+- **CLI** (future): `foreman status`, `foreman dispatch`
+- **Cron jobs** (future): scheduled briefings, overnight autonomy
+
+### Execution backends
+
+What Foreman can dispatch work to:
+
+- **Claude Code** (via tmux): coding, skills (/evolve /pursue /polish /verify /research /converge /critical-audit), git operations
+- **Pi** (via tmux or API): thinking, writing, research, strategy, planning
+- **Autoresearch loops**: metric optimization with structured experiment tracking
+- **Direct commands**: scripts, builds, deploys, arbitrary shell
+- **Future**: browser agents, API calls, email, calendar
+
+## Goals, not projects
+
+The unit of work is a **goal**, not a repo or project.
+
+A goal is anything the operator wants done:
+- "Drive phony voice cloning to SOTA, track experiments, write a latex paper"
+- "Ship the sandbox blueprint with full test coverage"
+- "Run the GTM launch for the new product"
+- "Research transformer architectures for the book chapter"
+- "Make foreman itself better"
+
+A goal decomposes into tasks. Tasks get dispatched to backends. Some goals map to git repos. Some don't. Some span multiple repos. Some are pure research or writing.
+
+The service tracks goals and their progress. A goal has:
+- **Intent**: what the operator said (their exact words — the prompt IS the product)
+- **Decomposition**: how Foreman broke it into dispatchable tasks
+- **Decisions**: every dispatch and its outcome
+- **Learnings**: what worked, what failed, what to try next
+- **State**: active, stalled, blocked, completed
+- **Taste signals**: operator approval/rejection of decisions
+
+## Taste
+
+Foreman learns how the operator thinks.
+
+Taste is not preferences — it's judgment. Which dispatch was the right call? Which goal matters more? When should you /evolve vs /pursue? When is something "shipped" vs "good enough"?
+
+Taste comes from:
+- **Explicit signals**: operator approves/rejects a dispatch
+- **Goal language**: how the operator describes what they want (specific vs vague, ambitious vs incremental)
+- **Correction patterns**: what the operator changes after Foreman acts
+- **Priority signals**: what the operator works on first, what they ignore
+- **Quality standards**: when the operator says "done" vs "keep going"
+
+The taste model is injected into the conversation context so the LLM makes better decisions over time. It's not a config file — it's a learned model that evolves from evidence.
+
+## Confidence graduation
+
+Actions earn autonomy through evidence. Per goal, per action type.
 
 | Confidence | Mode | Behavior |
 |------------|------|----------|
-| 0.0 – 0.3 | **dry-run** | Log what you WOULD do. No side effects. |
-| 0.3 – 0.6 | **propose** | Show the operator. Wait for approval. |
-| 0.6 – 0.8 | **act-notify** | Execute the action. Notify immediately. |
-| 0.8 – 1.0 | **autonomous** | Execute silently. Report in daily digest. |
+| 0.0–0.3 | **dry-run** | Log what you would do |
+| 0.3–0.6 | **propose** | Show operator, wait for approval |
+| 0.6–0.8 | **act-notify** | Execute, notify immediately |
+| 0.8–1.0 | **autonomous** | Execute, report in digest |
 
-### How confidence increases
+Confidence increases from agreement (operator approves) and success (outcome is good). Decreases from rejection and failure. The operator never flips a switch — Foreman graduates itself.
 
-- **Agreement signal:** Operator approves a proposed action → +0.1 for that action type
-- **Outcome signal:** Action succeeds (CI passes, tests pass, session completes) → +0.05
-- **Transfer signal:** Similar action type has high confidence in another project → +0.02
-- **Disagreement signal:** Operator rejects a proposed action → -0.15
-- **Failure signal:** Action fails (CI breaks, session abandoned) → -0.1
+## The autoresearch pattern
 
-### Per-action-type, per-project
+Everything in Foreman follows the autoresearch pattern:
 
-Confidence is tracked as `(actionType, project) → score`. Examples:
+| Autoresearch | Foreman |
+|---|---|
+| autoresearch.md | portfolio state (living doc, any session can resume) |
+| autoresearch.jsonl | decisions log (append-only, structured, searchable) |
+| autoresearch.sh | dispatch (spawn a session with a skill/goal) |
+| run_experiment | dispatch + monitor |
+| log_experiment | log outcome + learnings |
+| METRIC lines | goal progress metrics |
+| confidence score | taste-informed quality judgment |
+| git commit/revert | keep what works, revert what doesn't |
+| never stop | never stop |
 
-- `(resume-session, openclaw-blueprint) → 0.72` — act and notify
-- `(create-pr, new-project) → 0.15` — dry-run only
-- `(invoke-evolve, foreman) → 0.85` — autonomous
-- `(run-autoresearch, phony) → 0.45` — propose and wait
+The key extension: autoresearch optimizes one metric in one project. Foreman applies the same loop across all goals, all domains, learning and cross-pollinating between them.
 
-This means Foreman naturally graduates from "observer that suggests" to "autonomous operator" at different rates for different contexts. The operator never has to "flip the switch" — confidence grows from evidence.
+## Parallel execution
 
-### Operator overrides
+Foreman runs many things simultaneously:
+- Multiple goals active at once
+- Multiple sessions per goal (via git worktrees for code, separate sessions for non-code)
+- Skills that decompose into parallel sub-goals (/evolve can run parallel experiments)
+- Cross-pollination: learnings from one goal inform dispatches on another
 
-- `never-auto(project)` — force dry-run for all actions on a project
-- `always-auto(actionType)` — skip confidence check for an action type
-- `confidence-floor(project, 0.5)` — set minimum confidence before any action
-- These are stored in the operator profile
+## The universal agent shape
 
-## What exists and what changes
-
-### Packages (13 total — all keep)
-
-| Package | Role | Status |
-|---------|------|--------|
-| core | Type contracts, runtime loop, versioned store | KEEP — foundational |
-| tracing | Trace store (filesystem/Postgres), search | KEEP — state pillar |
-| memory | Memory store, session index, learning data | KEEP — state pillar |
-| workers | Worker registry, adapters | KEEP — action execution |
-| providers | Claude/Codex/Pi/Opencode drivers | KEEP — action execution |
-| environments | Git/document/service observation | KEEP — state collection |
-| profiles | Operator modeling, work discovery | KEEP — state pillar |
-| evals | Eval pipeline, judges, failure taxonomy | KEEP — outcome evaluation |
-| optimizer | GEPA, variant scoring, policy store | KEEP + EXPAND — policy learning |
-| planning | Task hardening, prompt variants | CONSOLIDATE into optimizer |
-| sandbox | Sandbox worker adapter | KEEP — action execution |
-| tangle | Tangle-specific sandbox | KEEP — action execution |
-| sdk | Public API re-exports | KEEP — interface |
-
-### Surfaces — what changes
-
-**State collectors (keep as-is, become data sources for policy):**
-session-metrics, session-insights, session-analysis, session-registry, skill-tracker, intent-engine, cost-monitor, async-replan, operator-adaptation
-
-**Action executors (keep as-is, become tools for policy):**
-ci-tools, ci-diagnosis, notify, engineering-tools, session-run, provider-session, retrieve-traces, sync-operator, schedule, golden-suite-generator, worktree-experiment
-
-**Policy code (REPLACE with agent reasoning):**
-operator-loop, engineering-foreman, environment-foreman, hybrid-foreman, work-discovery, work-continuation, session-review, nightly-optimize (orchestration parts), variant-generator (selection parts)
-
-These ~13 files contain pre-decided workflows (~5000 lines). They get replaced by one policy function (~200 lines) that calls an LLM to reason about what to do given current state.
-
-**Eval infrastructure (keep — feeds the self-improvement loop):**
-benchmark-env, ci-repair-env, report-quality-env, eval-runner, judge-calibration, operator-learning-eval, golden-suite
-
-**CLIs (keep — thin wrappers, no logic):**
-All 34 *-cli.ts files stay. They're just argument parsing + dispatch.
-
-**API server (keep — event receiver + status):**
-api-server becomes the webhook receiver and status endpoint for the daemon.
-
-### What to build
-
-**1. Foreman daemon** (`packages/surfaces/src/foreman-daemon.ts`)
-- Event loop: file watchers + webhook listener + poll timers
-- On event: update state → call policy → confidence gate → execute or log
-- Persistent process (systemd or pm2)
-
-**2. Policy function** (`packages/surfaces/src/policy.ts`)
-- `async function decideAction(state: ForemanState): Promise<Action | null>`
-- Prepares state snapshot (active projects, recent events, operator model, confidence scores)
-- Calls LLM with state as context
-- Parses structured action output
-- ~200 lines
-
-**3. Confidence store** (`packages/memory/src/confidence.ts`)
-- `getConfidence(actionType, project): number`
-- `updateConfidence(actionType, project, signal): void`
-- Backed by SQLite or JSON file in ~/.foreman/
-- Per-action-type, per-project scores
-
-**4. State snapshot builder** (`packages/surfaces/src/state-snapshot.ts`)
-- Aggregates: active sessions, recent events, project states, operator model, confidence scores
-- Formats for LLM context
-- Reuses existing state collectors (session-registry, session-insights, cost-monitor, etc.)
-
-## Recursion
-
-Foreman can spawn Foreman instances as workers. A portfolio-level Foreman manages project-level Foreman instances:
+Every pipeline in Foreman follows the same shape:
 
 ```
-Foreman (portfolio)
-  ├── Foreman (project A) → spawns Pi/Claude sessions
-  ├── Foreman (project B) → spawns Pi/Claude sessions
-  └── Foreman (project C) → runs autoresearch loops
+Input → Agent (Identity | LLM | GEPA-optimized) → Structured Output → Stored → Feeds next cycle
 ```
 
-The parent cross-pollinates learnings. Each child has its own confidence scores and operator model scoped to its project. "foreman" is a recognized provider alongside claude/codex/pi/opencode.
+This applies to everything:
+
+| Pipeline | Input | Agent | Output |
+|---|---|---|---|
+| Prompt composition | task + context | composePrompt() | dispatch prompt |
+| Post-completion | session output | digest/audit agent | quality score, learnings, next action |
+| Deep analysis | operator sessions | LLM analysis | flows, taste, anti-patterns |
+| Template evolution | dispatch outcomes | Identity/GEPA | better prompt template |
+| Session mining | JSONL files | pattern extraction | exemplars, skill patterns |
+| Decision capture | session history | /reflect | structured decision records |
+
+Each pipeline is pluggable — the `Identity` agent passes through unchanged, LLM agents analyze and enrich, GEPA agents optimize over time. All outputs are stored (SQLite decisions, learnings, taste), traced, and feed the next cycle.
+
+This means **every surface in Foreman is optimizable**. The post-completion digest prompt can be GEPA-optimized for better quality assessments. The session mining filters can be GEPA-optimized for higher-signal exemplars. The prompt composition template can be GEPA-optimized for higher dispatch success rates. The architecture is the same — only the input/output shapes differ.
+
+The long-term direction: a `TracedAgent` abstraction that wraps any pipeline with input/output logging, version tracking, and GEPA optimization. Every agent in the system becomes self-improving through the same mechanism.
 
 ## What Foreman is NOT
 
-- Not a workflow engine (workflows are emergent from policy reasoning)
-- Not a prompt optimizer (prompts are one tunable surface among many)
-- Not a coding agent (it supervises coding agents)
-- Not a personal assistant (it's an autonomous operator)
-- Not a collection of scripts triggered by cron
+- Not a daemon that makes policy decisions (the conversation is the policy)
+- Not a coding-only tool (goals span all domains)
+- Not a workflow engine (no pre-decided workflows — the LLM reasons)
+- Not a prompt optimizer (prompts are one surface among many)
+- Not a personal assistant (it's an autonomous operator that learns)
 
-## Core principles
+## Principles
 
-1. The operator's exploration IS the intelligence. Foreman amplifies it.
-2. Sessions are both work and training data.
-3. Skills are compound interest.
-4. The policy function is the product. Everything else is infrastructure.
-5. Evidence beats self-report. Validate independently.
-6. Confidence graduates through evidence, not switches.
-7. React to events, don't poll on timers.
-8. The agent reasons about what to do. We don't pre-decide workflows.
-9. Self-improvement is continuous.
-10. Breadth and generality over depth in one domain.
-
-## Simple product sentence
-
-Foreman is an autonomous agent that learns from its operator, decides what to work on across all their projects, acts with evidence-based confidence, and self-improves through continuous experimentation.
+1. **The prompt is the product.** The operator's natural language goal is the entire input. Better prompts → better outcomes.
+2. **Taste is king.** A technically correct action the operator rejects is a bad action.
+3. **Goals, not projects.** Work spans domains. Don't assume git repos.
+4. **The conversation is the policy.** No cold LLM calls with state snapshots. The operator is in the loop.
+5. **Autoresearch everything.** Dispatch, measure, keep/revert, learn, repeat. For all goals.
+6. **Ship > perfect.** A working thing with rough edges beats a polished thing that does nothing.
+7. **Never stop.** Always have work in flight. Idle time is failure.
+8. **Evidence over self-report.** Validate independently. Score honestly.
+9. **Cross-pollinate.** What works on one goal might transform another.
+10. **Infrastructure serves the conversation.** The service runs sessions and stores state. It does not think.

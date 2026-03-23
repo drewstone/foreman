@@ -1,0 +1,20 @@
+[Unit]
+Description=Foreman Service — autonomous portfolio operator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/home/drew/code/foreman/node_modules/.bin/tsx /home/drew/code/foreman/service/index.ts
+WorkingDirectory=/home/drew/code/foreman
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+SuccessExitStatus=0 143
+KillMode=control-group
+Environment=HOME=/home/drew
+Environment=TMPDIR=/tmp
+Environment=FOREMAN_HOME=/home/drew/.foreman
+Environment=PATH=/home/drew/.nvm/versions/node/v24.13.0/bin:/home/drew/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

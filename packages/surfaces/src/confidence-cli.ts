@@ -20,7 +20,8 @@ import {
   ConfidenceStore,
   type ConfidenceOverride,
 } from '@drew/foreman-memory/confidence'
-import type { PolicyDecision } from './policy.js'
+// PolicyDecision type inlined after policy.ts was removed
+interface PolicyDecision { action: { type: string; project: string } | null; confidenceLevel: string; confidenceScore: number; executed: boolean; outcome: { success: boolean; summary: string } | null }
 
 const FOREMAN_HOME = process.env.FOREMAN_HOME ?? join(homedir(), '.foreman')
 
