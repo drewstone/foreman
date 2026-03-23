@@ -1016,10 +1016,28 @@ function updateLearningsFromOutcome(
   // Check if we have enough data to consider generating a GEPA variant
   const activeTemplate = stmts.activeTemplate.get() as { id: number, version: number, dispatches: number, score: number | null } | undefined
   if (activeTemplate && activeTemplate.dispatches >= 5 && !gepaRunning) {
-    // Only if we don't already have an untested variant
     const untestedVariant = db.prepare(`SELECT id FROM prompt_templates WHERE active = 0 AND dispatches < 3`).get()
     if (!untestedVariant) {
       triggerGepaVariant(activeTemplate.version, activeTemplate.score ?? 0).catch(e => log(`GEPA variant failed: ${e}`))
+    }
+  }
+
+  // Cross-project confidence transfer (Hyperagents-inspired)
+  // When a skill succeeds on project A, give a small boost to the same skill
+  // on all other known projects. This is how meta-level improvements transfer.
+  if (status === 'success' && skill) {
+    const allEntries = confidence.list()
+    const otherProjects = new Set(allEntries.map(e => e.project))
+    // Find the project this decision was on
+    const thisDecision = db.prepare(`SELECT base_branch, worktree_path FROM decisions WHERE id = ?`).get(decisionId) as { base_branch?: string, worktree_path?: string } | undefined
+    const thisProject = thisDecision?.worktree_path?.split('/').pop() ?? ''
+    for (const otherProject of otherProjects) {
+      if (otherProject === thisProject) continue
+      // Only transfer if the same skill exists on the other project
+      const existing = confidence.getConfidence(skill, otherProject)
+      if (existing > 0) {
+        confidence.update(skill, otherProject, 'transfer')
+      }
     }
   }
 }
@@ -2702,6 +2720,51 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       } catch (e) {
         return error(res, e instanceof Error ? e.message : String(e), 500)
       }
+    }
+
+    // ── Self-improvement (Hyperagents-inspired) ────────────────
+    // Dispatches a session on the Foreman repo itself.
+    // The session works in a worktree, can modify service code,
+    // runs tests, and opens a PR for operator review.
+    if (path === '/api/self-improve' && method === 'POST') {
+      const body = await readBody(req)
+      const task = String(body.task ?? 'Review the Foreman service code and suggest improvements')
+      const skill = String(body.skill ?? '/evolve')
+
+      // Foreman's own repo
+      const foremanRepo = process.cwd()
+
+      // Create a goal if none exists for self-improvement
+      let goalId: number
+      const existingGoal = db.prepare(`SELECT id FROM goals WHERE intent LIKE '%foreman%self%' OR intent LIKE '%improve foreman%' LIMIT 1`).get() as { id: number } | undefined
+      if (existingGoal) {
+        goalId = existingGoal.id
+      } else {
+        const r = stmts.insertGoal.run('Improve Foreman itself — better prompts, better code, better outcomes', foremanRepo, 'repo', null, 0)
+        goalId = Number(r.lastInsertRowid)
+      }
+
+      // Dispatch with worktree isolation
+      const autoLabel = `self-${skill.replace(/^\//, '')}-${Date.now().toString(36)}`
+      const wt = await createWorktree(foremanRepo, autoLabel)
+      if (!wt) return error(res, 'Failed to create worktree for self-improvement')
+
+      const sName = sessionName(autoLabel)
+      const activeTpl = stmts.activeTemplate.get() as { version: number } | undefined
+      const selfTask = `${task.slice(0, 500)}\n\nIMPORTANT: After making changes, run the type checker: ./node_modules/.bin/tsc --noEmit --esModuleInterop --target ES2022 --module nodenext --moduleResolution nodenext --skipLibCheck service/index.ts\nFix any errors before committing.`
+
+      const result = stmts.insertDecision.run(goalId, skill, selfTask.slice(0, 500), 'self-improvement dispatch', sName, wt.path, wt.branch, wt.baseBranch, activeTpl?.version ?? 1, 'auto')
+      const decisionId = Number(result.lastInsertRowid)
+
+      const prompt = composePrompt({
+        skill, task: selfTask, workDir: wt.path, goalIntent: 'Improve Foreman itself',
+        goalId, worktreeBranch: wt.branch, baseBranch: wt.baseBranch, repoDir: foremanRepo,
+      })
+
+      const model = selectModel(skill, selfTask)
+      spawnSession({ name: sName, workDir: wt.path, prompt, goalId, decisionId, model: model ?? undefined })
+
+      return json(res, { decision: stmts.getDecision.get(decisionId), session: sName, worktree: wt.path, branch: wt.branch }, 201)
     }
 
     // ── Confidence ─────────────────────────────────────────────
