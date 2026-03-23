@@ -5,8 +5,7 @@
   "keywords": ["pi-package"],
   "license": "MIT",
   "pi": {
-    "extensions": ["./extensions"],
-    "skills": ["./skills"]
+    "extensions": ["./extensions"]
   },
   "peerDependencies": {
     "@mariozechner/pi-ai": "*",
