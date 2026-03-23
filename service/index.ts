@@ -165,7 +165,7 @@ const stmts = {
   updateDecision: db.prepare(`UPDATE decisions SET status = ?, outcome = ?, learnings = ?, metrics = ?, taste_signal = ?, cost_usd = ?, updated_at = datetime('now') WHERE id = ?`),
   getDecision: db.prepare(`SELECT * FROM decisions WHERE id = ?`),
   listDecisions: db.prepare(`SELECT * FROM decisions ORDER BY created_at DESC LIMIT ?`),
-  searchDecisions: db.prepare(`SELECT * FROM decisions WHERE task LIKE ? OR outcome LIKE ? OR learnings LIKE ? ORDER BY created_at DESC LIMIT ?`),
+  searchDecisions: db.prepare(`SELECT * FROM decisions WHERE task LIKE ? OR outcome LIKE ? OR learnings LIKE ? OR skill LIKE ? OR session_name LIKE ? OR reasoning LIKE ? ORDER BY created_at DESC LIMIT ?`),
   goalDecisions: db.prepare(`SELECT * FROM decisions WHERE goal_id = ? ORDER BY created_at DESC`),
 
   insertSession: db.prepare(`INSERT OR REPLACE INTO sessions (name, goal_id, decision_id, work_dir, status, prompt) VALUES (?, ?, ?, ?, 'starting', ?)`),
@@ -1254,13 +1254,14 @@ async function cleanupWorktrees(): Promise<number> {
       const wtPath = join(wtDir, entry)
       try {
         const mtime = statSync(wtPath).mtimeMs
-        if (mtime > cutoff) continue // too recent
+        if (mtime > cutoff) continue
 
-        // Check if session is still alive
         const sessionRow = db.prepare(`SELECT name, status FROM sessions WHERE work_dir = ?`).get(wtPath) as { name: string, status: string } | undefined
         if (sessionRow && (sessionRow.status === 'running' || sessionRow.status === 'starting')) continue
 
-        // Find the repo this worktree belongs to
+        // Auto-commit any uncommitted work before cleaning
+        await autoCommitWorktree(wtPath)
+
         try {
           const { stdout } = await execFileAsync('git', ['-C', wtPath, 'rev-parse', '--git-common-dir'], { timeout: 5_000 })
           const repoGitDir = stdout.trim()
@@ -1269,7 +1270,6 @@ async function cleanupWorktrees(): Promise<number> {
           cleaned++
           log(`Cleaned worktree: ${entry}`)
         } catch {
-          // If git cleanup fails, try direct removal
           try {
             await execFileAsync('rm', ['-rf', wtPath], { timeout: 5_000 })
             cleaned++
@@ -1280,6 +1280,65 @@ async function cleanupWorktrees(): Promise<number> {
   } catch {}
 
   return cleaned
+}
+
+// ─── Zombie session reaper ───────────────────────────────────────────
+// Kill tmux sessions that have no Claude process and haven't had output in 5+ minutes.
+// Auto-commit any uncommitted work before killing.
+
+async function reapZombieSessions(): Promise<number> {
+  let reaped = 0
+  const backend = getBackend()
+
+  const sessions = stmts.activeSessions.all() as Array<{ name: string, status: string, goal_id: number, work_dir: string, last_checked_at: string | null }>
+  for (const s of sessions) {
+    if (!backend.isAlive(s.name)) continue
+    if (s.status === 'starting') continue // still booting
+
+    // Check if Claude is actually running in this tmux session
+    const hasClaude = tmux(['list-panes', '-t', s.name, '-F', '#{pane_current_command}']).trim()
+    const isClaudeRunning = hasClaude.includes('node') || hasClaude.includes('claude') || hasClaude.includes('tsx')
+
+    if (isClaudeRunning) continue // Claude is still working
+
+    // Claude not running — this is a zombie. Check if idle for 5+ min
+    if (s.status === 'idle') {
+      // Already marked idle — auto-commit and kill
+      await autoCommitWorktree(s.work_dir)
+      backend.kill(s.name)
+      stmts.updateSession.run('dead', 'reaped (zombie)', s.name)
+      reaped++
+      log(`Reaped zombie session: ${s.name}`)
+    } else {
+      // Mark as idle first — will be reaped on next tick if still idle
+      stmts.updateSession.run('idle', '', s.name)
+    }
+  }
+
+  return reaped
+}
+
+// Auto-commit uncommitted changes in a worktree before cleanup
+async function autoCommitWorktree(workDir: string): Promise<boolean> {
+  try {
+    // Check for uncommitted changes
+    const { stdout: status } = await execFileAsync('git', ['status', '--porcelain'], { cwd: workDir, timeout: 5_000 })
+    if (!status.trim()) return false // nothing to commit
+
+    // Stage and commit
+    await execFileAsync('git', ['add', '-A'], { cwd: workDir, timeout: 5_000 })
+    await execFileAsync('git', ['commit', '-m', 'chore: auto-commit uncommitted work from foreman session'], { cwd: workDir, timeout: 10_000 })
+
+    // Try to push
+    try {
+      await execFileAsync('git', ['push', '-u', 'origin', 'HEAD'], { cwd: workDir, timeout: 15_000 })
+    } catch {} // push failure is non-fatal
+
+    log(`Auto-committed uncommitted work in ${workDir.split('/').pop()}`)
+    return true
+  } catch {
+    return false
+  }
 }
 
 // ─── Events ──────────────────────────────────────────────────────────
@@ -2123,20 +2182,23 @@ function composePrompt(opts: {
   prompt += `## Standards\n`
   prompt += `- L7/L8 staff engineer quality. Zero tolerance for slop.\n`
   prompt += `- Complete everything fully. No TODOs, no stubs.\n`
-  prompt += `- Commit frequently with descriptive messages (conventional commits).\n`
+  prompt += `- ALWAYS commit your work. After every meaningful change: git add -A && git commit -m "feat/fix: description".\n`
   prompt += `- If tests exist, run them. Fix failures before moving on.\n`
   prompt += `- Never ask for permission. Act.\n`
 
   // Worktree + PR workflow
   if (worktreeBranch && baseBranch) {
-    prompt += `\n## Git Workflow\n`
+    prompt += `\n## Git Workflow — CRITICAL\n`
     prompt += `You are working in an isolated worktree on branch \`${worktreeBranch}\`.\n`
-    prompt += `The operator is working on branch \`${baseBranch}\` — your work must not interfere with theirs.\n`
-    prompt += `When your work is complete:\n`
-    prompt += `1. Commit all changes with descriptive messages\n`
-    prompt += `2. Push: \`git push -u origin ${worktreeBranch}\`\n`
-    prompt += `3. Open a PR against \`${baseBranch}\`: \`gh pr create --base ${baseBranch} --title "foreman: <summary>" --body "<what you did and why>"\`\n`
-    prompt += `The operator will review and merge when ready.\n`
+    prompt += `The operator is working on branch \`${baseBranch}\` — your work must not interfere with theirs.\n\n`
+    prompt += `**You MUST commit and push before finishing.** Uncommitted work is lost work.\n\n`
+    prompt += `During work: commit after each logical change.\n`
+    prompt += `When complete:\n`
+    prompt += `1. \`git add -A && git status\` — verify all changes are staged\n`
+    prompt += `2. \`git commit -m "feat: <what you did>"\` — if anything is uncommitted\n`
+    prompt += `3. \`git push -u origin ${worktreeBranch}\`\n`
+    prompt += `4. \`gh pr create --base ${baseBranch} --title "foreman: <summary>" --body "<what you did and why>"\`\n\n`
+    prompt += `If you skip the commit/push, your work will be lost. The operator reviews PRs, not worktree diffs.\n`
   }
   prompt += '\n'
 
@@ -2450,7 +2512,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       }
       if (q) {
         const pattern = `%${q}%`
-        return json(res, stmts.searchDecisions.all(pattern, pattern, pattern, limit))
+        return json(res, stmts.searchDecisions.all(pattern, pattern, pattern, pattern, pattern, pattern, limit))
       }
       return json(res, stmts.listDecisions.all(limit))
     }
@@ -2648,6 +2710,12 @@ server.listen(PORT, '127.0.0.1', () => {
   // Start session watcher
   setInterval(watcherTick, WATCHER_INTERVAL_MS)
   log(`Session watcher running (${WATCHER_INTERVAL_MS / 1000}s interval)`)
+
+  // Zombie session reaper — every 5 minutes
+  setInterval(async () => {
+    const reaped = await reapZombieSessions()
+    if (reaped > 0) log(`Reaped ${reaped} zombie sessions`)
+  }, 5 * 60 * 1000)
 
   // Run initial learning loop (fast pattern extraction), then every hour
   setTimeout(() => {
