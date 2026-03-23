@@ -805,81 +805,207 @@ async function maybeAutoDispatch(skill: string, project: string, goalId: number)
   emitEvent('auto_dispatched', sName, goal.id, { skill: nextSkill, confidence: level })
 }
 
-// ─── GEPA prompt template evolution ──────────────────────────────────
-// After N dispatches, generate a variant of the prompt template using Claude.
-// A/B test: randomly assign dispatches to active template or variant.
-// Auto-promote variant if it outperforms after enough samples.
+// ─── Prompt Optimizer Interface ──────────────────────────────────────
+// Pluggable optimization strategy for prompt templates.
+// Identity: passthrough, no optimization (default when disabled).
+// AxGEPA: real multi-objective Pareto optimization from @ax-llm/ax.
+// Controlled by FOREMAN_OPTIMIZER env var: 'identity' | 'gepa' (default: 'identity')
+
+const OPTIMIZER_STRATEGY = process.env.FOREMAN_OPTIMIZER ?? 'identity'
+
+interface PromptOptimizerResult {
+  variant: string | null  // new template suggestion, null if no change
+  score?: number
+}
+
+interface PromptOptimizer {
+  name: string
+  optimize(data: {
+    currentVersion: number
+    currentScore: number
+    trainExamples: Array<{ task: string, prompt: string, outcome: string, success: boolean }>
+  }): Promise<PromptOptimizerResult>
+}
+
+// Identity optimizer: does nothing, returns null. Use when you want data collection without optimization.
+const identityOptimizer: PromptOptimizer = {
+  name: 'identity',
+  async optimize() {
+    return { variant: null }
+  },
+}
+
+// AxGEPA optimizer: uses @ax-llm/ax for real multi-objective prompt evolution.
+const axGepaOptimizer: PromptOptimizer = {
+  name: 'gepa',
+  async optimize(data) {
+    const axLib: any = await import('@ax-llm/ax')
+    const { ai, ax, AxGEPA } = axLib
+
+    // Student: cost-effective model for running prompts
+    const studentAI = ai({ name: 'anthropic', config: { model: 'claude-sonnet-4-6' as any } })
+    // Teacher: strong model for reflecting and generating better prompts
+    const teacherAI = ai({ name: 'anthropic', config: { model: 'claude-opus-4-6' as any } })
+
+    // The generator represents our prompt template as a tunable surface.
+    // GEPA will optimize its instruction (the meta-prompt that guides composition).
+    const promptGenerator = ax(
+      'task:string, projectContext:string -> composedPrompt:string "A rich, context-loaded prompt for a Claude Code session that will accomplish the task"',
+    )
+    promptGenerator.setInstruction(
+      `You compose dispatch prompts for autonomous coding sessions. Include: task description, quality standards, git workflow, project context, past decisions, learned patterns, and dead ends to avoid. Be specific and actionable.`
+    )
+
+    // Build training examples from our dispatch history
+    const train = data.trainExamples.slice(0, 8).map(e => ({
+      task: e.task.slice(0, 200),
+      projectContext: 'project context available',
+      composedPrompt: e.prompt.slice(0, 500),
+    }))
+
+    const validation = data.trainExamples.slice(8, 12).map(e => ({
+      task: e.task.slice(0, 200),
+      projectContext: 'project context available',
+      composedPrompt: e.prompt.slice(0, 500),
+    }))
+
+    if (train.length < 3 || validation.length < 1) {
+      log('AxGEPA: not enough data (need 3+ train, 1+ validation)')
+      return { variant: null }
+    }
+
+    // Metric: did the dispatch succeed?
+    const successMap = new Map(data.trainExamples.map(e => [e.task.slice(0, 200), e.success]))
+    const metric = ({ prediction, example }: { prediction: any, example: any }) => {
+      // Score based on whether similar tasks succeeded
+      const taskSuccess = successMap.get(example.task) ? 1 : 0
+      // Also score on prompt specificity (longer, more specific = better)
+      const specificity = typeof prediction?.composedPrompt === 'string'
+        ? Math.min(1, prediction.composedPrompt.length / 500)
+        : 0
+      return { taskSuccess, specificity }
+    }
+
+    const optimizer = new AxGEPA({
+      studentAI,
+      teacherAI,
+      numTrials: 6,
+      minibatch: true,
+      minibatchSize: 3,
+      earlyStoppingTrials: 3,
+      sampleCount: 1,
+    })
+
+    try {
+      const result = await optimizer.compile(promptGenerator, train, metric, {
+        validationExamples: validation,
+        maxMetricCalls: 60,
+      })
+
+      // Extract the optimized instruction
+      const prog = result.optimizedProgram as any
+      const optimizedInstruction = prog?.instruction
+        ?? (prog?.instructionMap ? Object.values(prog.instructionMap)[0] : null)
+
+      if (optimizedInstruction) {
+        log(`AxGEPA: optimized instruction (score: ${result.bestScore})`)
+        return {
+          variant: String(optimizedInstruction),
+          score: typeof result.bestScore === 'number' ? result.bestScore : undefined,
+        }
+      }
+
+      // Check Pareto front for best candidate
+      if (result.paretoFront?.length > 0) {
+        const best = result.paretoFront[0] as any
+        const instruction = best.configuration?.instruction
+          ?? (best.configuration?.instructionMap ? Object.values(best.configuration.instructionMap)[0] : null)
+        if (instruction) {
+          log(`AxGEPA: Pareto front candidate (scores: ${JSON.stringify(best.scores)})`)
+          return { variant: String(instruction) }
+        }
+      }
+
+      return { variant: null }
+    } catch (e) {
+      log(`AxGEPA optimization failed: ${e instanceof Error ? e.message : String(e)}`)
+      return { variant: null }
+    }
+  },
+}
+
+const optimizers: Record<string, PromptOptimizer> = {
+  identity: identityOptimizer,
+  gepa: axGepaOptimizer,
+}
+
+function getOptimizer(): PromptOptimizer {
+  return optimizers[OPTIMIZER_STRATEGY] ?? identityOptimizer
+}
+
+// ─── Template evolution (uses optimizer interface) ───────────────────
 
 let gepaRunning = false
 
 async function triggerGepaVariant(currentVersion: number, currentScore: number): Promise<void> {
   if (gepaRunning) return
+
+  const optimizer = getOptimizer()
+  if (optimizer.name === 'identity') {
+    // Identity optimizer: no-op, just log
+    log(`Optimizer: identity (set FOREMAN_OPTIMIZER=gepa to enable AxGEPA)`)
+    return
+  }
+
   gepaRunning = true
 
   try {
-    // Gather evidence: recent outcomes, what worked, what failed
-    const successes = db.prepare(`SELECT skill, task, outcome FROM decisions WHERE status = 'success' ORDER BY created_at DESC LIMIT 5`)
-      .all() as Array<{ skill: string, task: string, outcome: string | null }>
-    const failures = db.prepare(`SELECT skill, task, outcome FROM decisions WHERE status = 'failure' ORDER BY created_at DESC LIMIT 3`)
-      .all() as Array<{ skill: string, task: string, outcome: string | null }>
+    // Gather (task, prompt, outcome, success) pairs from decisions + sessions
+    const examples = db.prepare(`
+      SELECT d.task, d.status, d.outcome, s.prompt
+      FROM decisions d
+      LEFT JOIN sessions s ON s.decision_id = d.id
+      WHERE d.status IN ('success', 'failure') AND s.prompt IS NOT NULL
+      ORDER BY d.created_at DESC LIMIT 12
+    `).all() as Array<{ task: string, status: string, outcome: string | null, prompt: string | null }>
 
-    const evidence = [
-      `Current template v${currentVersion} success rate: ${Math.round(currentScore * 100)}%`,
-      '',
-      'Recent successes:',
-      ...successes.map(s => `- ${s.skill} "${s.task.slice(0, 80)}" → ${(s.outcome ?? '?').slice(0, 80)}`),
-      '',
-      'Recent failures:',
-      ...failures.map(f => `- ${f.skill} "${f.task.slice(0, 80)}" → ${(f.outcome ?? '?').slice(0, 80)}`),
-    ].join('\n')
+    const trainExamples = examples
+      .filter(e => e.prompt)
+      .map(e => ({
+        task: e.task,
+        prompt: e.prompt!,
+        outcome: e.outcome ?? '',
+        success: e.status === 'success',
+      }))
 
-    const prompt = `You are optimizing a prompt template for an autonomous coding agent dispatcher.
+    if (trainExamples.length < 4) {
+      log(`Optimizer: need 4+ scored dispatches with prompts (have ${trainExamples.length})`)
+      gepaRunning = false
+      return
+    }
 
-The template composes prompts that are sent to Claude Code sessions. The prompt includes:
-- Task description + standards
-- Git workflow instructions (worktree, PR)
-- Project context (CLAUDE.md, README, git log)
-- Past decisions and outcomes
-- Operator exemplars and taste
-- Dead ends to avoid
-- Learned flows and skill preferences
-
-Here's the evidence from recent dispatches:
-
-${evidence}
-
-The current template sections are ordered: Task → Standards → Git Workflow → Project Context → Past Decisions → Taste → Dead Ends → Exemplars → Flows.
-
-Suggest ONE specific change to the template that would improve session success rate. The change should be:
-1. A reordering of sections (what should Claude see first?)
-2. A wording change to the Standards section
-3. A new section that's missing
-4. Or removing a section that's noise
-
-Respond with JSON:
-{"change": "description of the change", "section": "which section", "rationale": "why this will help based on the evidence"}`
-
-    const { stdout } = await execFileAsync(CLAUDE_BIN, ['-p', prompt, '--output-format', 'text'], {
-      timeout: 60_000,
-      env: { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` },
+    const result = await optimizer.optimize({
+      currentVersion,
+      currentScore,
+      trainExamples,
     })
 
-    // Parse the suggestion and store as a new template variant
-    const newVersion = currentVersion + 1
-    stmts.insertTemplate.run(newVersion, stdout.trim().slice(0, 2000), 0) // active=0 (variant, not promoted)
-    log(`GEPA generated template v${newVersion}`)
-
-    // Check if any variant should be promoted
-    promoteTemplateIfBetter()
+    if (result.variant) {
+      const newVersion = currentVersion + 1
+      stmts.insertTemplate.run(newVersion, result.variant.slice(0, 2000), 0)
+      log(`${optimizer.name}: generated template v${newVersion}${result.score ? ` (score: ${result.score})` : ''}`)
+      promoteTemplateIfBetter()
+    } else {
+      log(`${optimizer.name}: no variant generated (insufficient signal or no improvement found)`)
+    }
   } catch (e) {
-    log(`GEPA variant generation failed: ${e instanceof Error ? e.message : String(e)}`)
+    log(`${optimizer.name} failed: ${e instanceof Error ? e.message : String(e)}`)
   } finally {
     gepaRunning = false
   }
 }
 
 function promoteTemplateIfBetter(): void {
-  // Compare all templates with sufficient data
   const templates = stmts.listTemplates.all(10) as Array<{
     id: number, version: number, score: number | null, dispatches: number, active: number
   }>
@@ -887,15 +1013,13 @@ function promoteTemplateIfBetter(): void {
   const scored = templates.filter(t => t.dispatches >= 3 && t.score !== null)
   if (scored.length < 2) return
 
-  // Find the best
   const best = scored.reduce((a, b) => (a.score ?? 0) > (b.score ?? 0) ? a : b)
   const active = templates.find(t => t.active === 1)
 
   if (active && best.id !== active.id && (best.score ?? 0) > (active.score ?? 0)) {
-    // Promote the better template
     db.prepare(`UPDATE prompt_templates SET active = 0`).run()
     db.prepare(`UPDATE prompt_templates SET active = 1 WHERE id = ?`).run(best.id)
-    log(`GEPA promoted template v${best.version} (${Math.round((best.score ?? 0) * 100)}%) over v${active.version} (${Math.round((active.score ?? 0) * 100)}%)`)
+    log(`Promoted template v${best.version} (${Math.round((best.score ?? 0) * 100)}%) over v${active.version} (${Math.round((active.score ?? 0) * 100)}%)`)
     emitEvent('template_promoted', null, null, { version: best.version, score: best.score })
   }
 }
