@@ -68,6 +68,7 @@ db.exec(`
     task TEXT NOT NULL,
     reasoning TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'dispatched',
+    origin TEXT NOT NULL DEFAULT 'operator',
     outcome TEXT,
     learnings TEXT,
     metrics TEXT,
@@ -161,7 +162,7 @@ const stmts = {
   getGoal: db.prepare(`SELECT * FROM goals WHERE id = ?`),
   listGoals: db.prepare(`SELECT * FROM goals WHERE status = 'active' ORDER BY priority DESC, created_at DESC`),
 
-  insertDecision: db.prepare(`INSERT INTO decisions (goal_id, skill, task, reasoning, session_name, worktree_path, worktree_branch, base_branch, template_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+  insertDecision: db.prepare(`INSERT INTO decisions (goal_id, skill, task, reasoning, session_name, worktree_path, worktree_branch, base_branch, template_version, origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
   updateDecision: db.prepare(`UPDATE decisions SET status = ?, outcome = ?, learnings = ?, metrics = ?, taste_signal = ?, cost_usd = ?, updated_at = datetime('now') WHERE id = ?`),
   getDecision: db.prepare(`SELECT * FROM decisions WHERE id = ?`),
   listDecisions: db.prepare(`SELECT * FROM decisions ORDER BY created_at DESC LIMIT ?`),
@@ -349,7 +350,9 @@ const tmuxBackend: ExecutionBackend = {
     tmuxQuiet(['send-keys', '-t', name, `export HOME=${sessionHome}`, 'Enter'])
 
     const logFile = join(FOREMAN_HOME, 'logs', `session-${name}.log`)
-    tmuxQuiet(['pipe-pane', '-t', name, `-o cat >> ${logFile}`])
+    mkdirSync(join(FOREMAN_HOME, 'logs'), { recursive: true })
+    // pipe-pane captures all tmux pane output to a log file
+    tmuxQuiet(['pipe-pane', '-t', name, `-o`, `cat >> "${logFile}"`])
 
     tmuxQuiet(['send-keys', '-t', name, `${CLAUDE_BIN} --dangerously-skip-permissions${modelFlag}`, 'Enter'])
 
@@ -1070,7 +1073,7 @@ async function maybeAutoDispatch(skill: string, project: string, goalId: number)
   const activeTpl = stmts.activeTemplate.get() as { version: number } | undefined
   const result = stmts.insertDecision.run(
     goal.id, nextSkill, nextTask, `auto-dispatch: confidence ${level}`,
-    sName, wt.path, wt.branch, wt.baseBranch, activeTpl?.version ?? 1,
+    sName, wt.path, wt.branch, wt.baseBranch, activeTpl?.version ?? 1, 'auto',
   )
   const decisionId = Number(result.lastInsertRowid)
 
@@ -2457,7 +2460,9 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const activeTpl = stmts.activeTemplate.get() as { version: number } | undefined
       const tplVersion = activeTpl?.version ?? 1
 
-      const result = stmts.insertDecision.run(goalId || null, skill, task, reasoning, sName, worktreePath, worktreeBranch, baseBranch, tplVersion)
+      // Truncate task for DB storage — full prompt goes in sessions.prompt
+      const taskTruncated = task.slice(0, 500)
+      const result = stmts.insertDecision.run(goalId || null, skill, taskTruncated, reasoning, sName, worktreePath, worktreeBranch, baseBranch, tplVersion, 'operator')
       const decisionId = Number(result.lastInsertRowid)
 
       // Compose rich, context-loaded prompt (reads project context from the REPO, not the worktree)
@@ -2732,16 +2737,35 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const decisionCount = (db.prepare(`SELECT COUNT(*) as c FROM decisions`).get() as { c: number }).c
       const learningCount = (db.prepare(`SELECT COUNT(*) as c FROM learnings`).get() as { c: number }).c
       const tasteCount = (db.prepare(`SELECT COUNT(*) as c FROM taste`).get() as { c: number }).c
-      const successRate = decisionCount > 0
-        ? (db.prepare(`SELECT COUNT(*) as c FROM decisions WHERE status = 'success'`).get() as { c: number }).c / decisionCount
-        : 0
+      const successCount = (db.prepare(`SELECT COUNT(*) as c FROM decisions WHERE status = 'success'`).get() as { c: number }).c
+      const successRate = decisionCount > 0 ? successCount / decisionCount : 0
+
+      // Origin breakdown
+      const operatorDispatches = (db.prepare(`SELECT COUNT(*) as c FROM decisions WHERE origin = 'operator'`).get() as { c: number }).c
+      const autoDispatches = (db.prepare(`SELECT COUNT(*) as c FROM decisions WHERE origin = 'auto'`).get() as { c: number }).c
+
+      // Cost breakdown
+      const totalCost = (db.prepare(`SELECT COALESCE(SUM(cost_usd), 0) as total FROM decisions`).get() as { total: number }).total
+      const todayCost = (db.prepare(`SELECT COALESCE(SUM(cost_usd), 0) as total FROM decisions WHERE date(created_at) = date('now')`).get() as { total: number }).total
+      const costBySkill = db.prepare(`
+        SELECT skill, COUNT(*) as dispatches, SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) as successes,
+               COALESCE(SUM(cost_usd), 0) as cost
+        FROM decisions GROUP BY skill ORDER BY dispatches DESC
+      `).all() as Array<{ skill: string, dispatches: number, successes: number, cost: number }>
 
       return json(res, {
         operatorSessions: sessionCount,
         decisions: decisionCount,
+        operatorDispatches,
+        autoDispatches,
         learnings: learningCount,
         tasteSignals: tasteCount,
         successRate: Math.round(successRate * 100),
+        cost: {
+          total: totalCost,
+          today: todayCost,
+          bySkill: costBySkill,
+        },
       })
     }
 
