@@ -18,6 +18,9 @@ import Database from 'better-sqlite3'
 
 const execFileAsync = promisify(execFile)
 
+// ─── Skill proposals ─────────────────────────────────────────────────
+import { createProposal, listProposals, updateProposalStatus } from './lib/skill-proposals.js'
+
 // ─── Confidence store (from packages/memory) ─────────────────────────
 // Tracks per-(skill, project) confidence that earns autonomy through evidence.
 import { ConfidenceStore } from '@drew/foreman-memory/confidence'
@@ -2976,6 +2979,35 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const id = decodeURIComponent(path.slice('/api/mcp/'.length))
       stmts.deleteMcp.run(id)
       return json(res, { ok: true, deleted: id })
+    }
+
+    // ── Skill proposals ─────────────────────────────────────
+    if (path === '/api/proposals' && method === 'GET') {
+      const status = parseQuery(url).get('status') ?? undefined
+      return json(res, listProposals(status))
+    }
+
+    if (path === '/api/proposals' && method === 'POST') {
+      const body = await readBody(req)
+      const proposal = createProposal({
+        skillName: String(body.skillName ?? ''),
+        proposedSkillMd: String(body.proposedSkillMd ?? ''),
+        evidence: (body.evidence as string[]) ?? [],
+        whatImproves: (body.whatImproves as string[]) ?? [],
+        whatCouldGoWrong: (body.whatCouldGoWrong as string[]) ?? [],
+        whatWouldBeRemoved: (body.whatWouldBeRemoved as string[]) ?? [],
+      })
+      return json(res, proposal, 201)
+    }
+
+    if (path.startsWith('/api/proposals/') && method === 'PATCH') {
+      const id = decodeURIComponent(path.slice('/api/proposals/'.length))
+      const body = await readBody(req)
+      const status = String(body.status ?? '')
+      if (status !== 'approved' && status !== 'rejected') return error(res, 'status must be approved or rejected')
+      const ok = updateProposalStatus(id, status)
+      if (!ok) return error(res, 'proposal not found', 404)
+      return json(res, { ok: true, id, status })
     }
 
     // ── Session search (FTS5 index) ─────────────────────────
