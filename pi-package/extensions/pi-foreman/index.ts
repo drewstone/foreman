@@ -11,11 +11,16 @@
 import type {
   ExtensionAPI,
   ExtensionContext,
-  Theme,
 } from '@mariozechner/pi-coding-agent'
-import { Text, truncateToWidth, matchesKey } from '@mariozechner/pi-tui'
-import { StringEnum } from '@mariozechner/pi-ai'
-import { Type } from '@sinclair/typebox'
+import { truncateToWidth, matchesKey, type Component } from '@mariozechner/pi-tui'
+
+function text(content: string): Component { return { render: () => [content] } }
+function lines(content: string[]): Component { return { render: () => content } }
+import { Type, type TUnsafe } from '@sinclair/typebox'
+
+function StringEnum<T extends readonly string[]>(values: T, opts?: { description?: string }): TUnsafe<T[number]> {
+  return Type.Unsafe<T[number]>({ type: 'string', enum: values as any, ...(opts?.description && { description: opts.description }) })
+}
 
 // ─── Config ──────────────────────────────────────────────────────────
 
@@ -158,16 +163,16 @@ export default function foremanExtension(pi: ExtensionAPI) {
 
         if (!st) {
           lines.push(`  ${theme.fg('error', 'Service not running. Start: tsx service/index.ts')}`)
-          return new Text(lines.join('\n'), 0, 0)
+          return { render: () => lines }
         }
 
         lines.push(...renderDashboard(st, width, theme))
-        return new Text(lines.join('\n'), 0, 0)
+        return { render: () => lines }
       })
     } else {
       ctx.ui.setWidget('foreman', (_tui, theme) => {
         const st = cachedStatus
-        if (!st) return new Text(theme.fg('error', '🏗 Foreman service not running'), 0, 0)
+        if (!st) return text(theme.fg('error', '🏗 Foreman service not running'))
 
         const alive = st.sessions.filter(s => s.alive)
         const idle = st.sessions.filter(s => s.idle)
@@ -192,12 +197,12 @@ export default function foremanExtension(pi: ExtensionAPI) {
         }
 
         parts.push(theme.fg('dim', '  (ctrl+x • ctrl+shift+x)'))
-        return new Text(parts.filter(Boolean).join(''), 0, 0)
+        return text(parts.filter(Boolean).join(''))
       })
     }
   }
 
-  function renderDashboard(st: Status, width: number, theme: Theme): string[] {
+  function renderDashboard(st: Status, width: number, theme: any): string[] {
     const lines: string[] = []
 
     // Goals
@@ -225,7 +230,7 @@ export default function foremanExtension(pi: ExtensionAPI) {
       for (const s of st.sessions) {
         const icon = !s.alive ? '⚫' : s.idle ? '🟡' : '🟢'
         const statusStr = !s.alive ? 'dead' : s.idle ? 'idle' : s.status
-        const statusColor: Parameters<typeof theme.fg>[0] = !s.alive ? 'dim' : s.idle ? 'warning' : 'success'
+        const statusColor: string = !s.alive ? 'dim' : s.idle ? 'warning' : 'success'
         const output = (s.lastOutput ?? '').replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, col.output)
 
         lines.push(truncateToWidth(
@@ -252,7 +257,7 @@ export default function foremanExtension(pi: ExtensionAPI) {
 
       for (const d of recent) {
         const icon = d.status === 'success' ? '✓' : d.status === 'failure' ? '✗' : d.status === 'dispatched' ? '→' : '○'
-        const color: Parameters<typeof theme.fg>[0] =
+        const color: string =
           d.status === 'success' ? 'success' : d.status === 'failure' ? 'error' : 'accent'
 
         lines.push(truncateToWidth(
@@ -308,7 +313,7 @@ export default function foremanExtension(pi: ExtensionAPI) {
           },
           handleInput(data: string): void {
             const viewportRows = Math.max(4, (process.stdout.rows || 40) - 4)
-            const maxScroll = Math.max(0, (renderDashboard(st, process.stdout.columns || 120, {} as Theme).length) - viewportRows)
+            const maxScroll = Math.max(0, (renderDashboard(st, process.stdout.columns || 120, {} as any).length) - viewportRows)
             if (matchesKey(data, 'escape') || data === 'q') { done(undefined); return }
             if (matchesKey(data, 'up') || data === 'k') scrollOffset = Math.max(0, scrollOffset - 1)
             else if (matchesKey(data, 'down') || data === 'j') scrollOffset = Math.min(maxScroll, scrollOffset + 1)
@@ -380,8 +385,8 @@ export default function foremanExtension(pi: ExtensionAPI) {
         return { content: [{ type: 'text' as const, text: `❌ Foreman service not reachable at ${SERVICE_URL}\nStart: cd ~/code/foreman && tsx service/index.ts` }], details: {} }
       }
     },
-    renderCall(_a, theme) { return new Text(theme.fg('toolTitle', theme.bold('portfolio_status')), 0, 0) },
-    renderResult(r, _o, theme) { const t = r.content[0]; return new Text(theme.fg('muted', t?.type === 'text' ? t.text.split('\n').slice(0, 6).join('\n') : ''), 0, 0) },
+    renderCall(_a, theme) { return text(theme.fg('toolTitle', theme.bold('portfolio_status'))) },
+    renderResult(r, _o, theme) { const t = r.content[0]; return text(theme.fg('muted', t?.type === 'text' ? t.text.split('\n').slice(0, 6).join('\n') : '')) },
   })
 
   // ── Tool: dispatch_skill ────────────────────────────────────────────
@@ -441,9 +446,9 @@ export default function foremanExtension(pi: ExtensionAPI) {
       }
     },
     renderCall(args, theme) {
-      return new Text(theme.fg('toolTitle', theme.bold('dispatch_skill ')) + theme.fg('accent', args.skill ?? '') + theme.fg('dim', ` "${(args.task ?? '').slice(0, 40)}"`), 0, 0)
+      return text(theme.fg('toolTitle', theme.bold('dispatch_skill ')) + theme.fg('accent', args.skill ?? '') + theme.fg('dim', ` "${(args.task ?? '').slice(0, 40)}"`))
     },
-    renderResult(r, _o, theme) { return new Text(r.content[0]?.type === 'text' ? r.content[0].text.split('\n')[0] : '', 0, 0) },
+    renderResult(r, _o, theme) { return text(r.content[0]?.type === 'text' ? r.content[0].text.split('\n')[0] : '') },
   })
 
   // ── Tool: check_session ─────────────────────────────────────────────
@@ -474,12 +479,12 @@ export default function foremanExtension(pi: ExtensionAPI) {
         return { content: [{ type: 'text' as const, text: `❌ ${e instanceof Error ? e.message : String(e)}` }], details: {} }
       }
     },
-    renderCall(args, theme) { return new Text(theme.fg('toolTitle', theme.bold('check_session ')) + theme.fg('accent', args.session ?? ''), 0, 0) },
+    renderCall(args, theme) { return text(theme.fg('toolTitle', theme.bold('check_session ')) + theme.fg('accent', args.session ?? '')) },
     renderResult(r, _o, theme) {
       const d = r.details as Session | undefined
-      if (!d) return new Text('', 0, 0)
+      if (!d) return text('')
       const icon = !d.alive ? '⚫' : d.idle ? '🟡' : '🟢'
-      return new Text(theme.fg(d.idle ? 'warning' : d.alive ? 'success' : 'error', `${icon} ${d.status}`), 0, 0)
+      return text(theme.fg(d.idle ? 'warning' : d.alive ? 'success' : 'error', `${icon} ${d.status}`))
     },
   })
 
@@ -522,8 +527,8 @@ export default function foremanExtension(pi: ExtensionAPI) {
         return { content: [{ type: 'text' as const, text: `❌ ${e instanceof Error ? e.message : String(e)}` }], details: {} }
       }
     },
-    renderCall(args, theme) { return new Text(theme.fg('toolTitle', theme.bold('log_outcome ')) + theme.fg(args.status === 'success' ? 'success' : 'error', `#${args.decision_id} ${args.status}`), 0, 0) },
-    renderResult(r, _o, _t) { return new Text(r.content[0]?.type === 'text' ? r.content[0].text.split('\n')[0] : '', 0, 0) },
+    renderCall(args, theme) { return text(theme.fg('toolTitle', theme.bold('log_outcome ')) + theme.fg(args.status === 'success' ? 'success' : 'error', `#${args.decision_id} ${args.status}`)) },
+    renderResult(r, _o, _t) { return text(r.content[0]?.type === 'text' ? r.content[0].text.split('\n')[0] : '') },
   })
 
   // ── Tool: project_context ───────────────────────────────────────────
@@ -550,8 +555,8 @@ export default function foremanExtension(pi: ExtensionAPI) {
         return { content: [{ type: 'text' as const, text: `❌ ${e instanceof Error ? e.message : String(e)}` }], details: {} }
       }
     },
-    renderCall(args, theme) { return new Text(theme.fg('toolTitle', theme.bold('project_context ')) + theme.fg('accent', (args.path ?? '').split('/').pop() ?? ''), 0, 0) },
-    renderResult(r, _o, theme) { return new Text(theme.fg('muted', r.content[0]?.type === 'text' ? r.content[0].text.split('\n').slice(0, 3).join('\n') : ''), 0, 0) },
+    renderCall(args, theme) { return text(theme.fg('toolTitle', theme.bold('project_context ')) + theme.fg('accent', (args.path ?? '').split('/').pop() ?? '')) },
+    renderResult(r, _o, theme) { return text(theme.fg('muted', r.content[0]?.type === 'text' ? r.content[0].text.split('\n').slice(0, 3).join('\n') : '')) },
   })
 
   // ── Tool: search_history ────────────────────────────────────────────
@@ -596,8 +601,8 @@ export default function foremanExtension(pi: ExtensionAPI) {
         return { content: [{ type: 'text' as const, text: `❌ ${e instanceof Error ? e.message : String(e)}` }], details: {} }
       }
     },
-    renderCall(args, theme) { return new Text(theme.fg('toolTitle', theme.bold('search_history ')) + theme.fg('muted', args.query ?? ''), 0, 0) },
-    renderResult(r, _o, theme) { return new Text(theme.fg('muted', `${(r.details as { count?: number })?.count ?? 0} results`), 0, 0) },
+    renderCall(args, theme) { return text(theme.fg('toolTitle', theme.bold('search_history ')) + theme.fg('muted', args.query ?? '')) },
+    renderResult(r, _o, theme) { return text(theme.fg('muted', `${(r.details as { count?: number })?.count ?? 0} results`)) },
   })
 
   // ── Tool: analyze_sessions ───────────────────────────────────────────
@@ -648,10 +653,10 @@ export default function foremanExtension(pi: ExtensionAPI) {
         return { content: [{ type: 'text' as const, text: `❌ ${e instanceof Error ? e.message : String(e)}` }], details: {} }
       }
     },
-    renderCall(_a, theme) { return new Text(theme.fg('toolTitle', theme.bold('analyze_sessions')), 0, 0) },
+    renderCall(_a, theme) { return text(theme.fg('toolTitle', theme.bold('analyze_sessions'))) },
     renderResult(r, _o, theme) {
       const d = r.details as { analyzed?: number, flows?: number } | undefined
-      return new Text(theme.fg('muted', `${d?.analyzed ?? 0} sessions → ${d?.flows ?? 0} flows`), 0, 0)
+      return text(theme.fg('muted', `${d?.analyzed ?? 0} sessions → ${d?.flows ?? 0} flows`))
     },
   })
 
