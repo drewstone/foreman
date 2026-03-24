@@ -1221,19 +1221,57 @@ async function maybeAutoDispatch(skill: string, project: string, goalId: number)
   const goal = goalId ? stmts.getGoal.get(goalId) as { id: number, intent: string, workspace_path: string | null } | undefined : undefined
   if (!goal?.workspace_path) return
 
-  // Check what was last done and what should be next
+  // Decide next skill from: post-completion recommendation > learned flows > goal history
   const lastDecisions = stmts.goalDecisions.all(goal.id) as Array<{ skill: string, status: string, outcome: string | null }>
   const lastSuccessful = lastDecisions.find(d => d.status === 'success')
   if (!lastSuccessful) return
 
-  // Simple heuristic for next skill: if last was /evolve and succeeded, do /verify.
-  // If last was /verify and succeeded, do /evolve again. The conversation overrides this.
-  const nextSkill = lastSuccessful.skill === '/evolve' ? '/verify'
-    : lastSuccessful.skill === '/verify' ? '/evolve'
-    : lastSuccessful.skill === '/converge' ? '/verify'
-    : '/evolve'
+  // 1. Check if the post-completion digest recommended a next action
+  const lastOutcome = lastSuccessful.outcome ?? ''
+  let nextSkill: string | null = null
+  let nextTask: string | null = null
 
-  const nextTask = `Continue: ${goal.intent.slice(0, 200)}`
+  // Parse digest recommendation from outcome (stored as JSON metrics)
+  const lastDecisionFull = db.prepare(`SELECT metrics FROM decisions WHERE goal_id = ? AND status = 'success' ORDER BY created_at DESC LIMIT 1`)
+    .get(goal.id) as { metrics: string | null } | undefined
+  if (lastDecisionFull?.metrics) {
+    try {
+      const m = JSON.parse(lastDecisionFull.metrics)
+      if (m.nextAction?.skill) {
+        nextSkill = m.nextAction.skill
+        nextTask = m.nextAction.task ?? `Continue: ${goal.intent.slice(0, 200)}`
+      }
+    } catch {}
+  }
+
+  // 2. If no recommendation, use learned flows from operator session analysis
+  if (!nextSkill) {
+    const flows = stmts.learningsByType.all('flow', 20) as Array<{ content: string }>
+    const skillPrefs = stmts.learningsByType.all('skill_preference', 10) as Array<{ content: string }>
+
+    // Count how many consecutive times the same skill was used (operator pattern)
+    const recentSkills = lastDecisions.slice(0, 5).map(d => d.skill)
+    const consecutiveSame = recentSkills.filter(s => s === lastSuccessful.skill).length
+
+    // Operator pattern: repeat the same skill if it's been working
+    // (Drew runs /evolve 5x in a row, /pursue 5x in a row)
+    if (consecutiveSame < 4 && lastSuccessful.skill) {
+      // Continue with the same skill — operator pattern shows repeating works
+      nextSkill = lastSuccessful.skill
+    } else {
+      // After 4+ of the same, check if we should transition
+      // Flow: feature-complete → /polish. Complex goal → /pursue. CI broken → /converge
+      if (lastOutcome.includes('tests passing') || lastOutcome.includes('commits')) {
+        nextSkill = '/verify'  // verify after productive session
+      } else if (lastOutcome.includes('failing') || lastOutcome.includes('error')) {
+        nextSkill = '/evolve'  // fix what's broken
+      } else {
+        nextSkill = lastSuccessful.skill || '/evolve'  // continue same
+      }
+    }
+  }
+
+  if (!nextTask) nextTask = `Continue: ${goal.intent.slice(0, 200)}`
 
   log(`Auto-dispatching: ${nextSkill} on ${project} (confidence: ${level})`)
   sendNotification('Foreman: Auto-dispatch', `${nextSkill} on ${project} (${level})`)
