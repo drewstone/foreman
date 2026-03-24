@@ -95,112 +95,34 @@ export async function generatePlans(ctx: PlanGeneratorContext): Promise<Plan[]> 
     writeFileSync(join(planDir, 'REVIEW.md'), renderPlanReview(plan))
   }
 
-  // Generate a rich plan document via Claude and publish as a gist
-  if (plans.length > 0) {
-    const gistUrl = await publishPlansAsGist(plans, ctx)
-    if (gistUrl) {
-      for (const p of plans) (p as any).gistUrl = gistUrl
-    }
+  // Publish each plan as its own gist
+  for (const plan of plans) {
+    const review = renderPlanReview(plan)
+    const gistUrl = await publishSinglePlanGist(plan, review)
+    if (gistUrl) (plan as any).gistUrl = gistUrl
   }
 
   return plans
 }
 
-// ─── Rich plan document + GitHub Gist ────────────────────────────────
+// ─── Per-plan GitHub Gist ─────────────────────────────────────────────
 
-async function publishPlansAsGist(plans: Plan[], ctx: PlanGeneratorContext): Promise<string | null> {
-  // Generate a rich markdown document using Claude (like plan mode)
-  const planSummaries = plans.map(p => {
-    const tag = p.isExploration ? ' 🔭 EXPLORATION' : ''
-    return `### ${String(String(p.rank ?? 'medium') ?? 'medium').toUpperCase()}: ${p.title}${tag}
-**Type:** ${p.type}
-**Reasoning:** ${p.reasoning}
-**Opportunities:** ${p.opportunities.join('; ') || 'none listed'}
-**Risks:** ${p.risks.join('; ') || 'none listed'}
-**Proposed:** ${p.proposedGoal.intent}${p.proposedGoal.firstSkill ? ' (start with ' + p.proposedGoal.firstSkill + ')' : ''}`
-  }).join('\n\n')
-
-  const prompt = `Write a strategic planning document for an autonomous operator called Foreman. This is a real planning brief — not a template. Be specific, reference the data, and make concrete recommendations.
-
-## Context
-- ${ctx.sessionCount} operator sessions analyzed across ${ctx.recentProjects.length} projects
-- ${ctx.recentDecisions.length} recent dispatch decisions (${ctx.recentDecisions.filter(d => d.status === 'success').length} succeeded)
-- Active goals: ${ctx.activeGoals.map(g => g.intent.slice(0, 60)).join('; ') || 'none'}
-- Key patterns: ${ctx.learnedFlows.slice(0, 3).join('; ') || 'none extracted yet'}
-- Taste: ${ctx.tasteSignals.slice(0, 3).join('; ') || 'no signals yet'}
-
-## Plans Generated
-${planSummaries}
-
-## Your Job
-Write a rich, well-structured markdown planning brief that:
-1. Opens with a 2-sentence executive summary
-2. Presents each plan with full context, reasoning, and action items
-3. Identifies dependencies between plans (what should be done first?)
-4. Calls out the exploration plans explicitly — explain why they're worth considering
-5. Ends with a recommended execution order
-6. Uses tables, headers, and clear structure
-
-Write it as if you're a chief of staff briefing the CEO. Be direct, skip filler.`
-
-  // Render deterministically from structured JSON — no second LLM call.
-  // The plans already have rich data (scorecard, alternatives, checklists).
-  const sections: string[] = []
-  sections.push(`# Foreman Strategic Plans — ${new Date().toISOString().slice(0, 10)}`)
-  sections.push('')
-  sections.push(`> ${ctx.sessionCount} sessions analyzed | ${plans.length} plans generated | ${plans.filter(p => p.isExploration).length} exploration`)
-  sections.push('')
-
-  // Portfolio summary table
-  sections.push('## Portfolio Summary')
-  sections.push('')
-  sections.push('| # | Rank | Plan | Type | Composite | Effort |')
-  sections.push('|---|---|---|---|---|---|')
-  for (let i = 0; i < plans.length; i++) {
-    const p = plans[i] as any
-    const sc = p.scorecard ?? {}
-    const scores = Object.values(sc).map((v: any) => typeof v === 'object' ? v?.score : v).filter((n: any) => typeof n === 'number' && n > 0) as number[]
-    const composite = scores.length > 0 ? (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1) : '—'
-    const effort = p.effort?.hours ? `${p.effort.hours}h` : '—'
-    const tag = p.isExploration ? ' 🔭' : ''
-    sections.push(`| ${i + 1} | ${String(p.rank ?? 'medium')} | ${p.title}${tag} | ${p.type} | ${composite}/10 | ${effort} |`)
-  }
-  sections.push('')
-
-  // Individual plans
-  for (const plan of plans) {
-    sections.push('---')
-    sections.push('')
-    sections.push(renderPlanReview(plan))
-    sections.push('')
-  }
-
-  const richDocument = sections.join('\n')
-
-  // Publish as GitHub Gist
+async function publishSinglePlanGist(plan: any, markdown: string): Promise<string | null> {
   try {
-    const filename = `foreman-plans-${new Date().toISOString().slice(0, 10)}.md`
-    // Write to temp file then create gist from it
-    const tmpFile = join(FOREMAN_HOME, 'plans', `_tmp_${Date.now()}.md`)
-    writeFileSync(tmpFile, richDocument)
+    const slug = (plan.title ?? 'plan').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 50)
+    const filename = `foreman-plan-${slug}.md`
+    const tmpFile = join(FOREMAN_HOME, 'plans', `_gist_${Date.now()}.md`)
+    writeFileSync(tmpFile, markdown)
     const { stdout } = await execFileAsync('gh', [
       'gist', 'create', '--public',
-      '--desc', `Foreman Strategic Plans — ${new Date().toISOString().slice(0, 10)}`,
+      '--desc', `Foreman Plan: ${plan.title ?? 'untitled'} [${plan.rank ?? '?'}]`,
       '--filename', filename,
       tmpFile,
-    ], {
-      timeout: 15_000,
-    })
+    ], { timeout: 15_000 })
     try { require('fs').unlinkSync(tmpFile) } catch {}
-    const gistUrl = stdout.trim()
-    console.log(`Plans published: ${gistUrl}`)
-    return gistUrl
+    return stdout.trim()
   } catch (e) {
-    console.log(`Gist creation failed: ${e instanceof Error ? e.message : String(e)}`)
-    // Save locally as fallback
-    const localPath = join(PLANS_DIR, `plans-${new Date().toISOString().slice(0, 10)}.md`)
-    writeFileSync(localPath, richDocument)
-    console.log(`Saved locally: ${localPath}`)
+    console.log(`Gist failed for ${plan.title}: ${e instanceof Error ? e.message : String(e)}`)
     return null
   }
 }
@@ -336,24 +258,24 @@ async function callLLMForPlans(prompt: string, isExploration: boolean): Promise<
 
     const raw = JSON.parse(match[0]) as any[]
 
-    return raw.map((r: any) => ({
+    return raw.filter((r: any) => r && (r.title || r.name)).map((r: any) => ({
       id: `plan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-      title: r.title,
-      type: (isExploration ? 'exploration' : r.type) as PlanType,
-      rank: r.rank as PlanRank,
-      reasoning: r.overview ?? r.reasoning ?? '',
-      motivation: r.motivation ?? '',
-      valueIfDone: r.value_if_done ?? '',
-      costOfInaction: r.cost_of_inaction ?? '',
-      approach: r.approach ?? '',
-      alternatives: r.alternatives ?? [],
-      checklist: r.checklist ?? [],
-      scorecard: r.scorecard ?? {},
-      pitfalls: r.pitfalls ?? [],
-      edgeCases: r.edge_cases ?? [],
-      successCriteria: r.success_criteria ?? [],
-      effort: r.effort ?? {},
-      evidence: r.evidence ?? [],
+      title: String(r.title ?? r.name ?? 'Untitled Plan'),
+      type: (isExploration ? 'exploration' : String(r.type ?? 'engineering')) as PlanType,
+      rank: String(r.rank ?? 'medium') as PlanRank,
+      reasoning: String(r.overview ?? r.reasoning ?? r.description ?? ''),
+      motivation: String(r.motivation ?? r.why ?? ''),
+      valueIfDone: String(r.value_if_done ?? r.value ?? ''),
+      costOfInaction: String(r.cost_of_inaction ?? r.cost_if_not ?? ''),
+      approach: r.approach ?? r.technical_approach ?? '',
+      alternatives: Array.isArray(r.alternatives) ? r.alternatives : [],
+      checklist: Array.isArray(r.checklist) ? r.checklist : Array.isArray(r.steps) ? r.steps : [],
+      scorecard: r.scorecard ?? r.scores ?? {},
+      pitfalls: Array.isArray(r.pitfalls) ? r.pitfalls : [],
+      edgeCases: Array.isArray(r.edge_cases) ? r.edge_cases : [],
+      successCriteria: Array.isArray(r.success_criteria) ? r.success_criteria : [],
+      effort: r.effort ?? r.estimate ?? {},
+      evidence: Array.isArray(r.evidence) ? r.evidence : [],
       proposedGoal: {
         intent: r.proposed_goal?.intent ?? r.title,
         workspacePath: r.proposed_goal?.workspace_path,
