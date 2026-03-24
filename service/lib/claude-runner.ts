@@ -47,7 +47,8 @@ export interface ClaudeRunResult {
 
 /**
  * Run Claude Code with full tool access in a tmux session.
- * Waits for completion and returns the captured output.
+ * Captures output via pipe-pane (tmux log capture) — reliable,
+ * doesn't depend on Claude following meta-instructions.
  */
 export async function callClaude(opts: ClaudeRunOptions): Promise<ClaudeRunResult> {
   const {
@@ -59,7 +60,7 @@ export async function callClaude(opts: ClaudeRunOptions): Promise<ClaudeRunResul
   } = opts
 
   const sessionName = `foreman-run-${label}-${Date.now().toString(36)}`
-  const outputFile = opts.outputFile ?? join(FOREMAN_HOME, 'runner-output', `${sessionName}.txt`)
+  const logFile = join(FOREMAN_HOME, 'runner-output', `${sessionName}.log`)
   const promptFile = join(FOREMAN_HOME, 'runner-output', `${sessionName}-prompt.txt`)
 
   mkdirSync(join(FOREMAN_HOME, 'runner-output'), { recursive: true })
@@ -67,60 +68,73 @@ export async function callClaude(opts: ClaudeRunOptions): Promise<ClaudeRunResul
   // Write prompt to file — avoids ALL arg parsing issues
   writeFileSync(promptFile, prompt)
 
-  // The prompt tells Claude to write its response to the output file
-  const wrappedPrompt = `Read the instructions from ${promptFile} and execute them. When done, write your COMPLETE response to ${outputFile}. Use the Write tool to create that file with your full output.`
-
   const startMs = Date.now()
 
   try {
     // Spawn tmux session
     tmuxQuiet(['new-session', '-d', '-s', sessionName, '-c', cwd])
 
-    // Start Claude with full tool access
-    tmuxQuiet(['send-keys', '-t', sessionName, `${CLAUDE_BIN} --dangerously-skip-permissions --model ${model} -p "${wrappedPrompt.replace(/"/g, '\\"')}"`, 'Enter'])
+    // Capture ALL pane output to log file
+    tmuxQuiet(['pipe-pane', '-t', sessionName, '-o', `cat >> "${logFile}"`])
 
-    // Wait for completion — poll for output file or session exit
+    // Run claude -p with the prompt piped via bash (reliable delivery)
+    tmuxQuiet(['send-keys', '-t', sessionName,
+      `cat "${promptFile}" | ${CLAUDE_BIN} --dangerously-skip-permissions --model ${model} -p && exit`,
+      'Enter'])
+
+    // Wait for session to exit (claude -p exits when done, then `exit` closes tmux)
     const pollInterval = 3_000
     const maxPolls = Math.ceil(timeoutMs / pollInterval)
 
     for (let i = 0; i < maxPolls; i++) {
       await new Promise(r => setTimeout(r, pollInterval))
 
-      // Check if output file was written
-      if (existsSync(outputFile)) {
-        const output = readFileSync(outputFile, 'utf8')
-        if (output.length > 0) {
-          // Claude wrote the output — we're done
-          tmuxQuiet(['kill-session', '-t', sessionName])
-          cleanup(promptFile, outputFile)
-          return { output, durationMs: Date.now() - startMs, success: true }
-        }
-      }
-
-      // Check if tmux session is still alive
       const alive = tmuxQuiet(['has-session', '-t', sessionName])
-      if (!alive) {
-        // Session ended — check if output was written
-        if (existsSync(outputFile)) {
-          const output = readFileSync(outputFile, 'utf8')
-          cleanup(promptFile, outputFile)
-          return { output, durationMs: Date.now() - startMs, success: output.length > 0 }
-        }
-        // Session died without output
-        cleanup(promptFile)
-        return { output: '', durationMs: Date.now() - startMs, success: false }
-      }
+      if (!alive) break
     }
 
-    // Timeout — kill session, capture whatever we got
+    // Kill if still alive (timeout)
     tmuxQuiet(['kill-session', '-t', sessionName])
-    const output = existsSync(outputFile) ? readFileSync(outputFile, 'utf8') : ''
-    cleanup(promptFile, outputFile)
-    return { output, durationMs: Date.now() - startMs, success: false }
+
+    // Read captured output from log
+    await new Promise(r => setTimeout(r, 500)) // brief pause for file flush
+    const rawLog = existsSync(logFile) ? readFileSync(logFile, 'utf8') : ''
+
+    // Extract Claude's response from pipe-pane capture.
+    // Format: [command echo] ESC[?2004l [Claude's output] ESC[?2004l [shell cleanup]
+    // Claude's output is between the FIRST and SECOND [?2004l markers.
+    const marker = '\x1b[?2004l'
+    const first = rawLog.indexOf(marker)
+    const second = rawLog.indexOf(marker, first + 1)
+
+    let output: string
+    if (first >= 0 && second > first) {
+      output = rawLog.slice(first + marker.length, second)
+    } else if (first >= 0) {
+      output = rawLog.slice(first + marker.length)
+    } else {
+      output = rawLog
+    }
+
+    // Strip ANSI codes, OSC sequences, and terminal mode sequences
+    output = output
+      .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
+      .replace(/\x1b\][^\x07]*\x07/g, '')
+      .replace(/\x1b\[[\?<]\d+[a-z]*/g, '')
+      .replace(/\[<u/g, '')                       // mouse mode artifact
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .replace(/logout\s*$/i, '')
+      .trim()
+
+    // Keep log for debugging — cleanup prompt only
+    cleanup(promptFile)
+    return { output, durationMs: Date.now() - startMs, success: output.length > 0 }
 
   } catch (e) {
     tmuxQuiet(['kill-session', '-t', sessionName])
-    cleanup(promptFile, outputFile)
+    cleanup(promptFile, logFile)
     return { output: '', durationMs: Date.now() - startMs, success: false }
   }
 }
