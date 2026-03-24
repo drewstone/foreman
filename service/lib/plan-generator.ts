@@ -145,14 +145,104 @@ Write it as if you're a chief of staff briefing the CEO. Be direct, skip filler.
 
   let richDocument: string
   try {
+    // Use Claude with deep research approach — this produces senior-quality plans
+    const deepPrompt = `You are a principal engineer and chief of staff writing strategic plans for an autonomous operating system called Foreman. These plans must be EXCEPTIONALLY detailed and rigorous — the kind that would survive review by a staff+ engineer at a top company.
+
+## Data Available
+- ${ctx.sessionCount} operator sessions analyzed
+- ${ctx.recentDecisions.length} recent decisions (${ctx.recentDecisions.filter(d => d.status === 'success').length} succeeded)
+- Active goals: ${ctx.activeGoals.map(g => g.intent.slice(0, 60)).join('; ') || 'none'}
+- Projects: ${ctx.recentProjects.join(', ') || 'none'}
+- Key patterns: ${ctx.learnedFlows.slice(0, 3).join('; ') || 'none'}
+
+## Plans to Elaborate
+${planSummaries}
+
+## Required Output Format
+
+For EACH plan, write a full implementation brief with ALL of these sections:
+
+### Plan Title
+**Rank:** critical/high/medium/low | **Type:** product/research/engineering/exploration
+
+#### Overview
+2-3 sentences. What this is and why it matters NOW.
+
+#### Motivation & Value Proposition
+- Why this plan exists (with specific evidence from the data)
+- What value it creates (quantified if possible)
+- Who benefits and how
+- What happens if we DON'T do this
+
+#### Architecture / Approach
+- Technical approach with specific files, modules, APIs
+- ASCII diagrams showing data flow or system interaction
+- Key abstractions and interfaces
+
+#### Implementation Checklist
+Numbered steps with specific file paths and code changes:
+- [ ] Step 1: ...
+- [ ] Step 2: ...
+
+#### Quality Scorecard (rate 1-10)
+| Dimension | Score | Justification |
+|---|---|---|
+| Impact | X/10 | ... |
+| Feasibility | X/10 | ... |
+| Risk | X/10 | (lower = riskier) |
+| Novelty | X/10 | ... |
+| Alignment with operator taste | X/10 | ... |
+| Time to value | X/10 | ... |
+| Learning potential | X/10 | ... |
+| Cross-project leverage | X/10 | ... |
+| Defensibility | X/10 | ... |
+| Fun factor | X/10 | ... |
+| **Composite** | **X/10** | weighted average |
+
+#### Pitfalls & Edge Cases
+- What could go wrong (be specific, not generic)
+- Edge cases that would break the implementation
+- Dependencies that might not exist
+
+#### Risks
+- Technical risks
+- Strategic risks
+- Opportunity cost
+
+#### Success Criteria
+- Measurable outcomes that define "done"
+- How to verify it worked
+
+#### Estimated Effort
+- Time: X hours/days
+- Cost: $X (API calls, compute)
+- Prerequisites: what must exist first
+
+#### Relationship to Other Plans
+- Dependencies (must do X before Y)
+- Synergies (X makes Y easier)
+- Conflicts (X and Y compete for attention)
+
+---
+
+After all individual plans, add:
+
+### Recommended Execution Order
+Ordered list with reasoning for the sequence.
+
+### Portfolio View
+Table showing all plans with composite scores, dependencies, and recommended timeline.
+
+Write this as a REAL planning document. No filler. Every sentence should be specific and actionable. Reference actual code, actual data, actual metrics. This should feel like a document written by someone who deeply understands the system, not a generic template.`
+
     const { stdout } = await execFileAsync(CLAUDE_BIN, [
-      '-p', prompt, '--output-format', 'text', '--model', 'claude-sonnet-4-6',
+      '-p', deepPrompt, '--output-format', 'text', '--model', 'claude-sonnet-4-6',
     ], {
-      timeout: 60_000,
+      timeout: 120_000,
       env: { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` },
     })
     richDocument = stdout.trim()
-  } catch {
+  } catch (e) {
     // Fallback: just render the plans as markdown
     richDocument = `# Foreman Strategic Plans — ${new Date().toISOString().slice(0, 10)}\n\n${planSummaries}`
   }
