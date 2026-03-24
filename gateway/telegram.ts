@@ -214,6 +214,31 @@ async function handleFreeText(text: string, chatId: number): Promise<string> {
     `Send: /goal <intent> | <workspace_path>`
 }
 
+async function handlePlans(): Promise<string> {
+  const plans = await api('/api/plans') as any[]
+  if (plans.length === 0) return 'No plans. Generate with /generate-plans'
+
+  let msg = `📋 *Plans (${plans.length}):*\n\n`
+  for (const p of plans.slice(0, 5)) {
+    const icon = p.isExploration ? '🔭' : (p.rank === 'critical' ? '🔴' : p.rank === 'high' ? '🟠' : p.rank === 'medium' ? '🟡' : '⚪')
+    const tag = p.isExploration ? ' [EXPLORATION]' : ''
+    msg += `${icon} *${p.title}*${tag}\n`
+    msg += `  ${p.rank} | ${p.type} | ${p.status}\n`
+    msg += `  ${p.reasoning.slice(0, 100)}\n`
+    msg += `  Approve: /approve-plan ${p.id}\n\n`
+  }
+  return msg
+}
+
+async function handleApprovePlan(id: string): Promise<string> {
+  if (!id) return '❌ Usage: /approve-plan <plan-id>'
+  const result = await api(`/api/plans/${encodeURIComponent(id)}`, {
+    method: 'PATCH', body: { status: 'approved', taste_signal: 'approved' },
+  })
+  if (result.goalId) return `✅ Plan approved → Goal #${result.goalId} created`
+  return '❌ Plan not found'
+}
+
 async function handleGoalCreate(text: string): Promise<string> {
   const parts = text.replace(/^\/goal\s*/i, '').trim()
   if (!parts) return '❌ Usage: /goal <intent> | <workspace_path>\n\nExample: /goal Fix PiGraph tests | /home/drew/foreman-projects/PiGraph/repo/pigraph-run-ready'
@@ -274,6 +299,15 @@ async function handleMessage(msg: any): Promise<void> {
     } else if (text.startsWith('/cleanup')) {
       const result = await api('/api/cleanup', { method: 'POST' })
       response = `🧹 Cleaned ${result.cleaned} stale worktrees`
+    } else if (text.startsWith('/plans')) {
+      response = await handlePlans()
+    } else if (text.startsWith('/approve-plan')) {
+      response = await handleApprovePlan(text.replace(/^\/approve-plan\s*/i, '').trim())
+    } else if (text.startsWith('/generate-plans')) {
+      const result = await api('/api/plans/generate', { method: 'POST' })
+      const plans = Array.isArray(result) ? result : []
+      response = `🧠 Generated ${plans.length} plans\n\n` +
+        plans.map((p: any) => `${p.isExploration ? '🔭' : '📋'} *${p.title}* [${p.rank}]\n${p.reasoning.slice(0, 100)}`).join('\n\n')
     } else if (text.startsWith('/help')) {
       response = `🏗 *Foreman Bot*\n\n` +
         `/status — portfolio overview\n` +
@@ -283,6 +317,9 @@ async function handleMessage(msg: any): Promise<void> {
         `/sessions — list sessions\n` +
         `/check <name> — inspect session\n` +
         `/confidence — show confidence scores\n` +
+        `/plans — view pending plans\n` +
+        `/generate-plans — generate new strategic plans\n` +
+        `/approve-plan <id> — approve a plan → creates goal\n` +
         `/learn — trigger learning\n` +
         `/reflect — deep analysis\n` +
         `/cleanup — clean worktrees`

@@ -24,6 +24,9 @@ import { createProposal, listProposals, updateProposalStatus, openProposalPR } f
 // ─── Dispatch policy ─────────────────────────────────────────────────
 import { getDispatchPolicy, initGepaPolicy, type DispatchContext } from './lib/dispatch-policy.js'
 
+// ─── Plan generator ──────────────────────────────────────────────────
+import { generatePlans, listPlans, updatePlanStatus, getPlan, type PlanGeneratorContext } from './lib/plan-generator.js'
+
 // ─── Confidence store (from packages/memory) ─────────────────────────
 // Tracks per-(skill, project) confidence that earns autonomy through evidence.
 import { ConfidenceStore } from '@drew/foreman-memory/confidence'
@@ -3122,6 +3125,96 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       return json(res, { ok: true, deleted: id })
     }
 
+    // ── Plans ──────────────────────────────────────────────
+    if (path === '/api/plans' && method === 'GET') {
+      const status = parseQuery(url).get('status') ?? undefined
+      return json(res, listPlans(status))
+    }
+
+    if (path === '/api/plans/generate' && method === 'POST') {
+      // Build context from current state
+      const goals = stmts.listGoals.all() as Array<{ intent: string, workspace_path: string | null }>
+      const decisions = db.prepare(`
+        SELECT d.skill, d.task, d.status, d.outcome, COALESCE(g.workspace_path, d.worktree_path) as project
+        FROM decisions d LEFT JOIN goals g ON g.id = d.goal_id
+        WHERE d.status IN ('success', 'failure')
+        ORDER BY d.created_at DESC LIMIT 15
+      `).all() as Array<{ skill: string, task: string, status: string, outcome: string | null, project: string }>
+
+      const flows = stmts.learningsByType.all('flow', 10) as Array<{ content: string }>
+      const prefs = stmts.learningsByType.all('skill_preference', 10) as Array<{ content: string }>
+      const taste = stmts.listTaste.all(10) as Array<{ pattern: string }>
+      const deadEnds = stmts.learningsByType.all('dead_end', 5) as Array<{ content: string }>
+
+      // Find projects with recent sessions
+      const recentProjects = db.prepare(`SELECT DISTINCT repo FROM operator_sessions WHERE repo != '' ORDER BY timestamp DESC LIMIT 10`)
+        .all() as Array<{ repo: string }>
+
+      const sessionCount = (stmts.operatorSessionCount.get() as { count: number }).count
+      const learningCount = (db.prepare(`SELECT COUNT(*) as c FROM learnings`).get() as { c: number }).c
+
+      const ctx: PlanGeneratorContext = {
+        recentDecisions: decisions.map(d => ({
+          skill: d.skill.slice(0, 20), task: d.task.slice(0, 100),
+          status: d.status, outcome: d.outcome?.slice(0, 100) ?? null,
+          project: (d.project ?? '').split('/').pop() ?? 'unknown',
+        })),
+        learnedFlows: flows.map(f => f.content),
+        skillPreferences: prefs.map(p => p.content),
+        tasteSignals: taste.map(t => t.pattern),
+        deadEnds: deadEnds.map(d => d.content),
+        activeGoals: goals.map(g => ({ intent: g.intent, workspacePath: g.workspace_path })),
+        recentProjects: recentProjects.map(p => p.repo.split('/').pop() ?? p.repo),
+        sessionCount,
+        learningCount,
+      }
+
+      try {
+        const plans = await generatePlans(ctx)
+        return json(res, plans, 201)
+      } catch (e) {
+        return error(res, e instanceof Error ? e.message : String(e), 500)
+      }
+    }
+
+    if (path.startsWith('/api/plans/') && method === 'PATCH') {
+      const id = decodeURIComponent(path.slice('/api/plans/'.length))
+      const body = await readBody(req)
+      const status = String(body.status ?? '')
+      const tasteSignal = body.taste_signal ? String(body.taste_signal) as 'approved' | 'rejected' : undefined
+
+      if (status === 'approved') {
+        // Convert plan to goal
+        const plan = getPlan(id)
+        if (plan) {
+          const goalResult = stmts.insertGoal.run(
+            plan.proposedGoal.intent,
+            plan.proposedGoal.workspacePath ?? null,
+            'repo', null, 0,
+          )
+          updatePlanStatus(id, 'approved', 'approved')
+
+          // Record taste — exploration approvals are worth 3x
+          const weight = plan.isExploration ? 3.0 : 1.0
+          stmts.insertTaste.run(`approved plan: ${plan.title.slice(0, 100)}`, `plan:${id}`, weight)
+
+          return json(res, { ok: true, id, goalId: Number(goalResult.lastInsertRowid) })
+        }
+      }
+
+      if (status === 'rejected') {
+        const plan = getPlan(id)
+        updatePlanStatus(id, 'rejected', 'rejected')
+        if (plan) {
+          const weight = plan.isExploration ? -1.0 : -1.5  // rejecting exploitation is stronger signal
+          stmts.insertTaste.run(`rejected plan: ${plan.title.slice(0, 100)}`, `plan:${id}`, weight)
+        }
+        return json(res, { ok: true, id, status: 'rejected' })
+      }
+
+      return error(res, 'status must be approved or rejected')
+    }
+
     // ── Skill proposals ─────────────────────────────────────
     if (path === '/api/proposals' && method === 'GET') {
       const status = parseQuery(url).get('status') ?? undefined
@@ -3290,6 +3383,55 @@ server.listen(PORT, '127.0.0.1', () => {
     // Retrain every 6 hours
     setInterval(() => trainGepaPolicy().catch(e => log(`GEPA policy retrain failed: ${e}`)), 6 * 60 * 60 * 1000)
   }
+
+  // Plan generation — every 12 hours, generate strategic plans from session data
+  setTimeout(async () => {
+    try {
+      const existingPlans = listPlans('proposed')
+      if (existingPlans.length >= 5) { log('Plan generation: 5+ pending plans, skipping'); return }
+      log('Generating strategic plans...')
+      // Build context (same as API endpoint)
+      const goals = stmts.listGoals.all() as Array<{ intent: string, workspace_path: string | null }>
+      const decisions = db.prepare(`SELECT d.skill, d.task, d.status, d.outcome, COALESCE(g.workspace_path, d.worktree_path) as project FROM decisions d LEFT JOIN goals g ON g.id = d.goal_id WHERE d.status IN ('success','failure') ORDER BY d.created_at DESC LIMIT 15`).all() as any[]
+      const flows = stmts.learningsByType.all('flow', 10) as Array<{ content: string }>
+      const prefs = stmts.learningsByType.all('skill_preference', 10) as Array<{ content: string }>
+      const taste = stmts.listTaste.all(10) as Array<{ pattern: string }>
+      const deadEnds = stmts.learningsByType.all('dead_end', 5) as Array<{ content: string }>
+      const recentProjects = db.prepare(`SELECT DISTINCT repo FROM operator_sessions WHERE repo != '' ORDER BY timestamp DESC LIMIT 10`).all() as Array<{ repo: string }>
+      const sessionCount = (stmts.operatorSessionCount.get() as { count: number }).count
+      const learningCount = (db.prepare(`SELECT COUNT(*) as c FROM learnings`).get() as { c: number }).c
+
+      const plans = await generatePlans({
+        recentDecisions: decisions.map((d: any) => ({ skill: (d.skill??'').slice(0,20), task: (d.task??'').slice(0,100), status: d.status, outcome: d.outcome?.slice(0,100)??null, project: (d.project??'').split('/').pop()??'?' })),
+        learnedFlows: flows.map(f => f.content), skillPreferences: prefs.map(p => p.content),
+        tasteSignals: taste.map(t => t.pattern), deadEnds: deadEnds.map(d => d.content),
+        activeGoals: goals.map(g => ({ intent: g.intent, workspacePath: g.workspace_path })),
+        recentProjects: recentProjects.map(p => p.repo.split('/').pop() ?? p.repo),
+        sessionCount, learningCount,
+      })
+      log(`Generated ${plans.length} plans (${plans.filter(p => p.isExploration).length} exploration)`)
+      // Notify via Telegram
+      for (const p of plans) {
+        sendNotification(`Foreman Plan: ${p.title}`, `[${p.rank}] ${p.reasoning.slice(0, 150)}`)
+      }
+    } catch (e) { log(`Plan generation failed: ${e}`) }
+  }, 5 * 60 * 1000) // first run after 5 minutes
+  setInterval(async () => {
+    try {
+      const pending = listPlans('proposed')
+      if (pending.length >= 5) return
+      const goals = stmts.listGoals.all() as any[]
+      const decisions = db.prepare(`SELECT d.skill, d.task, d.status, d.outcome, COALESCE(g.workspace_path, d.worktree_path) as project FROM decisions d LEFT JOIN goals g ON g.id = d.goal_id WHERE d.status IN ('success','failure') ORDER BY d.created_at DESC LIMIT 15`).all() as any[]
+      const flows = stmts.learningsByType.all('flow', 10) as any[]
+      const plans = await generatePlans({
+        recentDecisions: decisions.map((d: any) => ({ skill: (d.skill??'').slice(0,20), task: (d.task??'').slice(0,100), status: d.status, outcome: d.outcome?.slice(0,100)??null, project: (d.project??'').split('/').pop()??'?' })),
+        learnedFlows: flows.map((f: any) => f.content), skillPreferences: [], tasteSignals: [], deadEnds: [],
+        activeGoals: goals.map((g: any) => ({ intent: g.intent, workspacePath: g.workspace_path })),
+        recentProjects: [], sessionCount: 0, learningCount: 0,
+      })
+      if (plans.length > 0) log(`Generated ${plans.length} new plans`)
+    } catch {}
+  }, 12 * 60 * 60 * 1000) // every 12 hours
 
   // Bootstrap prompt template if none exists
   const hasTemplate = stmts.activeTemplate.get()
