@@ -9,13 +9,7 @@
  * LLM (single Claude call to reason about next step), GEPA (optimized).
  */
 
-import { homedir } from 'node:os'
-import { join } from 'node:path'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
-
-const execFileAsync = promisify(execFile)
-const CLAUDE_BIN = process.env.CLAUDE_PATH ?? join(homedir(), '.local/bin/claude')
+import { callClaudeForJSON } from './claude-runner.js'
 
 export interface DispatchDecision {
   skill: string
@@ -96,13 +90,8 @@ Respond with JSON only:
 {"skill": "/evolve", "task": "specific task description", "reasoning": "why this skill now"}`
 
     try {
-      const { stdout } = await execFileAsync(CLAUDE_BIN, [
-        '-p', prompt, '--output-format', 'text', '--model', 'claude-haiku-4-5-20251001',
-      ], { timeout: 30_000, env: { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` } })
-
-      const match = stdout.match(/\{[\s\S]*\}/)
-      if (match) {
-        const parsed = JSON.parse(match[0])
+      const parsed = await callClaudeForJSON(prompt, 'claude-haiku-4-5-20251001') as any
+      if (parsed) {
         return {
           skill: parsed.skill || '/evolve',
           task: parsed.task || `Continue: ${ctx.goalIntent.slice(0, 200)}`,

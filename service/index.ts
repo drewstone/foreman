@@ -24,6 +24,9 @@ import { createProposal, listProposals, updateProposalStatus, openProposalPR } f
 // ─── Dispatch policy ─────────────────────────────────────────────────
 import { getDispatchPolicy, initGepaPolicy, type DispatchContext } from './lib/dispatch-policy.js'
 
+// ─── Claude runner ───────────────────────────────────────────────────
+import { callClaude, callClaudeForJSON } from './lib/claude-runner.js'
+
 // ─── Plan generator ──────────────────────────────────────────────────
 import { generatePlans, listPlans, updatePlanStatus, getPlan, type PlanGeneratorContext } from './lib/plan-generator.js'
 
@@ -1017,15 +1020,8 @@ Analyze this session and respond with JSON only:
 }`
 
     try {
-      const { stdout } = await execFileAsync(CLAUDE_BIN, ['-p', prompt, '--output-format', 'text', '--model', 'claude-sonnet-4-6'], {
-        timeout: 90_000,
-        env: { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` },
-      })
-
-      const jsonMatch = stdout.match(/\{[\s\S]*\}/)
-      if (!jsonMatch) return {}
-
-      const parsed = JSON.parse(jsonMatch[0])
+      const parsed = await callClaudeForJSON(prompt) as any
+      if (!parsed) return {}
       return {
         summary: parsed.summary ?? null,
         qualityScore: typeof parsed.qualityScore === 'number' ? parsed.qualityScore : null,
@@ -1060,14 +1056,9 @@ List specific issues found (security, correctness, style). Respond with JSON:
 {"issues": ["issue 1", "issue 2"]}
 If no issues, return {"issues": []}`
 
-      const { stdout } = await execFileAsync(CLAUDE_BIN, ['-p', auditPrompt, '--output-format', 'text', '--model', 'claude-sonnet-4-6'], {
-        timeout: 60_000,
-        env: { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` },
-      })
-      const match = stdout.match(/\{[\s\S]*\}/)
-      if (match) {
-        const parsed = JSON.parse(match[0])
-        auditFindings = Array.isArray(parsed.issues) ? parsed.issues.map(String) : []
+      const auditResult = await callClaudeForJSON(auditPrompt) as any
+      if (auditResult?.issues) {
+        auditFindings = Array.isArray(auditResult.issues) ? auditResult.issues.map(String) : []
       }
     } catch {}
 
@@ -2082,21 +2073,13 @@ Respond with JSON:
 ${sessionDigest.join('\n\n')}
 `
 
-  // Dispatch the analysis to Claude CLI (non-interactive, print mode)
-  let analysisResult: string
-  try {
-    const { stdout } = await execFileAsync(CLAUDE_BIN, [
-      '-p', analysisPrompt,
-      '--output-format', 'text',
-    ], {
-      timeout: 120_000,
-      env: { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` },
-    })
-    analysisResult = stdout
-  } catch (e) {
-    log(`Deep analysis LLM call failed: ${e instanceof Error ? e.message : String(e)}`)
+  // Dispatch analysis via unified Claude runner
+  const analysisJSON = await callClaudeForJSON(analysisPrompt)
+  if (!analysisJSON) {
+    log('Deep analysis: no response from Claude')
     return { analyzed: 0, flows: 0 }
   }
+  const analysisResult = JSON.stringify(analysisJSON)
 
   // Parse the JSON response
   let analysis: {

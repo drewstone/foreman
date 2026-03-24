@@ -18,11 +18,12 @@ import { promisify } from 'node:util'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs'
+import { callClaude, callClaudeForJSON } from './claude-runner.js'
 
 const execFileAsync = promisify(execFile)
+
 const FOREMAN_HOME = process.env.FOREMAN_HOME ?? join(homedir(), '.foreman')
 const PLANS_DIR = join(FOREMAN_HOME, 'plans')
-const CLAUDE_BIN = process.env.CLAUDE_PATH ?? join(homedir(), '.local/bin/claude')
 
 export type PlanRank = 'critical' | 'high' | 'medium' | 'low'
 export type PlanType = 'product' | 'research' | 'engineering' | 'marketing' | 'paper' | 'exploration'
@@ -215,18 +216,15 @@ IMPORTANT:
 - Write it like a senior staff engineer, not a template`
 
   try {
-    const promptFile = join(FOREMAN_HOME, 'plans', `_fullplan_${Date.now()}.txt`)
-    mkdirSync(join(FOREMAN_HOME, 'plans'), { recursive: true })
-    writeFileSync(promptFile, prompt)
-    // Use bash pipe — execFileAsync with long prompts breaks arg parsing
-    const { stdout } = await execFileAsync('bash', [
-      '-c', `cd "${workspace}" && cat "${promptFile}" | "${CLAUDE_BIN}" -p --output-format text --model claude-opus-4-6 --dangerously-skip-permissions`,
-    ], {
-      timeout: 300_000, // 5 minutes for deep Opus plan generation
-      env: { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` },
+    // Full Claude Code session with tool access — can read codebase
+    const result = await callClaude({
+      prompt,
+      cwd: workspace,
+      model: 'claude-opus-4-6',
+      timeoutMs: 300_000,
+      label: 'plan',
     })
-    try { require('fs').unlinkSync(promptFile) } catch {}
-    return stdout.trim() || renderPlanReview(plan) // fallback to template
+    return result.output || renderPlanReview(plan)
   } catch (e) {
     console.log(`Full plan generation failed: ${e instanceof Error ? e.message : String(e)}`)
     return renderPlanReview(plan) // fallback to template rendering
@@ -331,22 +329,10 @@ Respond with the SAME JSON format as exploitation plans (with overview, motivati
 
 async function callLLMForPlans(prompt: string, isExploration: boolean): Promise<Plan[]> {
   try {
-    // Write prompt to file, pipe to claude via bash
-    const promptFile = join(FOREMAN_HOME, 'plans', `_prompt_${Date.now()}.txt`)
-    mkdirSync(join(FOREMAN_HOME, 'plans'), { recursive: true })
-    writeFileSync(promptFile, prompt)
-    const { stdout } = await execFileAsync('bash', [
-      '-c', `cat "${promptFile}" | "${CLAUDE_BIN}" -p --output-format text --model claude-sonnet-4-6`,
-    ], {
-      timeout: 90_000,
-      env: { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` },
-    })
-    try { require('fs').unlinkSync(promptFile) } catch {}
+    const rawArray = await callClaudeForJSON(prompt) as any[]
+    if (!rawArray || !Array.isArray(rawArray)) return []
 
-    const match = stdout.match(/\[[\s\S]*\]/)
-    if (!match) return []
-
-    const raw = JSON.parse(match[0]) as any[]
+    const raw = rawArray
 
     return raw.filter((r: any) => r && (r.title || r.name)).map((r: any) => ({
       id: `plan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
