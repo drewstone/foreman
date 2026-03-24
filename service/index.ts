@@ -19,16 +19,16 @@ import Database from 'better-sqlite3'
 const execFileAsync = promisify(execFile)
 
 // ─── Skill proposals ─────────────────────────────────────────────────
-import { createProposal, listProposals, updateProposalStatus, openProposalPR } from './lib/skill-proposals.js'
+import { createProposal, listProposals, updateProposalStatus, openProposalPR as openSkillPR } from './lib/skill-proposals.js'
 
 // ─── Dispatch policy ─────────────────────────────────────────────────
 import { getDispatchPolicy, initGepaPolicy, type DispatchContext } from './lib/dispatch-policy.js'
 
-// ─── Claude runner ───────────────────────────────────────────────────
-import { callClaude, callClaudeForJSON } from './lib/claude-runner.js'
-
 // ─── Plan generator ──────────────────────────────────────────────────
-import { generatePlans, listPlans, updatePlanStatus, getPlan, type PlanGeneratorContext } from './lib/plan-generator.js'
+import { buildIdeationDispatch, buildFullPlanDispatch, parseIdeationOutput, listPlans, updatePlanStatus, getPlan, openProposalPR as openPlanPR, type PlanGeneratorContext } from './lib/plan-generator.js'
+
+// ─── Claude runner (for digest/analysis until migrated to dispatches) ─
+import { callClaudeForJSON } from './lib/claude-runner.js'
 
 // ─── Confidence store (from packages/memory) ─────────────────────────
 // Tracks per-(skill, project) confidence that earns autonomy through evidence.
@@ -3152,12 +3152,32 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         learningCount,
       }
 
-      try {
-        const plans = await generatePlans(ctx)
-        return json(res, plans, 201)
-      } catch (e) {
-        return error(res, e instanceof Error ? e.message : String(e), 500)
-      }
+      // Dispatch plan ideation as a regular Foreman session
+      const dispatch = buildIdeationDispatch(ctx)
+      const autoLabel = `plan-ideate-${Date.now().toString(36)}`
+      const wt = await createWorktree(process.cwd(), autoLabel)
+      if (!wt) return error(res, 'Failed to create worktree for plan ideation')
+
+      const sName = sessionName(autoLabel)
+      const activeTpl = stmts.activeTemplate.get() as { version: number } | undefined
+      const result = stmts.insertDecision.run(
+        null, '/plan', dispatch.prompt.slice(0, 500), 'plan ideation',
+        sName, wt.path, wt.branch, wt.baseBranch, activeTpl?.version ?? 1, 'auto',
+      )
+      const decisionId = Number(result.lastInsertRowid)
+
+      // Use the ideation prompt directly — it tells Claude to write JSON to a file
+      spawnSession({
+        name: sName, workDir: wt.path, prompt: dispatch.prompt,
+        goalId: 0 as any, decisionId,
+      })
+
+      return json(res, {
+        dispatched: true,
+        session: sName,
+        outputPath: dispatch.outputPath,
+        message: 'Plan ideation dispatched. Check session status and parse output when complete.',
+      }, 202)
     }
 
     if (path.startsWith('/api/plans/') && method === 'PATCH') {
@@ -3221,7 +3241,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       // Open a draft PR for this proposal against the skill's source repo
       const id = decodeURIComponent(path.slice('/api/proposals/'.length).replace(/\/pr$/, ''))
       try {
-        const prUrl = await openProposalPR(id)
+        const prUrl = await openSkillPR(id)
         if (!prUrl) return error(res, 'Could not open PR — skill may not be in a git repo', 400)
         return json(res, { ok: true, id, prUrl })
       } catch (e) {
@@ -3367,54 +3387,51 @@ server.listen(PORT, '127.0.0.1', () => {
     setInterval(() => trainGepaPolicy().catch(e => log(`GEPA policy retrain failed: ${e}`)), 6 * 60 * 60 * 1000)
   }
 
-  // Plan generation — every 12 hours, generate strategic plans from session data
-  setTimeout(async () => {
-    try {
-      const existingPlans = listPlans('proposed')
-      if (existingPlans.length >= 5) { log('Plan generation: 5+ pending plans, skipping'); return }
-      log('Generating strategic plans...')
-      // Build context (same as API endpoint)
-      const goals = stmts.listGoals.all() as Array<{ intent: string, workspace_path: string | null }>
-      const decisions = db.prepare(`SELECT d.skill, d.task, d.status, d.outcome, COALESCE(g.workspace_path, d.worktree_path) as project FROM decisions d LEFT JOIN goals g ON g.id = d.goal_id WHERE d.status IN ('success','failure') ORDER BY d.created_at DESC LIMIT 15`).all() as any[]
-      const flows = stmts.learningsByType.all('flow', 10) as Array<{ content: string }>
-      const prefs = stmts.learningsByType.all('skill_preference', 10) as Array<{ content: string }>
-      const taste = stmts.listTaste.all(10) as Array<{ pattern: string }>
-      const deadEnds = stmts.learningsByType.all('dead_end', 5) as Array<{ content: string }>
-      const recentProjects = db.prepare(`SELECT DISTINCT repo FROM operator_sessions WHERE repo != '' ORDER BY timestamp DESC LIMIT 10`).all() as Array<{ repo: string }>
-      const sessionCount = (stmts.operatorSessionCount.get() as { count: number }).count
-      const learningCount = (db.prepare(`SELECT COUNT(*) as c FROM learnings`).get() as { c: number }).c
+  // Helper to build plan context from current state
+  const buildPlanContext = (): PlanGeneratorContext => {
+    const goals = stmts.listGoals.all() as Array<{ intent: string, workspace_path: string | null }>
+    const decisions = db.prepare(`SELECT d.skill, d.task, d.status, d.outcome, COALESCE(g.workspace_path, d.worktree_path) as project FROM decisions d LEFT JOIN goals g ON g.id = d.goal_id WHERE d.status IN ('success','failure') ORDER BY d.created_at DESC LIMIT 15`).all() as any[]
+    const flows = stmts.learningsByType.all('flow', 10) as any[]
+    const prefs = stmts.learningsByType.all('skill_preference', 10) as any[]
+    const taste = stmts.listTaste.all(10) as any[]
+    const deadEnds = stmts.learningsByType.all('dead_end', 5) as any[]
+    const recentProjects = db.prepare(`SELECT DISTINCT repo FROM operator_sessions WHERE repo != '' ORDER BY timestamp DESC LIMIT 10`).all() as any[]
+    const sessionCount = (stmts.operatorSessionCount.get() as { count: number }).count
+    const learningCount = (db.prepare(`SELECT COUNT(*) as c FROM learnings`).get() as { c: number }).c
+    return {
+      recentDecisions: decisions.map((d: any) => ({ skill: (d.skill??'').slice(0,20), task: (d.task??'').slice(0,100), status: d.status, outcome: d.outcome?.slice(0,100)??null, project: (d.project??'').split('/').pop()??'?' })),
+      learnedFlows: flows.map((f: any) => f.content), skillPreferences: prefs.map((p: any) => p.content),
+      tasteSignals: taste.map((t: any) => t.pattern), deadEnds: deadEnds.map((d: any) => d.content),
+      activeGoals: goals.map(g => ({ intent: g.intent, workspacePath: g.workspace_path })),
+      recentProjects: recentProjects.map((p: any) => (p.repo??'').split('/').pop() ?? ''),
+      sessionCount, learningCount,
+    }
+  }
 
-      const plans = await generatePlans({
-        recentDecisions: decisions.map((d: any) => ({ skill: (d.skill??'').slice(0,20), task: (d.task??'').slice(0,100), status: d.status, outcome: d.outcome?.slice(0,100)??null, project: (d.project??'').split('/').pop()??'?' })),
-        learnedFlows: flows.map(f => f.content), skillPreferences: prefs.map(p => p.content),
-        tasteSignals: taste.map(t => t.pattern), deadEnds: deadEnds.map(d => d.content),
-        activeGoals: goals.map(g => ({ intent: g.intent, workspacePath: g.workspace_path })),
-        recentProjects: recentProjects.map(p => p.repo.split('/').pop() ?? p.repo),
-        sessionCount, learningCount,
-      })
-      log(`Generated ${plans.length} plans (${plans.filter(p => p.isExploration).length} exploration)`)
-      // Notify via Telegram
-      for (const p of plans) {
-        sendNotification(`Foreman Plan: ${p.title}`, `[${p.rank}] ${p.reasoning.slice(0, 150)}`)
-      }
-    } catch (e) { log(`Plan generation failed: ${e}`) }
-  }, 5 * 60 * 1000) // first run after 5 minutes
-  setInterval(async () => {
-    try {
-      const pending = listPlans('proposed')
-      if (pending.length >= 5) return
-      const goals = stmts.listGoals.all() as any[]
-      const decisions = db.prepare(`SELECT d.skill, d.task, d.status, d.outcome, COALESCE(g.workspace_path, d.worktree_path) as project FROM decisions d LEFT JOIN goals g ON g.id = d.goal_id WHERE d.status IN ('success','failure') ORDER BY d.created_at DESC LIMIT 15`).all() as any[]
-      const flows = stmts.learningsByType.all('flow', 10) as any[]
-      const plans = await generatePlans({
-        recentDecisions: decisions.map((d: any) => ({ skill: (d.skill??'').slice(0,20), task: (d.task??'').slice(0,100), status: d.status, outcome: d.outcome?.slice(0,100)??null, project: (d.project??'').split('/').pop()??'?' })),
-        learnedFlows: flows.map((f: any) => f.content), skillPreferences: [], tasteSignals: [], deadEnds: [],
-        activeGoals: goals.map((g: any) => ({ intent: g.intent, workspacePath: g.workspace_path })),
-        recentProjects: [], sessionCount: 0, learningCount: 0,
-      })
-      if (plans.length > 0) log(`Generated ${plans.length} new plans`)
-    } catch {}
-  }, 12 * 60 * 60 * 1000) // every 12 hours
+  // Plan generation — dispatched as regular Foreman sessions every 12 hours
+  // Uses the same dispatch pipeline as all other work
+  const dispatchPlanIdeation = async () => {
+    const pending = listPlans('proposed')
+    if (pending.length >= 5) return
+    log('Dispatching plan ideation session...')
+    // Build context and dispatch
+    const ctx = buildPlanContext()
+    const dispatch = buildIdeationDispatch(ctx)
+    const autoLabel = `plan-ideate-${Date.now().toString(36)}`
+    const sName = sessionName(autoLabel)
+    const activeTpl = stmts.activeTemplate.get() as { version: number } | undefined
+    const result = stmts.insertDecision.run(
+      null, '/plan', dispatch.prompt.slice(0, 500), 'auto plan ideation',
+      sName, null, null, null, activeTpl?.version ?? 1, 'auto',
+    )
+    spawnSession({
+      name: sName, workDir: dispatch.workspace, prompt: dispatch.prompt,
+      goalId: 0 as any, decisionId: Number(result.lastInsertRowid),
+    })
+    log(`Plan ideation dispatched: ${sName}`)
+  }
+  setTimeout(() => dispatchPlanIdeation().catch(e => log(`Plan ideation failed: ${e}`)), 5 * 60 * 1000)
+  setInterval(() => dispatchPlanIdeation().catch(e => log(`Plan ideation failed: ${e}`)), 12 * 60 * 60 * 1000)
 
   // Bootstrap prompt template if none exists
   const hasTemplate = stmts.activeTemplate.get()
