@@ -316,15 +316,18 @@ Respond with the SAME JSON format as exploitation plans (with overview, motivati
 
 async function callLLMForPlans(prompt: string, isExploration: boolean): Promise<Plan[]> {
   try {
-    // Write prompt to temp file, cat it into claude via shell
+    // Write prompt to temp file and run claude with the file
     const promptFile = join(FOREMAN_HOME, 'plans', `_prompt_${Date.now()}.txt`)
     mkdirSync(join(FOREMAN_HOME, 'plans'), { recursive: true })
     writeFileSync(promptFile, prompt)
-    const { stdout } = await execFileAsync('bash', [
-      '-c', `cat "${promptFile}" | ${CLAUDE_BIN} -p --output-format text --model claude-opus-4-6`,
+    const { stdout } = await execFileAsync(CLAUDE_BIN, [
+      '-p', `Read the instructions from ${promptFile} and follow them exactly. Respond with a JSON array only.`,
+      '--output-format', 'text', '--model', 'claude-opus-4-6',
+      '--dangerously-skip-permissions',
     ], {
       timeout: 120_000,
       env: { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` },
+      cwd: FOREMAN_HOME,
     })
     try { require('fs').unlinkSync(promptFile) } catch {}
 
