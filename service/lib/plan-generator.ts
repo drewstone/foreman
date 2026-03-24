@@ -95,7 +95,94 @@ export async function generatePlans(ctx: PlanGeneratorContext): Promise<Plan[]> 
     writeFileSync(join(planDir, 'REVIEW.md'), renderPlanReview(plan))
   }
 
+  // Generate a rich plan document via Claude and publish as a gist
+  if (plans.length > 0) {
+    const gistUrl = await publishPlansAsGist(plans, ctx)
+    if (gistUrl) {
+      for (const p of plans) (p as any).gistUrl = gistUrl
+    }
+  }
+
   return plans
+}
+
+// ─── Rich plan document + GitHub Gist ────────────────────────────────
+
+async function publishPlansAsGist(plans: Plan[], ctx: PlanGeneratorContext): Promise<string | null> {
+  // Generate a rich markdown document using Claude (like plan mode)
+  const planSummaries = plans.map(p => {
+    const tag = p.isExploration ? ' 🔭 EXPLORATION' : ''
+    return `### ${p.rank.toUpperCase()}: ${p.title}${tag}
+**Type:** ${p.type}
+**Reasoning:** ${p.reasoning}
+**Opportunities:** ${p.opportunities.join('; ') || 'none listed'}
+**Risks:** ${p.risks.join('; ') || 'none listed'}
+**Proposed:** ${p.proposedGoal.intent}${p.proposedGoal.firstSkill ? ' (start with ' + p.proposedGoal.firstSkill + ')' : ''}`
+  }).join('\n\n')
+
+  const prompt = `Write a strategic planning document for an autonomous operator called Foreman. This is a real planning brief — not a template. Be specific, reference the data, and make concrete recommendations.
+
+## Context
+- ${ctx.sessionCount} operator sessions analyzed across ${ctx.recentProjects.length} projects
+- ${ctx.recentDecisions.length} recent dispatch decisions (${ctx.recentDecisions.filter(d => d.status === 'success').length} succeeded)
+- Active goals: ${ctx.activeGoals.map(g => g.intent.slice(0, 60)).join('; ') || 'none'}
+- Key patterns: ${ctx.learnedFlows.slice(0, 3).join('; ') || 'none extracted yet'}
+- Taste: ${ctx.tasteSignals.slice(0, 3).join('; ') || 'no signals yet'}
+
+## Plans Generated
+${planSummaries}
+
+## Your Job
+Write a rich, well-structured markdown planning brief that:
+1. Opens with a 2-sentence executive summary
+2. Presents each plan with full context, reasoning, and action items
+3. Identifies dependencies between plans (what should be done first?)
+4. Calls out the exploration plans explicitly — explain why they're worth considering
+5. Ends with a recommended execution order
+6. Uses tables, headers, and clear structure
+
+Write it as if you're a chief of staff briefing the CEO. Be direct, skip filler.`
+
+  let richDocument: string
+  try {
+    const { stdout } = await execFileAsync(CLAUDE_BIN, [
+      '-p', prompt, '--output-format', 'text', '--model', 'claude-sonnet-4-6',
+    ], {
+      timeout: 60_000,
+      env: { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` },
+    })
+    richDocument = stdout.trim()
+  } catch {
+    // Fallback: just render the plans as markdown
+    richDocument = `# Foreman Strategic Plans — ${new Date().toISOString().slice(0, 10)}\n\n${planSummaries}`
+  }
+
+  // Publish as GitHub Gist
+  try {
+    const filename = `foreman-plans-${new Date().toISOString().slice(0, 10)}.md`
+    // Write to temp file then create gist from it
+    const tmpFile = join(FOREMAN_HOME, 'plans', `_tmp_${Date.now()}.md`)
+    writeFileSync(tmpFile, richDocument)
+    const { stdout } = await execFileAsync('gh', [
+      'gist', 'create', '--public',
+      '--desc', `Foreman Strategic Plans — ${new Date().toISOString().slice(0, 10)}`,
+      '--filename', filename,
+      tmpFile,
+    ], {
+      timeout: 15_000,
+    })
+    try { require('fs').unlinkSync(tmpFile) } catch {}
+    const gistUrl = stdout.trim()
+    console.log(`Plans published: ${gistUrl}`)
+    return gistUrl
+  } catch (e) {
+    console.log(`Gist creation failed: ${e instanceof Error ? e.message : String(e)}`)
+    // Save locally as fallback
+    const localPath = join(PLANS_DIR, `plans-${new Date().toISOString().slice(0, 10)}.md`)
+    writeFileSync(localPath, richDocument)
+    console.log(`Saved locally: ${localPath}`)
+    return null
+  }
 }
 
 function buildExploitationPrompt(ctx: PlanGeneratorContext): string {
