@@ -220,7 +220,7 @@ IMPORTANT:
     writeFileSync(promptFile, prompt)
     // Use bash pipe — execFileAsync with long prompts breaks arg parsing
     const { stdout } = await execFileAsync('bash', [
-      '-c', `cat "${promptFile}" | "${CLAUDE_BIN}" -p --output-format text --model claude-opus-4-6 --dangerously-skip-permissions -w "${workspace}"`,
+      '-c', `cd "${workspace}" && cat "${promptFile}" | "${CLAUDE_BIN}" -p --output-format text --model claude-opus-4-6 --dangerously-skip-permissions`,
     ], {
       timeout: 300_000, // 5 minutes for deep Opus plan generation
       env: { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` },
