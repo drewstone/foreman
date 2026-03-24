@@ -216,15 +216,14 @@ IMPORTANT:
 
   try {
     const promptFile = join(FOREMAN_HOME, 'plans', `_fullplan_${Date.now()}.txt`)
+    mkdirSync(join(FOREMAN_HOME, 'plans'), { recursive: true })
     writeFileSync(promptFile, prompt)
-    const { stdout } = await execFileAsync(CLAUDE_BIN, [
-      '-p', `Read ${promptFile} and follow the instructions exactly. Write the full implementation plan.`,
-      '--output-format', 'text', '--model', 'claude-opus-4-6',
-      '--dangerously-skip-permissions',
+    // Use bash pipe — execFileAsync with long prompts breaks arg parsing
+    const { stdout } = await execFileAsync('bash', [
+      '-c', `cat "${promptFile}" | "${CLAUDE_BIN}" -p --output-format text --model claude-opus-4-6 --dangerously-skip-permissions -w "${workspace}"`,
     ], {
-      timeout: 180_000, // 3 minutes for deep plan generation
+      timeout: 300_000, // 5 minutes for deep Opus plan generation
       env: { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` },
-      cwd: workspace,
     })
     try { require('fs').unlinkSync(promptFile) } catch {}
     return stdout.trim() || renderPlanReview(plan) // fallback to template
