@@ -37,6 +37,7 @@ export interface ClaudeRunOptions {
   timeoutMs?: number              // max wait time (default: 120_000)
   outputFile?: string             // write output to this file path (Claude writes it)
   label?: string                  // label for the tmux session name
+  noTools?: boolean               // if true, omit --dangerously-skip-permissions (text-only output)
 }
 
 export interface ClaudeRunResult {
@@ -79,8 +80,9 @@ export async function callClaude(opts: ClaudeRunOptions): Promise<ClaudeRunResul
 
     // Run claude -p with the prompt piped via bash
     // -p mode outputs text then exits — reliable for text output capture
+    const permsFlag = opts.noTools ? '' : ' --dangerously-skip-permissions'
     tmuxQuiet(['send-keys', '-t', sessionName,
-      `cat "${promptFile}" | ${CLAUDE_BIN} --dangerously-skip-permissions --model ${model} -p && exit`,
+      `cat "${promptFile}" | ${CLAUDE_BIN}${permsFlag} --model ${model} -p && exit`,
       'Enter'])
 
     // Wait for session to exit

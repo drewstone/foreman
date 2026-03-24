@@ -216,13 +216,15 @@ IMPORTANT:
 - Write it like a senior staff engineer, not a template`
 
   try {
-    // Full Claude Code session with tool access — can read codebase
+    // Use callClaude WITHOUT tool access — we want Claude to WRITE a plan,
+    // not execute tasks. The plan data is already in the prompt.
     const result = await callClaude({
       prompt,
       cwd: workspace,
       model: 'claude-opus-4-6',
       timeoutMs: 300_000,
       label: 'plan',
+      noTools: true, // text-only mode for document generation
     })
     return result.output || renderPlanReview(plan)
   } catch (e) {
