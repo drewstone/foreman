@@ -112,7 +112,7 @@ async function publishPlansAsGist(plans: Plan[], ctx: PlanGeneratorContext): Pro
   // Generate a rich markdown document using Claude (like plan mode)
   const planSummaries = plans.map(p => {
     const tag = p.isExploration ? ' 🔭 EXPLORATION' : ''
-    return `### ${p.rank.toUpperCase()}: ${p.title}${tag}
+    return `### ${String(String(p.rank ?? 'medium') ?? 'medium').toUpperCase()}: ${p.title}${tag}
 **Type:** ${p.type}
 **Reasoning:** ${p.reasoning}
 **Opportunities:** ${p.opportunities.join('; ') || 'none listed'}
@@ -163,7 +163,7 @@ Write it as if you're a chief of staff briefing the CEO. Be direct, skip filler.
     const composite = scores.length > 0 ? (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1) : '—'
     const effort = p.effort?.hours ? `${p.effort.hours}h` : '—'
     const tag = p.isExploration ? ' 🔭' : ''
-    sections.push(`| ${i + 1} | ${p.rank} | ${p.title}${tag} | ${p.type} | ${composite}/10 | ${effort} |`)
+    sections.push(`| ${i + 1} | ${String(p.rank ?? 'medium')} | ${p.title}${tag} | ${p.type} | ${composite}/10 | ${effort} |`)
   }
   sections.push('')
 
@@ -414,14 +414,14 @@ export function getPlan(id: string): Plan | null {
 
 function renderPlanReview(p: any): string {
   const lines: string[] = []
-  const rankIcon = { critical: '🔴', high: '🟠', medium: '🟡', low: '⚪' }[p.rank] ?? '⚪'
+  const rankIcon = { critical: '🔴', high: '🟠', medium: '🟡', low: '⚪' }[String(p.rank ?? 'medium')] ?? '⚪'
   const explorationTag = p.isExploration ? ' 🔭' : ''
 
   lines.push(`# ${rankIcon} ${p.title}${explorationTag}`)
   lines.push('')
   lines.push(`| | |`)
   lines.push(`|---|---|`)
-  lines.push(`| **Rank** | ${p.rank} |`)
+  lines.push(`| **Rank** | ${String(p.rank ?? 'medium')} |`)
   lines.push(`| **Type** | ${p.type} |`)
   lines.push(`| **Status** | ${p.status} |`)
   if (p.effort?.hours) lines.push(`| **Effort** | ${p.effort.hours}h, ~$${p.effort.cost_usd ?? '?'} |`)
