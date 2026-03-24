@@ -143,109 +143,39 @@ Write a rich, well-structured markdown planning brief that:
 
 Write it as if you're a chief of staff briefing the CEO. Be direct, skip filler.`
 
-  let richDocument: string
-  try {
-    // Use Claude with deep research approach — this produces senior-quality plans
-    const deepPrompt = `You are a principal engineer and chief of staff writing strategic plans for an autonomous operating system called Foreman. These plans must be EXCEPTIONALLY detailed and rigorous — the kind that would survive review by a staff+ engineer at a top company.
+  // Render deterministically from structured JSON — no second LLM call.
+  // The plans already have rich data (scorecard, alternatives, checklists).
+  const sections: string[] = []
+  sections.push(`# Foreman Strategic Plans — ${new Date().toISOString().slice(0, 10)}`)
+  sections.push('')
+  sections.push(`> ${ctx.sessionCount} sessions analyzed | ${plans.length} plans generated | ${plans.filter(p => p.isExploration).length} exploration`)
+  sections.push('')
 
-## Data Available
-- ${ctx.sessionCount} operator sessions analyzed
-- ${ctx.recentDecisions.length} recent decisions (${ctx.recentDecisions.filter(d => d.status === 'success').length} succeeded)
-- Active goals: ${ctx.activeGoals.map(g => g.intent.slice(0, 60)).join('; ') || 'none'}
-- Projects: ${ctx.recentProjects.join(', ') || 'none'}
-- Key patterns: ${ctx.learnedFlows.slice(0, 3).join('; ') || 'none'}
-
-## Plans to Elaborate
-${planSummaries}
-
-## Required Output Format
-
-For EACH plan, write a full implementation brief with ALL of these sections:
-
-### Plan Title
-**Rank:** critical/high/medium/low | **Type:** product/research/engineering/exploration
-
-#### Overview
-2-3 sentences. What this is and why it matters NOW.
-
-#### Motivation & Value Proposition
-- Why this plan exists (with specific evidence from the data)
-- What value it creates (quantified if possible)
-- Who benefits and how
-- What happens if we DON'T do this
-
-#### Architecture / Approach
-- Technical approach with specific files, modules, APIs
-- ASCII diagrams showing data flow or system interaction
-- Key abstractions and interfaces
-
-#### Implementation Checklist
-Numbered steps with specific file paths and code changes:
-- [ ] Step 1: ...
-- [ ] Step 2: ...
-
-#### Quality Scorecard (rate 1-10)
-| Dimension | Score | Justification |
-|---|---|---|
-| Impact | X/10 | ... |
-| Feasibility | X/10 | ... |
-| Risk | X/10 | (lower = riskier) |
-| Novelty | X/10 | ... |
-| Alignment with operator taste | X/10 | ... |
-| Time to value | X/10 | ... |
-| Learning potential | X/10 | ... |
-| Cross-project leverage | X/10 | ... |
-| Defensibility | X/10 | ... |
-| Fun factor | X/10 | ... |
-| **Composite** | **X/10** | weighted average |
-
-#### Pitfalls & Edge Cases
-- What could go wrong (be specific, not generic)
-- Edge cases that would break the implementation
-- Dependencies that might not exist
-
-#### Risks
-- Technical risks
-- Strategic risks
-- Opportunity cost
-
-#### Success Criteria
-- Measurable outcomes that define "done"
-- How to verify it worked
-
-#### Estimated Effort
-- Time: X hours/days
-- Cost: $X (API calls, compute)
-- Prerequisites: what must exist first
-
-#### Relationship to Other Plans
-- Dependencies (must do X before Y)
-- Synergies (X makes Y easier)
-- Conflicts (X and Y compete for attention)
-
----
-
-After all individual plans, add:
-
-### Recommended Execution Order
-Ordered list with reasoning for the sequence.
-
-### Portfolio View
-Table showing all plans with composite scores, dependencies, and recommended timeline.
-
-Write this as a REAL planning document. No filler. Every sentence should be specific and actionable. Reference actual code, actual data, actual metrics. This should feel like a document written by someone who deeply understands the system, not a generic template.`
-
-    const { stdout } = await execFileAsync(CLAUDE_BIN, [
-      '-p', deepPrompt, '--output-format', 'text', '--model', 'claude-opus-4-6',
-    ], {
-      timeout: 120_000,
-      env: { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` },
-    })
-    richDocument = stdout.trim()
-  } catch (e) {
-    // Fallback: just render the plans as markdown
-    richDocument = `# Foreman Strategic Plans — ${new Date().toISOString().slice(0, 10)}\n\n${planSummaries}`
+  // Portfolio summary table
+  sections.push('## Portfolio Summary')
+  sections.push('')
+  sections.push('| # | Rank | Plan | Type | Composite | Effort |')
+  sections.push('|---|---|---|---|---|---|')
+  for (let i = 0; i < plans.length; i++) {
+    const p = plans[i] as any
+    const sc = p.scorecard ?? {}
+    const scores = Object.values(sc).map((v: any) => typeof v === 'object' ? v?.score : v).filter((n: any) => typeof n === 'number' && n > 0) as number[]
+    const composite = scores.length > 0 ? (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1) : '—'
+    const effort = p.effort?.hours ? `${p.effort.hours}h` : '—'
+    const tag = p.isExploration ? ' 🔭' : ''
+    sections.push(`| ${i + 1} | ${p.rank} | ${p.title}${tag} | ${p.type} | ${composite}/10 | ${effort} |`)
   }
+  sections.push('')
+
+  // Individual plans
+  for (const plan of plans) {
+    sections.push('---')
+    sections.push('')
+    sections.push(renderPlanReview(plan))
+    sections.push('')
+  }
+
+  const richDocument = sections.join('\n')
 
   // Publish as GitHub Gist
   try {
@@ -316,10 +246,43 @@ Generate 3-4 plans that:
 3. Have clear reasoning tied to evidence from the data above
 4. Are ranked: critical (must do), high (should do), medium (nice to have), low (consider)
 
-Each plan needs: title, type (product/research/engineering/marketing/paper), rank, reasoning (2-3 sentences with evidence), evidence (specific decision IDs or patterns), proposed_goal (intent + workspace if applicable + first_skill), risks, opportunities (what could go surprisingly right).
+Each plan MUST have ALL of these fields (be thorough):
 
-Respond with JSON array:
-[{"title":"...","type":"...","rank":"...","reasoning":"...","evidence":["..."],"proposed_goal":{"intent":"...","workspace_path":"...","first_skill":"/evolve"},"risks":["..."],"opportunities":["..."]}]`
+Respond with JSON array. Each element:
+{
+  "title": "short title",
+  "type": "product|research|engineering|marketing|paper",
+  "rank": "critical|high|medium|low",
+  "overview": "1-2 sentences: what and why NOW",
+  "motivation": "why this exists — specific evidence from the data",
+  "value_if_done": "what changes if we do this (quantified)",
+  "cost_of_inaction": "what happens if we DON'T (specific consequences)",
+  "approach": "technical approach in 3-5 bullet points",
+  "alternatives": [
+    {"name": "alt approach", "pros": "...", "cons": "...", "rejected_because": "..."}
+  ],
+  "checklist": ["step 1: specific action", "step 2: ...", "step 3: ..."],
+  "scorecard": {
+    "impact": {"score": 8, "why": "..."},
+    "feasibility": {"score": 7, "why": "..."},
+    "risk": {"score": 6, "why": "lower=riskier"},
+    "novelty": {"score": 5, "why": "..."},
+    "taste_alignment": {"score": 9, "why": "..."},
+    "time_to_value": {"score": 7, "why": "..."},
+    "learning_potential": {"score": 6, "why": "..."},
+    "cross_project_leverage": {"score": 4, "why": "..."},
+    "defensibility": {"score": 5, "why": "..."},
+    "fun": {"score": 7, "why": "..."}
+  },
+  "pitfalls": ["specific thing that could go wrong"],
+  "edge_cases": ["specific edge case to handle"],
+  "success_criteria": ["measurable outcome 1", "measurable outcome 2"],
+  "effort": {"hours": 8, "cost_usd": 5, "prerequisites": ["..."]},
+  "evidence": ["decision:15 — ...", "pattern: ..."],
+  "proposed_goal": {"intent": "...", "workspace_path": "...", "first_skill": "/evolve"},
+  "risks": ["..."],
+  "opportunities": ["what could go surprisingly RIGHT"]
+}`
 }
 
 function buildExplorationPrompt(ctx: PlanGeneratorContext): string {
@@ -348,8 +311,7 @@ These plans should feel SURPRISING. If the operator would have thought of it the
 
 Rank them honestly. Most exploration ideas are medium or low value. That's fine — the 1 in 10 that's critical is worth the other 9.
 
-Respond with JSON array:
-[{"title":"...","type":"exploration","rank":"...","reasoning":"...","evidence":["operator pattern: ..."],"proposed_goal":{"intent":"..."},"risks":["..."],"opportunities":["..."]}]`
+Respond with the SAME JSON format as exploitation plans (with overview, motivation, alternatives, checklist, scorecard, pitfalls, etc). Use type: "exploration".`
 }
 
 async function callLLMForPlans(prompt: string, isExploration: boolean): Promise<Plan[]> {
@@ -364,18 +326,25 @@ async function callLLMForPlans(prompt: string, isExploration: boolean): Promise<
     const match = stdout.match(/\[[\s\S]*\]/)
     if (!match) return []
 
-    const raw = JSON.parse(match[0]) as Array<{
-      title: string, type: string, rank: string, reasoning: string,
-      evidence: string[], proposed_goal: { intent: string, workspace_path?: string, first_skill?: string },
-      risks: string[], opportunities: string[],
-    }>
+    const raw = JSON.parse(match[0]) as any[]
 
-    return raw.map(r => ({
+    return raw.map((r: any) => ({
       id: `plan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
       title: r.title,
       type: (isExploration ? 'exploration' : r.type) as PlanType,
       rank: r.rank as PlanRank,
-      reasoning: r.reasoning,
+      reasoning: r.overview ?? r.reasoning ?? '',
+      motivation: r.motivation ?? '',
+      valueIfDone: r.value_if_done ?? '',
+      costOfInaction: r.cost_of_inaction ?? '',
+      approach: r.approach ?? '',
+      alternatives: r.alternatives ?? [],
+      checklist: r.checklist ?? [],
+      scorecard: r.scorecard ?? {},
+      pitfalls: r.pitfalls ?? [],
+      edgeCases: r.edge_cases ?? [],
+      successCriteria: r.success_criteria ?? [],
+      effort: r.effort ?? {},
       evidence: r.evidence ?? [],
       proposedGoal: {
         intent: r.proposed_goal?.intent ?? r.title,
@@ -435,46 +404,143 @@ export function getPlan(id: string): Plan | null {
 
 // ─── Render human-readable review ────────────────────────────────────
 
-function renderPlanReview(p: Plan): string {
+function renderPlanReview(p: any): string {
   const lines: string[] = []
-  const explorationTag = p.isExploration ? ' 🔭 EXPLORATION' : ''
+  const rankIcon = { critical: '🔴', high: '🟠', medium: '🟡', low: '⚪' }[p.rank] ?? '⚪'
+  const explorationTag = p.isExploration ? ' 🔭' : ''
 
-  lines.push(`# Plan: ${p.title}${explorationTag}`)
-  lines.push(`Type: ${p.type} | Rank: ${p.rank} | Status: ${p.status}`)
-  lines.push(`Date: ${p.createdAt}`)
+  lines.push(`# ${rankIcon} ${p.title}${explorationTag}`)
+  lines.push('')
+  lines.push(`| | |`)
+  lines.push(`|---|---|`)
+  lines.push(`| **Rank** | ${p.rank} |`)
+  lines.push(`| **Type** | ${p.type} |`)
+  lines.push(`| **Status** | ${p.status} |`)
+  if (p.effort?.hours) lines.push(`| **Effort** | ${p.effort.hours}h, ~$${p.effort.cost_usd ?? '?'} |`)
+  lines.push(`| **Date** | ${p.createdAt?.slice(0, 10)} |`)
   lines.push('')
 
-  lines.push('## Reasoning')
-  lines.push(p.reasoning)
-  lines.push('')
+  // Overview
+  if (p.reasoning) {
+    lines.push(`## Overview`)
+    lines.push(p.reasoning)
+    lines.push('')
+  }
 
-  if (p.opportunities.length > 0) {
+  // Motivation
+  if (p.motivation) {
+    lines.push(`## Motivation`)
+    lines.push(p.motivation)
+    lines.push('')
+  }
+
+  // Value / Cost of inaction
+  if (p.valueIfDone || p.costOfInaction) {
+    lines.push('## Value Proposition')
+    lines.push('')
+    lines.push('| | |')
+    lines.push('|---|---|')
+    if (p.valueIfDone) lines.push(`| **If we do this** | ${p.valueIfDone} |`)
+    if (p.costOfInaction) lines.push(`| **If we don't** | ${p.costOfInaction} |`)
+    lines.push('')
+  }
+
+  // Approach
+  if (p.approach) {
+    lines.push('## Approach')
+    if (typeof p.approach === 'string') lines.push(p.approach)
+    else if (Array.isArray(p.approach)) for (const a of p.approach) lines.push(`- ${a}`)
+    lines.push('')
+  }
+
+  // Alternatives considered
+  if (p.alternatives?.length > 0) {
+    lines.push('## Alternatives Considered')
+    lines.push('')
+    lines.push('| Alternative | Pros | Cons | Verdict |')
+    lines.push('|---|---|---|---|')
+    for (const alt of p.alternatives) {
+      lines.push(`| ${alt.name} | ${alt.pros} | ${alt.cons} | ❌ ${alt.rejected_because} |`)
+    }
+    lines.push('')
+  }
+
+  // Implementation checklist
+  if (p.checklist?.length > 0) {
+    lines.push('## Implementation Checklist')
+    for (const step of p.checklist) lines.push(`- [ ] ${step}`)
+    lines.push('')
+  }
+
+  // Scorecard
+  if (p.scorecard && Object.keys(p.scorecard).length > 0) {
+    lines.push('## Quality Scorecard')
+    lines.push('')
+    lines.push('| Dimension | Score | Justification |')
+    lines.push('|---|---|---|')
+    let total = 0; let count = 0
+    for (const [dim, val] of Object.entries(p.scorecard)) {
+      const v = val as any
+      const score = v?.score ?? v
+      const why = v?.why ?? ''
+      const bar = typeof score === 'number' ? ('█'.repeat(score) + '░'.repeat(10 - score)) : ''
+      lines.push(`| ${dim.replace(/_/g, ' ')} | ${bar} ${score}/10 | ${why} |`)
+      if (typeof score === 'number') { total += score; count++ }
+    }
+    if (count > 0) {
+      const composite = (total / count).toFixed(1)
+      lines.push(`| **Composite** | **${composite}/10** | |`)
+    }
+    lines.push('')
+  }
+
+  // Pitfalls & edge cases
+  if (p.pitfalls?.length > 0 || p.edgeCases?.length > 0) {
+    lines.push('## Pitfalls & Edge Cases')
+    for (const pit of (p.pitfalls ?? [])) lines.push(`- ⚠️ ${pit}`)
+    for (const ec of (p.edgeCases ?? [])) lines.push(`- 🔲 ${ec}`)
+    lines.push('')
+  }
+
+  // Risks
+  if (p.risks?.length > 0) {
+    lines.push('## Risks')
+    for (const r of p.risks) lines.push(`- ${r}`)
+    lines.push('')
+  }
+
+  // Opportunities
+  if (p.opportunities?.length > 0) {
     lines.push('## What Could Go Surprisingly Right')
     for (const o of p.opportunities) lines.push(`- 🚀 ${o}`)
     lines.push('')
   }
 
-  if (p.risks.length > 0) {
-    lines.push('## Risks')
-    for (const r of p.risks) lines.push(`- ⚠️ ${r}`)
+  // Success criteria
+  if (p.successCriteria?.length > 0) {
+    lines.push('## Success Criteria')
+    for (const sc of p.successCriteria) lines.push(`- ✅ ${sc}`)
     lines.push('')
   }
 
-  lines.push('## Proposed Goal')
-  lines.push(`Intent: ${p.proposedGoal.intent}`)
-  if (p.proposedGoal.workspacePath) lines.push(`Workspace: ${p.proposedGoal.workspacePath}`)
-  if (p.proposedGoal.firstSkill) lines.push(`First skill: ${p.proposedGoal.firstSkill}`)
-  lines.push('')
-
-  if (p.evidence.length > 0) {
+  // Evidence
+  if (p.evidence?.length > 0) {
     lines.push('## Evidence')
     for (const e of p.evidence) lines.push(`- ${e}`)
     lines.push('')
   }
 
+  // Proposed goal
+  lines.push('## Proposed Goal')
+  lines.push(`**Intent:** ${p.proposedGoal?.intent ?? p.title}`)
+  if (p.proposedGoal?.workspacePath) lines.push(`**Workspace:** ${p.proposedGoal.workspacePath}`)
+  if (p.proposedGoal?.firstSkill) lines.push(`**First skill:** ${p.proposedGoal.firstSkill}`)
+  lines.push('')
+
   if (p.isExploration) {
-    lines.push('## Why This Is An Exploration Plan')
-    lines.push('This plan is deliberately outside your usual pattern. If it resonates,')
+    lines.push('---')
+    lines.push('*🔭 This is an exploration plan — deliberately outside your usual pattern.*')
+    lines.push('*Approving it teaches Foreman to think more creatively.*')
     lines.push("that's a signal Foreman found something genuinely new. Approving exploration")
     lines.push('plans trains the system to think more creatively.')
   }
