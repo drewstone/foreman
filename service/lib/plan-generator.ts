@@ -95,14 +95,143 @@ export async function generatePlans(ctx: PlanGeneratorContext): Promise<Plan[]> 
     writeFileSync(join(planDir, 'REVIEW.md'), renderPlanReview(plan))
   }
 
-  // Publish each plan as its own gist
+  // For each plan, dispatch Claude to write a FULL implementation brief
+  // with real code references, file paths, snippets, and diagrams.
+  // Then publish each as its own gist.
   for (const plan of plans) {
-    const review = renderPlanReview(plan)
-    const gistUrl = await publishSinglePlanGist(plan, review)
+    const fullPlan = await generateFullPlanDocument(plan, ctx)
+    const gistUrl = await publishSinglePlanGist(plan, fullPlan)
     if (gistUrl) (plan as any).gistUrl = gistUrl
+    // Also save locally
+    const planDir = join(PLANS_DIR, plan.id)
+    writeFileSync(join(planDir, 'PLAN.md'), fullPlan)
   }
 
   return plans
+}
+
+// ─── Full plan document generation ────────────────────────────────────
+// Dispatches Claude with codebase access to write a detailed implementation
+// plan with real file paths, code snippets, architecture diagrams, and
+// step-by-step instructions. This is the ~/.claude/plans/ quality level.
+
+async function generateFullPlanDocument(plan: any, ctx: PlanGeneratorContext): Promise<string> {
+  const workspace = plan.proposedGoal?.workspacePath ?? process.cwd()
+
+  const prompt = `You are writing a FULL IMPLEMENTATION PLAN for this feature/improvement. This must be publication-quality — the kind of plan a principal engineer writes before a major project.
+
+## The Plan
+Title: ${plan.title}
+Type: ${plan.type}
+Rank: ${plan.rank}
+Overview: ${plan.reasoning}
+Motivation: ${plan.motivation || 'See overview'}
+Value: ${plan.valueIfDone || 'Significant improvement'}
+Cost of inaction: ${plan.costOfInaction || 'Continued current state'}
+
+## Your Task
+Write a COMPREHENSIVE implementation plan. This should be 200-400 lines of markdown. Include ALL of these:
+
+### 1. Executive Summary (3-4 sentences)
+What, why, and what changes.
+
+### 2. Context & Motivation
+- Current state (read actual code to understand)
+- Why this matters NOW
+- What happens if we don't do this
+- Who benefits
+
+### 3. Architecture
+- ASCII diagram showing the system before and after
+- Mermaid diagram of the data flow or component interaction
+- Key interfaces and abstractions
+- How this fits into the existing system
+
+### 4. Detailed Implementation Plan
+For EACH step:
+- Specific file path to create/modify
+- Code snippets showing the key changes (actual TypeScript/Python, not pseudocode)
+- What to test after each step
+- Estimated time
+
+Use checkboxes:
+- [ ] Step 1: Create X at path/to/file.ts
+  \`\`\`typescript
+  // actual code snippet
+  \`\`\`
+
+### 5. API Changes (if any)
+- New endpoints with request/response shapes
+- Changed endpoints with migration path
+- Client changes needed
+
+### 6. Alternatives Considered
+| Approach | Pros | Cons | Why rejected |
+|---|---|---|---|
+| ... | ... | ... | ... |
+
+### 7. Quality Scorecard
+| Dimension | Score | Bar | Justification |
+|---|---|---|---|
+| Impact | X/10 | █████░░░░░ | ... |
+(all 10 dimensions)
+
+### 8. Risks & Mitigations
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| ... | ... | ... | ... |
+
+### 9. Edge Cases & Pitfalls
+Specific scenarios that could break, with how to handle each.
+
+### 10. Testing Strategy
+- Unit tests needed
+- Integration tests needed
+- How to verify the feature works end-to-end
+
+### 11. Success Criteria
+Measurable outcomes. How do we know this worked?
+
+### 12. Dependencies & Prerequisites
+What must exist before starting? What blocks what?
+
+### 13. Effort Estimate
+| Phase | Hours | Cost | Notes |
+|---|---|---|---|
+| Design | X | $0 | ... |
+| Implementation | X | $Y | ... |
+| Testing | X | $0 | ... |
+| **Total** | **X** | **$Y** | ... |
+
+### 14. Rollback Plan
+How to undo if it goes wrong.
+
+IMPORTANT:
+- Read the actual codebase at ${workspace} to reference real files, functions, and APIs
+- Use real code snippets, not pseudocode
+- Be specific about file paths
+- Include mermaid diagrams where they help
+- This should be 200-400 lines minimum
+- Write it like a senior staff engineer, not a template`
+
+  try {
+    const promptFile = join(FOREMAN_HOME, 'plans', `_fullplan_${Date.now()}.txt`)
+    writeFileSync(promptFile, prompt)
+    const { stdout } = await execFileAsync(CLAUDE_BIN, [
+      '-p', `Read ${promptFile} and follow the instructions exactly. Write the full implementation plan.`,
+      '--output-format', 'text', '--model', 'claude-opus-4-6',
+      '--dangerously-skip-permissions',
+    ], {
+      timeout: 180_000, // 3 minutes for deep plan generation
+      env: { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` },
+      cwd: workspace,
+    })
+    try { require('fs').unlinkSync(promptFile) } catch {}
+    return stdout.trim() || renderPlanReview(plan) // fallback to template
+  } catch (e) {
+    console.log(`Full plan generation failed: ${e instanceof Error ? e.message : String(e)}`)
+    return renderPlanReview(plan) // fallback to template rendering
+  }
 }
 
 // ─── Per-plan GitHub Gist ─────────────────────────────────────────────
