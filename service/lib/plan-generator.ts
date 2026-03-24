@@ -316,11 +316,22 @@ Respond with the SAME JSON format as exploitation plans (with overview, motivati
 
 async function callLLMForPlans(prompt: string, isExploration: boolean): Promise<Plan[]> {
   try {
-    const { stdout } = await execFileAsync(CLAUDE_BIN, [
-      '-p', prompt, '--output-format', 'text', '--model', 'claude-opus-4-6',
-    ], {
-      timeout: 90_000,
-      env: { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` },
+    // Pipe prompt via stdin to avoid CLI arg size limits
+    const { spawn } = await import('node:child_process')
+    const stdout = await new Promise<string>((resolve, reject) => {
+      const proc = spawn(CLAUDE_BIN, [
+        '-p', '-', '--output-format', 'text', '--model', 'claude-opus-4-6',
+      ], {
+        env: { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` },
+        timeout: 120_000,
+      })
+      let out = ''; let err = ''
+      proc.stdout.on('data', (d: Buffer) => { out += d.toString() })
+      proc.stderr.on('data', (d: Buffer) => { err += d.toString() })
+      proc.on('close', (code: number) => { resolve(out) })
+      proc.on('error', reject)
+      proc.stdin.write(prompt)
+      proc.stdin.end()
     })
 
     const match = stdout.match(/\[[\s\S]*\]/)
