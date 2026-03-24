@@ -358,21 +358,13 @@ const tmuxBackend: ExecutionBackend = {
       mkdirSync(dstDir, { recursive: true })
       try { if (!existsSync(dst)) execFileSync('ln', ['-sf', src, dst], { stdio: 'ignore' }) } catch {}
     }
-    // Claude Code: create a session-specific .claude/ dir with selective symlinks.
-    // Auth + skills are shared (read-only). Projects/sessions/cache are session-local.
-    const claudeDir = join(sessionHome, '.claude')
-    mkdirSync(claudeDir, { recursive: true })
+    // Claude Code: symlink the entire .claude/ directory.
+    // Previous approach (selective symlinks) broke OAuth auth — Claude stores
+    // tokens in the keychain and needs its full config directory to authenticate.
+    // The session HOME still provides isolation for npm/pip/other tools.
+    const claudeSymlink = join(sessionHome, '.claude')
     const realClaudeDir = join(realHome, '.claude')
-    // Symlink individual read-only files
-    for (const f of ['credentials.json', 'settings.json', 'settings.local.json']) {
-      const src = join(realClaudeDir, f)
-      const dst = join(claudeDir, f)
-      try { if (existsSync(src) && !existsSync(dst)) execFileSync('ln', ['-sf', src, dst], { stdio: 'ignore' }) } catch {}
-    }
-    // Symlink skills directory (read-only — sessions use skills but don't install new ones)
-    const realSkills = join(realClaudeDir, 'skills')
-    const sessionSkills = join(claudeDir, 'skills')
-    try { if (existsSync(realSkills) && !existsSync(sessionSkills)) execFileSync('ln', ['-sf', realSkills, sessionSkills], { stdio: 'ignore' }) } catch {}
+    try { if (existsSync(realClaudeDir) && !existsSync(claudeSymlink)) execFileSync('ln', ['-sf', realClaudeDir, claudeSymlink], { stdio: 'ignore' }) } catch {}
 
     tmuxQuiet(['new-session', '-d', '-s', name, '-c', workDir])
     // Set isolated HOME in the tmux session
