@@ -146,44 +146,21 @@ function cleanup(...files: (string | undefined)[]) {
 }
 
 /**
- * Quick Claude call for JSON generation — uses claude -p with pipe.
- * For prompts under 4K chars that just need a JSON response.
- * Falls back to callClaude() for longer prompts.
+ * Claude call for JSON generation — always uses tmux session for
+ * reliable auth and output capture. Parses JSON from the response.
  */
 export async function callClaudeForJSON<T = any>(prompt: string, model = 'claude-sonnet-4-6'): Promise<T | null> {
-  if (prompt.length > 3500) {
-    // Long prompt — use full tmux session
-    const result = await callClaude({
-      prompt: prompt + '\n\nRespond with JSON only. Write the JSON to the output file.',
-      model,
-      label: 'json',
-      timeoutMs: 90_000,
-    })
-    try {
-      const match = result.output.match(/[\[{][\s\S]*[}\]]/)
-      return match ? JSON.parse(match[0]) : null
-    } catch { return null }
-  }
+  const result = await callClaude({
+    prompt: prompt + '\n\nRespond with JSON only.',
+    model,
+    label: 'json',
+    timeoutMs: 90_000,
+  })
 
-  // Short prompt — use bash pipe (fast, no tmux overhead)
-  const { execFile } = await import('node:child_process')
-  const { promisify } = await import('node:util')
-  const execFileAsync = promisify(execFile)
-
-  const promptFile = join(FOREMAN_HOME, 'runner-output', `_json_${Date.now()}.txt`)
-  mkdirSync(join(FOREMAN_HOME, 'runner-output'), { recursive: true })
-  writeFileSync(promptFile, prompt)
+  if (!result.output) return null
 
   try {
-    const { stdout } = await execFileAsync('bash', [
-      '-c', `cat "${promptFile}" | "${CLAUDE_BIN}" -p --output-format text --model ${model}`,
-    ], { timeout: 60_000, env: ENV })
-    cleanup(promptFile)
-
-    const match = stdout.match(/[\[{][\s\S]*[}\]]/)
+    const match = result.output.match(/[\[{][\s\S]*[}\]]/)
     return match ? JSON.parse(match[0]) : null
-  } catch {
-    cleanup(promptFile)
-    return null
-  }
+  } catch { return null }
 }
