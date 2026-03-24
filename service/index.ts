@@ -343,7 +343,7 @@ const tmuxBackend: ExecutionBackend = {
 
     pendingPrompts.set(name, req)
     stmts.insertSession.run(name, req.goalId, req.decisionId, workDir, prompt)
-    log(`Spawned session ${name} in ${workDir} (HOME=${sessionHome})${model ? ` (model: ${model})` : ''}${mcpFlag ? ' +mcp' : ''}`)
+    log(`Spawned session ${name} in ${workDir}${model ? ` (model: ${model})` : ''}${mcpFlag ? ' +mcp' : ''}`)
   },
 
   isAlive: isTmuxAlive,
