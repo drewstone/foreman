@@ -332,16 +332,17 @@ Respond with the SAME JSON format as exploitation plans (with overview, motivati
 
 async function callLLMForPlans(prompt: string, isExploration: boolean): Promise<Plan[]> {
   try {
-    // Use Sonnet for fast JSON generation (Opus for full plans later)
-    // Pass prompt directly — keep it under 4K chars
-    const shortPrompt = prompt.slice(0, 4000)
-    const { stdout } = await execFileAsync(CLAUDE_BIN, [
-      '-p', shortPrompt,
-      '--output-format', 'text', '--model', 'claude-sonnet-4-6',
+    // Write prompt to file, pipe to claude via bash
+    const promptFile = join(FOREMAN_HOME, 'plans', `_prompt_${Date.now()}.txt`)
+    mkdirSync(join(FOREMAN_HOME, 'plans'), { recursive: true })
+    writeFileSync(promptFile, prompt)
+    const { stdout } = await execFileAsync('bash', [
+      '-c', `cat "${promptFile}" | "${CLAUDE_BIN}" -p --output-format text --model claude-sonnet-4-6`,
     ], {
-      timeout: 60_000,
+      timeout: 90_000,
       env: { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` },
     })
+    try { require('fs').unlinkSync(promptFile) } catch {}
 
     const match = stdout.match(/\[[\s\S]*\]/)
     if (!match) return []
