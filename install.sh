@@ -162,6 +162,12 @@ if [ -d "$HOME/.pi/agent" ]; then
   ln -sf "$REPO_DIR/pi-package/skills/foreman" "$HOME/.pi/agent/skills/foreman"
 fi
 
+# ─── CLI ──────────────────────────────────────────────────────────────
+
+log "Installing CLI..."
+mkdir -p "$HOME/.local/bin"
+ln -sf "$REPO_DIR/bin/foreman" "$HOME/.local/bin/foreman"
+
 # ─── Done ─────────────────────────────────────────────────────────────
 
 HEALTH=$(curl -s "http://127.0.0.1:$SERVICE_PORT/api/health" 2>/dev/null || echo "")

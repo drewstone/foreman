@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Foreman CLI — thin wrapper around the HTTP API
+# Install adds this to PATH via symlink
+
+set -euo pipefail
+
+FOREMAN_URL="${FOREMAN_URL:-http://127.0.0.1:7374}"
+API="$FOREMAN_URL/api"
+
+usage() {
+  cat << 'EOF'
+Foreman — autonomous operating system
+
+Usage: foreman <command> [args]
+
+Commands:
+  status           Show portfolio status (goals, sessions, recent decisions)
+  goals            List active goals
+  goal <intent>    Create a new goal
+  dispatch <task>  Dispatch a task (optional: --skill /evolve --workspace ~/code/foo)
+  sessions         List active sessions
+  watch            Watch all sessions live (tmux grid)
+  decisions [N]    Show last N decisions (default: 10)
+  plans            List strategic plans
+  plan             Generate new strategic plans
+  confidence       Show confidence levels
+  learn            Trigger learning loop
+  logs             Follow service logs
+  restart          Restart the service
+  update           Pull latest and restart
+
+EOF
+}
+
+json() { curl -sf "$@" | python3 -m json.tool 2>/dev/null || curl -sf "$@"; }
+
+case "${1:-help}" in
+  status)
+    json "$API/status"
+    ;;
+  goals)
+    json "$API/goals"
+    ;;
+  goal)
+    shift
+    curl -sf -X POST "$API/goals" -H 'Content-Type: application/json' \
+      -d "{\"intent\": \"$*\"}" | python3 -m json.tool
+    ;;
+  dispatch)
+    shift
+    SKILL=""
+    WORKSPACE=""
+    TASK=""
+    while [[ $# -gt 0 ]]; do
+      case $1 in
+        --skill) SKILL="$2"; shift 2;;
+        --workspace) WORKSPACE="$2"; shift 2;;
+        *) TASK="$TASK $1"; shift;;
+      esac
+    done
+    TASK="${TASK# }"
+    BODY="{\"task\": \"$TASK\""
+    [ -n "$SKILL" ] && BODY="$BODY, \"skill\": \"$SKILL\""
+    [ -n "$WORKSPACE" ] && BODY="$BODY, \"workspace\": \"$WORKSPACE\""
+    BODY="$BODY}"
+    curl -sf -X POST "$API/dispatch" -H 'Content-Type: application/json' -d "$BODY" | python3 -m json.tool
+    ;;
+  sessions)
+    json "$API/sessions"
+    ;;
+  watch)
+    bash "$(dirname "$0")/../scripts/watch.sh"
+    ;;
+  decisions)
+    LIMIT="${2:-10}"
+    json "$API/decisions?limit=$LIMIT"
+    ;;
+  plans)
+    json "$API/plans"
+    ;;
+  plan)
+    curl -sf -X POST "$API/plans/generate" -H 'Content-Type: application/json' | python3 -m json.tool
+    ;;
+  confidence)
+    json "$API/confidence"
+    ;;
+  learn)
+    curl -sf -X POST "$API/learn" -H 'Content-Type: application/json' | python3 -m json.tool
+    ;;
+  logs)
+    journalctl --user -u foreman -f --no-pager
+    ;;
+  restart)
+    systemctl --user restart foreman.service
+    echo "Foreman restarted"
+    ;;
+  update)
+    REPO="${FOREMAN_HOME:-$HOME/.foreman}/repo"
+    cd "$REPO" && git pull --rebase
+    systemctl --user restart foreman.service
+    echo "Updated and restarted"
+    ;;
+  help|--help|-h)
+    usage
+    ;;
+  *)
+    echo "Unknown command: $1"
+    usage
+    exit 1
+    ;;
+esac
