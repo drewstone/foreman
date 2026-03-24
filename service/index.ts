@@ -3169,7 +3169,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       // Use the ideation prompt directly — it tells Claude to write JSON to a file
       spawnSession({
         name: sName, workDir: wt.path, prompt: dispatch.prompt,
-        goalId: 0 as any, decisionId,
+        goalId: null as any, decisionId,
       })
 
       return json(res, {
@@ -3426,7 +3426,7 @@ server.listen(PORT, '127.0.0.1', () => {
     )
     spawnSession({
       name: sName, workDir: dispatch.workspace, prompt: dispatch.prompt,
-      goalId: 0 as any, decisionId: Number(result.lastInsertRowid),
+      goalId: null as any, decisionId: Number(result.lastInsertRowid),
     })
     log(`Plan ideation dispatched: ${sName}`)
   }
