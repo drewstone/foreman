@@ -220,14 +220,15 @@ IMPORTANT:
 - Write it like a senior staff engineer, not a template`
 
   try {
-    // Full tools — Claude can read the codebase, do web research, etc.
-    // The prompt must make clear the OUTPUT is a markdown document.
+    // Text-only mode for document generation. Tool-access plan research
+    // is a separate dispatch that writes findings to a file.
     const result = await callClaude({
       prompt,
       cwd: workspace,
       model: 'claude-opus-4-6',
-      timeoutMs: 300_000,
+      timeoutMs: 180_000,
       label: 'plan',
+      noTools: true,
     })
     return result.output || renderPlanReview(plan)
   } catch (e) {
