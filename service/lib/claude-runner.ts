@@ -77,23 +77,48 @@ export async function callClaude(opts: ClaudeRunOptions): Promise<ClaudeRunResul
     // Capture ALL pane output to log file
     tmuxQuiet(['pipe-pane', '-t', sessionName, '-o', `cat >> "${logFile}"`])
 
-    // Run claude -p with the prompt piped via bash (reliable delivery)
+    // Start Claude interactively, wait for ready, then send prompt
     tmuxQuiet(['send-keys', '-t', sessionName,
-      `cat "${promptFile}" | ${CLAUDE_BIN} --dangerously-skip-permissions --model ${model} -p && exit`,
+      `${CLAUDE_BIN} --dangerously-skip-permissions --model ${model}`,
       'Enter'])
 
-    // Wait for session to exit (claude -p exits when done, then `exit` closes tmux)
-    const pollInterval = 3_000
+    // Wait for Claude TUI to initialize
+    for (let boot = 0; boot < 30; boot++) {
+      await new Promise(r => setTimeout(r, 1_000))
+      const pane = tmux(['capture-pane', '-t', sessionName, '-p', '-S', '-3'])
+      if (pane.includes('❯') || pane.includes('▐▛') || pane.includes('>')) break
+    }
+    await new Promise(r => setTimeout(r, 2_000))
+
+    // Send the prompt (read from file to avoid send-keys length limits)
+    const shortPrompt = `Read the file ${promptFile} and follow the instructions in it exactly. This is your task.`
+    tmuxQuiet(['send-keys', '-t', sessionName, '-l', shortPrompt])
+    tmuxQuiet(['send-keys', '-t', sessionName, 'Enter'])
+
+    // Wait for Claude to finish (detect idle — prompt appears again)
+    const pollInterval = 5_000
     const maxPolls = Math.ceil(timeoutMs / pollInterval)
+    let idleCount = 0
 
     for (let i = 0; i < maxPolls; i++) {
       await new Promise(r => setTimeout(r, pollInterval))
 
       const alive = tmuxQuiet(['has-session', '-t', sessionName])
       if (!alive) break
+
+      // Check if Claude is idle (prompt visible, no streaming)
+      const pane = tmux(['capture-pane', '-t', sessionName, '-p', '-S', '-3'])
+      if (pane.includes('❯') || pane.includes('>')) {
+        idleCount++
+        if (idleCount >= 2) break // idle for 2 consecutive polls = done
+      } else {
+        idleCount = 0
+      }
     }
 
-    // Kill if still alive (timeout)
+    // Send /exit to close Claude, then exit tmux
+    tmuxQuiet(['send-keys', '-t', sessionName, '/exit', 'Enter'])
+    await new Promise(r => setTimeout(r, 2_000))
     tmuxQuiet(['kill-session', '-t', sessionName])
 
     // Read captured output from log
