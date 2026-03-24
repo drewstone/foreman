@@ -119,7 +119,11 @@ export async function generatePlans(ctx: PlanGeneratorContext): Promise<Plan[]> 
 async function generateFullPlanDocument(plan: any, ctx: PlanGeneratorContext): Promise<string> {
   const workspace = plan.proposedGoal?.workspacePath ?? process.cwd()
 
-  const prompt = `You are writing a FULL IMPLEMENTATION PLAN for this feature/improvement. This must be publication-quality — the kind of plan a principal engineer writes before a major project.
+  const prompt = `YOUR OUTPUT IS A MARKDOWN DOCUMENT. You are a principal engineer writing an implementation plan. Use your tools to READ the codebase at ${workspace} to understand it, then OUTPUT a comprehensive markdown plan.
+
+IMPORTANT: Your FINAL OUTPUT must be the full markdown plan printed to stdout. Do NOT just make changes or summarize — WRITE THE PLAN.
+
+First, read relevant files in ${workspace} to understand the codebase. Then write the plan.
 
 ## The Plan
 Title: ${plan.title}
@@ -130,8 +134,8 @@ Motivation: ${plan.motivation || 'See overview'}
 Value: ${plan.valueIfDone || 'Significant improvement'}
 Cost of inaction: ${plan.costOfInaction || 'Continued current state'}
 
-## Your Task
-Write a COMPREHENSIVE implementation plan. This should be 200-400 lines of markdown. Include ALL of these:
+## Write This Plan (200-400 lines of markdown)
+Include ALL of these sections:
 
 ### 1. Executive Summary (3-4 sentences)
 What, why, and what changes.
@@ -216,15 +220,14 @@ IMPORTANT:
 - Write it like a senior staff engineer, not a template`
 
   try {
-    // Use callClaude WITHOUT tool access — we want Claude to WRITE a plan,
-    // not execute tasks. The plan data is already in the prompt.
+    // Full tools — Claude can read the codebase, do web research, etc.
+    // The prompt must make clear the OUTPUT is a markdown document.
     const result = await callClaude({
       prompt,
       cwd: workspace,
       model: 'claude-opus-4-6',
       timeoutMs: 300_000,
       label: 'plan',
-      noTools: true, // text-only mode for document generation
     })
     return result.output || renderPlanReview(plan)
   } catch (e) {
