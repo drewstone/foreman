@@ -236,7 +236,7 @@ Table showing all plans with composite scores, dependencies, and recommended tim
 Write this as a REAL planning document. No filler. Every sentence should be specific and actionable. Reference actual code, actual data, actual metrics. This should feel like a document written by someone who deeply understands the system, not a generic template.`
 
     const { stdout } = await execFileAsync(CLAUDE_BIN, [
-      '-p', deepPrompt, '--output-format', 'text', '--model', 'claude-sonnet-4-6',
+      '-p', deepPrompt, '--output-format', 'text', '--model', 'claude-opus-4-6',
     ], {
       timeout: 120_000,
       env: { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` },
@@ -355,7 +355,7 @@ Respond with JSON array:
 async function callLLMForPlans(prompt: string, isExploration: boolean): Promise<Plan[]> {
   try {
     const { stdout } = await execFileAsync(CLAUDE_BIN, [
-      '-p', prompt, '--output-format', 'text', '--model', 'claude-sonnet-4-6',
+      '-p', prompt, '--output-format', 'text', '--model', 'claude-opus-4-6',
     ], {
       timeout: 90_000,
       env: { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` },
