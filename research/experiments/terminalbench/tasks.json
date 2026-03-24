@@ -1,0 +1,212 @@
+[
+  {
+    "id": "tb-easy-01", "tier": "easy",
+    "description": "Create a directory structure: mkdir -p project/{src,test,docs} and create an empty index.js in src/",
+    "setup": "cd /tmp/tb-$$-01 && mkdir -p /tmp/tb-$$-01",
+    "verify": "test -d project/src && test -d project/test && test -d project/docs && test -f project/src/index.js",
+    "cleanup": "rm -rf /tmp/tb-$$-01"
+  },
+  {
+    "id": "tb-easy-02", "tier": "easy",
+    "description": "Find all .js files in the current directory tree and count them. Write the count to count.txt",
+    "setup": "cd /tmp/tb-$$-02 && mkdir -p /tmp/tb-$$-02/a/b && touch /tmp/tb-$$-02/{one.js,two.js} && touch /tmp/tb-$$-02/a/{three.js,four.txt} && touch /tmp/tb-$$-02/a/b/five.js",
+    "verify": "test \"$(cat count.txt)\" = \"3\" || test \"$(cat count.txt | tr -d '[:space:]')\" = \"3\"",
+    "cleanup": "rm -rf /tmp/tb-$$-02"
+  },
+  {
+    "id": "tb-easy-03", "tier": "easy",
+    "description": "Create a bash script called greet.sh that takes a name argument and prints 'Hello, <name>!' — make it executable",
+    "setup": "cd /tmp/tb-$$-03 && mkdir -p /tmp/tb-$$-03",
+    "verify": "test -x greet.sh && test \"$(bash greet.sh World)\" = \"Hello, World!\"",
+    "cleanup": "rm -rf /tmp/tb-$$-03"
+  },
+  {
+    "id": "tb-easy-04", "tier": "easy",
+    "description": "Sort the file data.txt by the second column (numeric) in descending order and write to sorted.txt",
+    "setup": "cd /tmp/tb-$$-04 && mkdir -p /tmp/tb-$$-04 && printf 'alice 30\\nbob 25\\ncharlie 45\\ndave 10\\neve 35\\n' > /tmp/tb-$$-04/data.txt",
+    "verify": "head -1 sorted.txt | grep -q charlie && tail -1 sorted.txt | grep -q dave",
+    "cleanup": "rm -rf /tmp/tb-$$-04"
+  },
+  {
+    "id": "tb-easy-05", "tier": "easy",
+    "description": "Replace all occurrences of 'foo' with 'bar' in input.txt and write to output.txt (don't modify input.txt)",
+    "setup": "cd /tmp/tb-$$-05 && mkdir -p /tmp/tb-$$-05 && printf 'foo is great\\nfoo and foo\\nnot here\\n' > /tmp/tb-$$-05/input.txt",
+    "verify": "grep -c bar output.txt | grep -q 3 && grep -q foo input.txt && ! grep -q foo output.txt",
+    "cleanup": "rm -rf /tmp/tb-$$-05"
+  },
+  {
+    "id": "tb-easy-06", "tier": "easy",
+    "description": "Extract all unique email addresses from emails.txt and write them (one per line, sorted) to unique.txt",
+    "setup": "cd /tmp/tb-$$-06 && mkdir -p /tmp/tb-$$-06 && printf 'Contact alice@example.com for info\\nOr bob@test.org\\nalice@example.com is also available\\nReach carol@example.com\\n' > /tmp/tb-$$-06/emails.txt",
+    "verify": "test \"$(wc -l < unique.txt | tr -d ' ')\" = \"3\" && head -1 unique.txt | grep -q alice && tail -1 unique.txt | grep -q carol",
+    "cleanup": "rm -rf /tmp/tb-$$-06"
+  },
+  {
+    "id": "tb-easy-07", "tier": "easy",
+    "description": "Create a JSON file config.json with keys: name='myapp', version='1.0.0', port=3000 (port as number, not string)",
+    "setup": "cd /tmp/tb-$$-07 && mkdir -p /tmp/tb-$$-07",
+    "verify": "python3 -c \"import json; d=json.load(open('config.json')); assert d['name']=='myapp' and d['version']=='1.0.0' and d['port']==3000\"",
+    "cleanup": "rm -rf /tmp/tb-$$-07"
+  },
+  {
+    "id": "tb-easy-08", "tier": "easy",
+    "description": "Compress all .log files in the current directory into an archive called logs.tar.gz",
+    "setup": "cd /tmp/tb-$$-08 && mkdir -p /tmp/tb-$$-08 && echo 'log1' > /tmp/tb-$$-08/app.log && echo 'log2' > /tmp/tb-$$-08/error.log && echo 'log3' > /tmp/tb-$$-08/access.log && echo 'not a log' > /tmp/tb-$$-08/readme.txt",
+    "verify": "test -f logs.tar.gz && tar tzf logs.tar.gz | grep -c '\\.log' | grep -q 3",
+    "cleanup": "rm -rf /tmp/tb-$$-08"
+  },
+  {
+    "id": "tb-easy-09", "tier": "easy",
+    "description": "Calculate the sum of all numbers in numbers.txt (one number per line) and write the result to sum.txt",
+    "setup": "cd /tmp/tb-$$-09 && mkdir -p /tmp/tb-$$-09 && printf '10\\n20\\n30\\n40\\n' > /tmp/tb-$$-09/numbers.txt",
+    "verify": "test \"$(cat sum.txt | tr -d '[:space:]')\" = \"100\"",
+    "cleanup": "rm -rf /tmp/tb-$$-09"
+  },
+  {
+    "id": "tb-easy-10", "tier": "easy",
+    "description": "Create a symbolic link called 'latest' pointing to the most recently modified file in the current directory",
+    "setup": "cd /tmp/tb-$$-10 && mkdir -p /tmp/tb-$$-10 && echo a > /tmp/tb-$$-10/old.txt && sleep 0.1 && echo b > /tmp/tb-$$-10/newer.txt && sleep 0.1 && echo c > /tmp/tb-$$-10/newest.txt",
+    "verify": "test -L latest && test \"$(readlink latest)\" = \"newest.txt\" || test \"$(readlink latest)\" = \"./newest.txt\"",
+    "cleanup": "rm -rf /tmp/tb-$$-10"
+  },
+  {
+    "id": "tb-med-01", "tier": "medium",
+    "description": "Parse access.log (Apache combined format) and find the top 3 IP addresses by request count. Write to top-ips.txt as 'COUNT IP' per line, sorted descending.",
+    "setup": "cd /tmp/tb-$$-11 && mkdir -p /tmp/tb-$$-11 && printf '192.168.1.1 - - [24/Mar/2026:10:00:00 +0000] \"GET / HTTP/1.1\" 200 1234\\n10.0.0.5 - - [24/Mar/2026:10:00:01 +0000] \"GET /api HTTP/1.1\" 200 567\\n192.168.1.1 - - [24/Mar/2026:10:00:02 +0000] \"POST /api HTTP/1.1\" 201 89\\n10.0.0.5 - - [24/Mar/2026:10:00:03 +0000] \"GET /api HTTP/1.1\" 200 567\\n172.16.0.1 - - [24/Mar/2026:10:00:04 +0000] \"GET / HTTP/1.1\" 200 1234\\n192.168.1.1 - - [24/Mar/2026:10:00:05 +0000] \"GET /img HTTP/1.1\" 200 5678\\n10.0.0.5 - - [24/Mar/2026:10:00:06 +0000] \"GET / HTTP/1.1\" 200 1234\\n10.0.0.5 - - [24/Mar/2026:10:00:07 +0000] \"DELETE /api HTTP/1.1\" 204 0\\n172.16.0.1 - - [24/Mar/2026:10:00:08 +0000] \"GET /css HTTP/1.1\" 200 345\\n' > /tmp/tb-$$-11/access.log",
+    "verify": "head -1 top-ips.txt | grep -q '10.0.0.5' && head -1 top-ips.txt | grep -q 4 && sed -n 2p top-ips.txt | grep -q '192.168.1.1'",
+    "cleanup": "rm -rf /tmp/tb-$$-11"
+  },
+  {
+    "id": "tb-med-02", "tier": "medium",
+    "description": "Write a Python script process.py that reads CSV from stdin, filters rows where column 'status' is 'active', and writes the filtered CSV to stdout (with header).",
+    "setup": "cd /tmp/tb-$$-12 && mkdir -p /tmp/tb-$$-12 && printf 'name,status,score\\nalice,active,90\\nbob,inactive,85\\ncharlie,active,70\\ndave,inactive,60\\neve,active,95\\n' > /tmp/tb-$$-12/data.csv",
+    "verify": "test \"$(cat data.csv | python3 process.py | wc -l | tr -d ' ')\" = \"4\" && cat data.csv | python3 process.py | grep -q eve && ! (cat data.csv | python3 process.py | grep -q bob)",
+    "cleanup": "rm -rf /tmp/tb-$$-12"
+  },
+  {
+    "id": "tb-med-03", "tier": "medium",
+    "description": "Set up a git repo with 3 commits, then create a branch 'feature', add a commit, and rebase it onto main. The final history should be linear with 4 commits total on feature.",
+    "setup": "cd /tmp/tb-$$-13 && mkdir -p /tmp/tb-$$-13",
+    "verify": "cd /tmp/tb-$$-13 && git log --oneline feature | wc -l | grep -q 4 && git log --oneline --graph feature | grep -v '|' | grep -v '\\\\' | grep -v '/' | wc -l | grep -q 4",
+    "cleanup": "rm -rf /tmp/tb-$$-13"
+  },
+  {
+    "id": "tb-med-04", "tier": "medium",
+    "description": "Find all files larger than 1KB in the current tree, calculate their total size in bytes, and write to total-size.txt",
+    "setup": "cd /tmp/tb-$$-14 && mkdir -p /tmp/tb-$$-14/sub && dd if=/dev/zero of=/tmp/tb-$$-14/big1.bin bs=2048 count=1 2>/dev/null && dd if=/dev/zero of=/tmp/tb-$$-14/sub/big2.bin bs=3072 count=1 2>/dev/null && echo 'small' > /tmp/tb-$$-14/tiny.txt",
+    "verify": "test \"$(cat total-size.txt | tr -d '[:space:]')\" = \"5120\"",
+    "cleanup": "rm -rf /tmp/tb-$$-14"
+  },
+  {
+    "id": "tb-med-05", "tier": "medium",
+    "description": "Write a Node.js script server.js that serves files from ./public/ on port 8765. Then create public/index.html with content '<h1>Hello</h1>'. Verify it works by curling localhost:8765/index.html.",
+    "setup": "cd /tmp/tb-$$-15 && mkdir -p /tmp/tb-$$-15",
+    "verify": "cd /tmp/tb-$$-15 && node server.js & PID=$!; sleep 1; RESULT=$(curl -s http://localhost:8765/index.html); kill $PID 2>/dev/null; echo \"$RESULT\" | grep -q '<h1>Hello</h1>'",
+    "cleanup": "rm -rf /tmp/tb-$$-15"
+  },
+  {
+    "id": "tb-med-06", "tier": "medium",
+    "description": "Merge two sorted files (sorted1.txt and sorted2.txt) into a single sorted file merged.txt without loading everything into memory (use sort -m or similar).",
+    "setup": "cd /tmp/tb-$$-16 && mkdir -p /tmp/tb-$$-16 && printf 'apple\\ncherry\\nmango\\n' > /tmp/tb-$$-16/sorted1.txt && printf 'banana\\ngrape\\norange\\n' > /tmp/tb-$$-16/sorted2.txt",
+    "verify": "head -1 merged.txt | grep -q apple && tail -1 merged.txt | grep -q orange && test \"$(wc -l < merged.txt | tr -d ' ')\" = \"6\"",
+    "cleanup": "rm -rf /tmp/tb-$$-16"
+  },
+  {
+    "id": "tb-med-07", "tier": "medium",
+    "description": "Write a bash script that monitors a directory for new .txt files (using inotifywait or polling) and appends their names to manifest.txt. Test by creating test files.",
+    "setup": "cd /tmp/tb-$$-17 && mkdir -p /tmp/tb-$$-17/watch",
+    "verify": "cd /tmp/tb-$$-17 && bash -c 'bash monitor.sh watch/ manifest.txt & PID=$!; sleep 2; echo hi > watch/a.txt; sleep 2; echo hi > watch/b.txt; sleep 2; kill $PID 2>/dev/null' && grep -q a.txt manifest.txt && grep -q b.txt manifest.txt",
+    "cleanup": "rm -rf /tmp/tb-$$-17"
+  },
+  {
+    "id": "tb-med-08", "tier": "medium",
+    "description": "Create a Makefile for a C project with targets: build (compiles main.c to main), test (runs ./main and checks exit code), clean (removes main). Also create a simple main.c that returns 0.",
+    "setup": "cd /tmp/tb-$$-18 && mkdir -p /tmp/tb-$$-18",
+    "verify": "cd /tmp/tb-$$-18 && make build && test -f main && make test && make clean && ! test -f main",
+    "cleanup": "rm -rf /tmp/tb-$$-18"
+  },
+  {
+    "id": "tb-med-09", "tier": "medium",
+    "description": "Write an AWK script that processes a TSV file and outputs a markdown table. Input: tab-separated with header row. Output: markdown table with alignment.",
+    "setup": "cd /tmp/tb-$$-19 && mkdir -p /tmp/tb-$$-19 && printf 'Name\\tAge\\tCity\\nAlice\\t30\\tNYC\\nBob\\t25\\tSF\\n' > /tmp/tb-$$-19/data.tsv",
+    "verify": "cd /tmp/tb-$$-19 && (awk -f table.awk data.tsv || bash -c 'cat data.tsv | awk -f table.awk') | grep -q '|' && (awk -f table.awk data.tsv || bash -c 'cat data.tsv | awk -f table.awk') | grep -q 'Alice'",
+    "cleanup": "rm -rf /tmp/tb-$$-19"
+  },
+  {
+    "id": "tb-med-10", "tier": "medium",
+    "description": "Create a cron-like scheduler in bash: write run-at.sh that takes a time (HH:MM) and a command, waits until that time, then executes it. Test with a time 1 minute from now.",
+    "setup": "cd /tmp/tb-$$-20 && mkdir -p /tmp/tb-$$-20",
+    "verify": "test -f run-at.sh && bash -c 'echo echo done > /tmp/tb-$$-20/cmd.sh && bash run-at.sh $(date -d \"+1 second\" +%H:%M:%S 2>/dev/null || date -v+1S +%H:%M:%S 2>/dev/null || echo 99:99:99) \"bash /tmp/tb-$$-20/cmd.sh > /tmp/tb-$$-20/out.txt\" & sleep 3 && kill %1 2>/dev/null; cat /tmp/tb-$$-20/out.txt 2>/dev/null | grep -q done'",
+    "cleanup": "rm -rf /tmp/tb-$$-20"
+  },
+  {
+    "id": "tb-hard-01", "tier": "hard",
+    "description": "Write a reverse proxy in Node.js (proxy.js) that forwards requests from port 9000 to port 9001, adding an X-Forwarded-For header. Create a test backend on 9001 that echoes headers. Verify the header is added.",
+    "setup": "cd /tmp/tb-$$-21 && mkdir -p /tmp/tb-$$-21",
+    "verify": "cd /tmp/tb-$$-21 && node backend.js & B=$!; sleep 0.5; node proxy.js & P=$!; sleep 0.5; RESULT=$(curl -s http://localhost:9000/test); kill $P $B 2>/dev/null; echo \"$RESULT\" | grep -qi 'x-forwarded-for'",
+    "cleanup": "rm -rf /tmp/tb-$$-21"
+  },
+  {
+    "id": "tb-hard-02", "tier": "hard",
+    "description": "Analyze a git repository's history: find the file with the most commits, the author with the most lines changed, and the busiest day of the week. Write results to git-analysis.txt.",
+    "setup": "cd /tmp/tb-$$-22 && git clone --depth 50 https://github.com/pallets/click.git /tmp/tb-$$-22 2>/dev/null",
+    "verify": "test -f git-analysis.txt && wc -l git-analysis.txt | awk '{exit ($1 >= 3) ? 0 : 1}'",
+    "cleanup": "rm -rf /tmp/tb-$$-22"
+  },
+  {
+    "id": "tb-hard-03", "tier": "hard",
+    "description": "Write a load tester in bash (loadtest.sh) that sends N concurrent HTTP requests to a URL and reports: total time, avg response time, min/max, success rate. Use curl with timing.",
+    "setup": "cd /tmp/tb-$$-23 && mkdir -p /tmp/tb-$$-23",
+    "verify": "test -f loadtest.sh && bash loadtest.sh 5 https://httpbin.org/get 2>/dev/null | grep -qi 'avg\\|average\\|mean'",
+    "cleanup": "rm -rf /tmp/tb-$$-23"
+  },
+  {
+    "id": "tb-hard-04", "tier": "hard",
+    "description": "Create a SQLite database from a CSV file using only bash/sqlite3 CLI. The CSV has headers: id,name,email,department. Create the table, import data, then write a query that counts employees per department to dept-counts.txt.",
+    "setup": "cd /tmp/tb-$$-24 && mkdir -p /tmp/tb-$$-24 && printf 'id,name,email,department\\n1,Alice,alice@co.com,Engineering\\n2,Bob,bob@co.com,Marketing\\n3,Carol,carol@co.com,Engineering\\n4,Dave,dave@co.com,Engineering\\n5,Eve,eve@co.com,Marketing\\n6,Frank,frank@co.com,Sales\\n' > /tmp/tb-$$-24/employees.csv",
+    "verify": "cd /tmp/tb-$$-24 && grep -q Engineering dept-counts.txt && grep -q 3 dept-counts.txt && grep -q Marketing dept-counts.txt",
+    "cleanup": "rm -rf /tmp/tb-$$-24"
+  },
+  {
+    "id": "tb-hard-05", "tier": "hard",
+    "description": "Write a bash script (deploy.sh) that: 1) builds a Docker image from a Dockerfile, 2) runs it on port 8080, 3) health-checks with curl retry, 4) outputs 'DEPLOY OK' or 'DEPLOY FAILED'. Create a minimal Dockerfile that serves a static page with python -m http.server.",
+    "setup": "cd /tmp/tb-$$-25 && mkdir -p /tmp/tb-$$-25",
+    "verify": "test -f deploy.sh && test -f Dockerfile && grep -q 'http.server\\|nginx\\|httpd' Dockerfile",
+    "cleanup": "cd /tmp/tb-$$-25 && docker rm -f tb-deploy-test 2>/dev/null; rm -rf /tmp/tb-$$-25"
+  },
+  {
+    "id": "tb-hard-06", "tier": "hard",
+    "description": "Write a process manager in bash (pm.sh) with commands: start <name> <cmd>, stop <name>, list, logs <name>. Processes run in background with stdout/stderr captured to log files. PID tracking in a state directory.",
+    "setup": "cd /tmp/tb-$$-26 && mkdir -p /tmp/tb-$$-26",
+    "verify": "cd /tmp/tb-$$-26 && bash pm.sh start sleeper 'sleep 60' && bash pm.sh list | grep -q sleeper && bash pm.sh stop sleeper && ! (bash pm.sh list | grep -q sleeper)",
+    "cleanup": "rm -rf /tmp/tb-$$-26"
+  },
+  {
+    "id": "tb-hard-07", "tier": "hard",
+    "description": "Parse a YAML config file using only bash (no python/ruby). Extract all key-value pairs (supporting nested keys with dot notation) and write to env format: KEY=value. Handle basic YAML: indentation-based nesting, string values, numbers.",
+    "setup": "cd /tmp/tb-$$-27 && mkdir -p /tmp/tb-$$-27 && printf 'server:\\n  host: localhost\\n  port: 8080\\ndatabase:\\n  name: mydb\\n  user: admin\\n' > /tmp/tb-$$-27/config.yaml",
+    "verify": "cd /tmp/tb-$$-27 && bash yaml2env.sh config.yaml > env.txt && grep -q 'server.host=localhost' env.txt && grep -q 'server.port=8080' env.txt && grep -q 'database.name=mydb' env.txt",
+    "cleanup": "rm -rf /tmp/tb-$$-27"
+  },
+  {
+    "id": "tb-hard-08", "tier": "hard",
+    "description": "Write a file deduplication tool (dedup.sh) that finds duplicate files by content (SHA256 hash), groups them, and writes a report showing which files are duplicates. Then create a --dry-run mode and a --delete mode that removes all but one copy.",
+    "setup": "cd /tmp/tb-$$-28 && mkdir -p /tmp/tb-$$-28/data && echo 'hello' > /tmp/tb-$$-28/data/a.txt && echo 'hello' > /tmp/tb-$$-28/data/b.txt && echo 'hello' > /tmp/tb-$$-28/data/sub/c.txt 2>/dev/null; mkdir -p /tmp/tb-$$-28/data/sub && echo 'hello' > /tmp/tb-$$-28/data/sub/c.txt && echo 'world' > /tmp/tb-$$-28/data/d.txt",
+    "verify": "cd /tmp/tb-$$-28 && bash dedup.sh --dry-run data/ | grep -q 'duplicate\\|dup\\|same' && bash dedup.sh --delete data/ && test $(find data/ -name '*.txt' | wc -l) -le 2",
+    "cleanup": "rm -rf /tmp/tb-$$-28"
+  },
+  {
+    "id": "tb-hard-09", "tier": "hard",
+    "description": "Create a CLI tool (changelog.sh) that reads git log between two tags, categorizes commits by conventional commit prefix (feat/fix/chore/etc), and generates a formatted CHANGELOG.md section.",
+    "setup": "cd /tmp/tb-$$-29 && mkdir -p /tmp/tb-$$-29 && cd /tmp/tb-$$-29 && git init && git commit --allow-empty -m 'init' && git tag v0.1.0 && git commit --allow-empty -m 'feat: add login' && git commit --allow-empty -m 'fix: resolve crash' && git commit --allow-empty -m 'chore: update deps' && git commit --allow-empty -m 'feat: add dashboard' && git tag v0.2.0",
+    "verify": "cd /tmp/tb-$$-29 && bash changelog.sh v0.1.0 v0.2.0 > CHANGELOG.md && grep -q 'feat' CHANGELOG.md && grep -q 'fix' CHANGELOG.md && grep -q 'login\\|dashboard' CHANGELOG.md",
+    "cleanup": "rm -rf /tmp/tb-$$-29"
+  },
+  {
+    "id": "tb-hard-10", "tier": "hard",
+    "description": "Write a TCP port scanner in bash (scan.sh) that checks ports 80,443,8080,8443,22,3000 on localhost and reports which are open/closed. Must complete in under 10 seconds (use timeout on each connection attempt).",
+    "setup": "cd /tmp/tb-$$-30 && mkdir -p /tmp/tb-$$-30",
+    "verify": "cd /tmp/tb-$$-30 && timeout 15 bash scan.sh localhost > scan-results.txt 2>&1 && grep -qi 'open\\|closed\\|filtered' scan-results.txt",
+    "cleanup": "rm -rf /tmp/tb-$$-30"
+  }
+]

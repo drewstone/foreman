@@ -271,11 +271,38 @@ function captureTmux(name: string, lines: number = 30): string {
 function detectIdle(name: string): boolean {
   if (!isTmuxAlive(name)) return false
   try {
-    const output = captureTmux(name, 3).trim()
-    const last = output.split('\n').pop()?.trim() ?? ''
-    return last.endsWith('$') || last.endsWith('#') ||
-      last === '>' || last.startsWith('>') ||
-      output.includes('Session complete')
+    const output = captureTmux(name, 10).trim()
+
+    // Active patterns — Claude Code is WORKING, not idle.
+    // Completion messages use star chars (✻✶✽) + verb + "for" + duration.
+    // Active spinners use middle dot (·) or show tool calls in progress.
+    const activePatterns = [
+      /tokens · thinking\)/,      // actively thinking: "(Xs · ↓ Nk tokens · thinking)"
+      /Waiting for task/i,         // background task running
+      /⎿ {2}.*running/i,          // tool running
+    ]
+    for (const pat of activePatterns) {
+      if (pat.test(output)) return false
+    }
+
+    // Must have a completion indicator to be considered idle
+    // Claude Code uses random verbs: Worked, Sautéed, Brewed, Churned, Flowing, Gallivanting, etc.
+    // Match the pattern: unicode symbol + any word + "for" + duration
+    const hasCompletion = /[✻✓✶✽●].*\b\w+(?:ed|ing).*\bfor\b/i.test(output)
+    const hasPrompt = output.includes('❯')
+
+    // Shell prompts (non-Claude sessions)
+    const lines = output.split('\n').map(l => l.trim()).filter(Boolean)
+    const last = lines.pop() ?? ''
+    if (last.endsWith('$') || last.endsWith('#')) return true
+
+    // Claude Code: must have BOTH the ❯ prompt AND a completion message
+    if (hasPrompt && hasCompletion) return true
+
+    // Fallback: session complete text
+    if (output.includes('Session complete')) return true
+
+    return false
   } catch { return false }
 }
 
@@ -562,11 +589,17 @@ function selectModel(skill: string, _task: string): string | undefined {
 }
 
 function sendPrompt(name: string, prompt: string): void {
-  const lines = prompt.slice(0, 500).split('\n')
-  for (const line of lines) {
-    tmuxQuiet(['send-keys', '-t', name, '-l', line])
-    tmuxQuiet(['send-keys', '-t', name, 'Enter'])
-  }
+  // Write prompt to file — send-keys truncation at 500 chars destroyed long prompts.
+  // Claude reads the file as its task instruction.
+  const promptDir = join(FOREMAN_HOME, 'prompts')
+  mkdirSync(promptDir, { recursive: true })
+  const promptFile = join(promptDir, `${name}.md`)
+  writeFileSync(promptFile, prompt)
+
+  // Tell Claude to read the prompt file. This is short enough for send-keys.
+  const instruction = `Read ${promptFile} — that is your complete task. Execute it fully. Do not summarize or ask questions.`
+  tmuxQuiet(['send-keys', '-t', name, '-l', instruction])
+  tmuxQuiet(['send-keys', '-t', name, 'Enter'])
 }
 
 // ─── Session watcher ─────────────────────────────────────────────────
@@ -611,13 +644,26 @@ function watcherTick(): void {
 
     const idle = backend.isIdle(s.name)
     const output = backend.capture(s.name, 3).trim().split('\n').pop() ?? ''
-    stmts.updateSession.run(idle ? 'idle' : 'running', output, s.name)
 
     if (idle && s.status === 'running') {
+      // First idle detection — mark as idle but don't harvest yet.
+      // Claude shows ❯ briefly between tool calls. Wait for confirmation.
+      stmts.updateSession.run('idle', output, s.name)
+      log(`Session ${s.name} appears idle — confirming on next tick`)
+    } else if (idle && s.status === 'idle') {
+      // Confirmed idle (2+ consecutive ticks = 20+ seconds). Harvest and kill.
       emitEvent('session_idle', s.name, s.goal_id)
-      log(`Session ${s.name} is now idle`)
-      // Harvest outcome from completed session
-      harvestOutcome(s.name, s.goal_id, backend).catch(e => log(`Harvest failed for ${s.name}: ${e}`))
+      log(`Session ${s.name} confirmed idle — harvesting`)
+      harvestOutcome(s.name, s.goal_id, backend)
+        .then(() => {
+          backend.kill(s.name)
+          stmts.updateSession.run('dead', 'completed', s.name)
+          log(`Cleaned up completed session: ${s.name}`)
+        })
+        .catch(e => log(`Harvest failed for ${s.name}: ${e}`))
+    } else {
+      // Not idle, or was idle but resumed — mark running
+      stmts.updateSession.run(idle ? 'idle' : 'running', output, s.name)
     }
   }
 }
@@ -792,6 +838,22 @@ async function harvestOutcome(sessionName: string, goalId: number, backend: Exec
 
   log(`Auto-harvested outcome for ${sessionName}: ${outcomeText}`)
   emitEvent('outcome_harvested', sessionName, goalId, { decisionId: decision.id, status, commits })
+
+  // Parse plan ideation output if this was a plan ideation session
+  if (sessionName.includes('plan-ideate')) {
+    try {
+      // Search for JSON files the session wrote (it may use any path)
+      const planFiles = readdirSync(join(FOREMAN_HOME, 'plans'), { recursive: true })
+        .filter((f: any) => String(f).endsWith('.json') && !String(f).includes('plan.json'))
+      for (const f of planFiles) {
+        const fullPath = join(FOREMAN_HOME, 'plans', String(f))
+        const plans = parseIdeationOutput(fullPath)
+        if (plans.length > 0) {
+          log(`Parsed ${plans.length} plans from ideation output: ${f}`)
+        }
+      }
+    } catch (e) { log(`Plan ideation parse failed: ${e}`) }
+  }
 
   // Ensure work is pushed and a PR exists — the operator reviews via PR, not worktree diffs.
   if (commits > 0 && worktreeBranch && baseBranch) {
