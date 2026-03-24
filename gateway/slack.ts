@@ -84,9 +84,18 @@ async function api<T = any>(path: string, opts?: { method?: string, body?: unkno
 // ─── Request verification ────────────────────────────────────────────
 
 function verifySlackRequest(body: string, timestamp: string, signature: string): boolean {
-  if (!SIGNING_SECRET) return true // skip if not configured
+  if (!SIGNING_SECRET) {
+    console.warn('WARNING: SLACK_SIGNING_SECRET not set — request verification disabled')
+    return true
+  }
+  if (!timestamp || !signature) return false
+  // Reject requests older than 5 minutes (replay attack prevention)
+  const age = Math.abs(Date.now() / 1000 - Number(timestamp))
+  if (age > 300) return false
   const sigBasestring = `v0:${timestamp}:${body}`
   const mySignature = 'v0=' + crypto.createHmac('sha256', SIGNING_SECRET).update(sigBasestring).digest('hex')
+  // timingSafeEqual requires same length — reject if signature length doesn't match
+  if (Buffer.byteLength(mySignature) !== Buffer.byteLength(signature)) return false
   return crypto.timingSafeEqual(Buffer.from(mySignature), Buffer.from(signature))
 }
 
@@ -301,6 +310,14 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     const chunks: Buffer[] = []
     for await (const chunk of req) chunks.push(chunk as Buffer)
     const body = Buffer.concat(chunks).toString()
+
+    // Verify request signature
+    const timestamp = req.headers['x-slack-request-timestamp'] as string
+    const signature = req.headers['x-slack-signature'] as string
+    if (SIGNING_SECRET && !verifySlackRequest(body, timestamp, signature)) {
+      res.writeHead(401); res.end('Unauthorized'); return
+    }
+
     const params = new URLSearchParams(body)
 
     const command = params.get('command') ?? ''

@@ -9,9 +9,9 @@
  */
 
 import http from 'node:http'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { homedir } from 'node:os'
-import { mkdirSync, existsSync, readFileSync, statSync, readdirSync } from 'node:fs'
+import { mkdirSync, existsSync, readFileSync, writeFileSync, statSync, readdirSync, realpathSync } from 'node:fs'
 import { execFileSync, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import Database from 'better-sqlite3'
@@ -47,6 +47,8 @@ const MAX_DAILY_COST_USD = parseFloat(process.env.FOREMAN_MAX_DAILY_COST ?? '20'
 const MAX_CONCURRENT_SESSIONS = parseInt(process.env.FOREMAN_MAX_SESSIONS ?? '5', 10)
 const AUTO_MERGE = process.env.FOREMAN_AUTO_MERGE === 'true' // default: false — operator reviews PRs
 const CLAUDE_BOOT_TIMEOUT_MS = 60_000
+const BIND_HOST = process.env.FOREMAN_BIND_HOST ?? '127.0.0.1' // localhost only by default — set to '0.0.0.0' to expose
+const API_TOKEN = process.env.FOREMAN_API_TOKEN ?? '' // optional bearer token for API auth
 
 mkdirSync(join(FOREMAN_HOME, 'logs'), { recursive: true })
 mkdirSync(join(FOREMAN_HOME, 'worktrees'), { recursive: true })
@@ -319,7 +321,8 @@ const pendingPrompts = new Map<string, SpawnRequest>()
 const tmuxBackend: ExecutionBackend = {
   spawn(req: SpawnRequest): void {
     const { name, workDir, prompt } = req
-    const model = req.model ?? ''
+    // Validate model name — prevent shell injection via model parameter
+    const model = req.model && /^[a-zA-Z0-9._-]+$/.test(req.model) ? req.model : ''
     const modelFlag = model ? ` --model ${model}` : ''
 
     if (isTmuxAlive(name)) {
@@ -359,7 +362,7 @@ const tmuxBackend: ExecutionBackend = {
 // Generates a temporary MCP config file for a session from registered servers.
 // Claude Code loads it via --mcp-config flag.
 
-import { writeFileSync } from 'node:fs'
+
 
 function generateMcpConfig(sessionName: string): string {
   const servers = stmts.listMcp.all() as Array<{
@@ -583,13 +586,15 @@ function watcherTick(): void {
       continue
     }
     if (detectClaudeReady(name)) {
+      // Mark as running BEFORE the timeout — prevents next watcher tick from
+      // processing this session as idle/dead while we wait to send the prompt
+      stmts.updateSession.run('running', '', name)
+      pendingPrompts.delete(name)
       setTimeout(() => {
         sendPrompt(name, req.prompt)
-        stmts.updateSession.run('running', '', name)
         emitEvent('session_started', name, req.goalId)
         log(`Sent prompt to ${name}`)
       }, 2000)
-      pendingPrompts.delete(name)
     }
   }
 
@@ -2546,7 +2551,8 @@ function log(msg: string): void {
 // ─── API helpers ─────────────────────────────────────────────────────
 
 function json(res: http.ServerResponse, data: unknown, status = 200): void {
-  res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
+  const origin = BIND_HOST === '127.0.0.1' || BIND_HOST === 'localhost' ? `http://localhost:${PORT}` : '*'
+  res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': origin })
   res.end(JSON.stringify(data))
 }
 
@@ -2557,7 +2563,16 @@ function error(res: http.ServerResponse, msg: string, status = 400): void {
 async function readBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = []
   for await (const chunk of req) chunks.push(chunk as Buffer)
-  return JSON.parse(Buffer.concat(chunks).toString())
+  const raw = Buffer.concat(chunks).toString()
+  try {
+    const parsed = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error('expected JSON object')
+    }
+    return parsed as Record<string, unknown>
+  } catch {
+    throw new Error('invalid JSON body')
+  }
 }
 
 function parseQuery(url: string): URLSearchParams {
@@ -2572,11 +2587,20 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   const method = req.method ?? 'GET'
   const path = url.split('?')[0]
 
-  // CORS
+  // CORS — restrict to same-origin when possible
+  const allowedOrigin = BIND_HOST === '127.0.0.1' || BIND_HOST === 'localhost' ? 'http://localhost:' + PORT : '*'
   if (method === 'OPTIONS') {
-    res.writeHead(200, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': '*', 'Access-Control-Allow-Headers': '*' })
+    res.writeHead(200, { 'Access-Control-Allow-Origin': allowedOrigin, 'Access-Control-Allow-Methods': '*', 'Access-Control-Allow-Headers': '*' })
     res.end()
     return
+  }
+
+  // API token auth — if FOREMAN_API_TOKEN is set, require it on all non-health endpoints
+  if (API_TOKEN && path !== '/api/health' && path !== '/api/events') {
+    const authHeader = req.headers.authorization ?? ''
+    if (authHeader !== `Bearer ${API_TOKEN}`) {
+      return error(res, 'unauthorized', 401)
+    }
   }
 
   try {
@@ -2838,11 +2862,12 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
     // ── Events (SSE) ──────────────────────────────────────────
     if (path === '/api/events' && method === 'GET') {
+      const sseOrigin = BIND_HOST === '127.0.0.1' || BIND_HOST === 'localhost' ? `http://localhost:${PORT}` : '*'
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
-        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Origin': sseOrigin,
       })
       res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`)
       sseClients.add(res)
@@ -2855,14 +2880,23 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const projectPath = parseQuery(url).get('path')
       if (!projectPath) return error(res, 'path required')
 
+      // Prevent path traversal — resolve symlinks and reject anything outside home
+      let realPath: string
       try {
-        if (!statSync(projectPath).isDirectory()) return error(res, 'not a directory')
+        realPath = realpathSync(resolve(projectPath))
+      } catch { return error(res, 'path does not exist') }
+      if (!realPath.startsWith(homedir())) {
+        return error(res, 'path must be under home directory', 403)
+      }
+
+      try {
+        if (!statSync(realPath).isDirectory()) return error(res, 'not a directory')
       } catch { return error(res, 'path does not exist') }
 
       const context: Record<string, string> = {}
 
       for (const f of ['README.md', 'readme.md', 'CLAUDE.md', 'package.json', 'Cargo.toml', 'pyproject.toml']) {
-        const fp = join(projectPath, f)
+        const fp = join(realPath, f)
         if (existsSync(fp)) {
           try { context[f] = readFileSync(fp, 'utf8').slice(0, 2000) } catch {}
         }
@@ -2870,13 +2904,13 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
       // Git log
       try {
-        const { stdout } = await execFileAsync('git', ['log', '--oneline', '-10'], { cwd: projectPath, timeout: 5_000 })
+        const { stdout } = await execFileAsync('git', ['log', '--oneline', '-10'], { cwd: realPath, timeout: 5_000 })
         context['git_log'] = stdout.trim()
       } catch {}
 
       // Evolve/autoresearch state
       for (const f of ['evolve-progress.md', 'autoresearch.md', '.evolve/scorecard.json']) {
-        const fp = join(projectPath, f)
+        const fp = join(realPath, f)
         if (existsSync(fp)) {
           try { context[f] = readFileSync(fp, 'utf8').slice(0, 1000) } catch {}
         }
@@ -2884,9 +2918,9 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
       // Pursue docs
       try {
-        for (const f of readdirSync(projectPath)) {
+        for (const f of readdirSync(realPath)) {
           if (f.startsWith('pursue-') && f.endsWith('.md')) {
-            context[f] = readFileSync(join(projectPath, f), 'utf8').slice(0, 1000)
+            context[f] = readFileSync(join(realPath, f), 'utf8').slice(0, 1000)
           }
         }
       } catch {}
@@ -3248,8 +3282,8 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
 const server = http.createServer(handleRequest)
 
-server.listen(PORT, '127.0.0.1', () => {
-  log(`Foreman service listening on http://127.0.0.1:${PORT}`)
+server.listen(PORT, BIND_HOST, () => {
+  log(`Foreman service listening on http://${BIND_HOST}:${PORT}${API_TOKEN ? ' (token auth enabled)' : ''}`)
   log(`Database: ${DB_PATH}`)
   log(`Home: ${FOREMAN_HOME}`)
 

@@ -55,10 +55,13 @@ export async function callClaude(opts: ClaudeRunOptions): Promise<ClaudeRunResul
   const {
     prompt,
     cwd = FOREMAN_HOME,
-    model = 'claude-sonnet-4-6',
+    model: rawModel = 'claude-sonnet-4-6',
     timeoutMs = 120_000,
     label = 'runner',
   } = opts
+
+  // Validate model name — prevent shell injection via model parameter
+  const model = /^[a-zA-Z0-9._-]+$/.test(rawModel) ? rawModel : 'claude-sonnet-4-6'
 
   const sessionName = `foreman-run-${label}-${Date.now().toString(36)}`
   const logFile = join(FOREMAN_HOME, 'runner-output', `${sessionName}.log`)
