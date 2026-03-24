@@ -326,58 +326,10 @@ const tmuxBackend: ExecutionBackend = {
       tmuxQuiet(['kill-session', '-t', name])
     }
 
-    // Isolate session: override HOME so side effects (npm, pip, configs,
-    // extension installs) don't leak into the operator's real HOME.
-    // The worktree handles git isolation; this handles everything else.
-    const sessionHome = join(FOREMAN_HOME, 'session-homes', name)
-    mkdirSync(sessionHome, { recursive: true })
-    // Seed with minimal config so Claude can find its auth
-    // Symlink read-only config from real HOME so sessions can function.
-    // Strategy: symlink individual FILES (read-only), create fresh DIRS for mutable state.
-    // This prevents side effects while keeping auth/config working.
-    const realHome = homedir()
-
-    // Read-only symlinks — sessions read these but shouldn't modify them.
-    // Files and directories that provide auth, config, toolchains, and caches.
-    const readOnlySymlinks = [
-      // Git
-      '.gitconfig',
-      // SSH keys (git push, remote access)
-      '.ssh',
-      // Node.js
-      '.nvm', '.npmrc',
-      // Rust
-      '.cargo', '.rustup',
-      // Python
-      '.local',       // pip installs to ~/.local/bin
-      '.cache/pip',   // pip cache
-      '.pyenv',
-      // API keys
-      '.anthropic',
-      // Other agents (read-only — sessions shouldn't install extensions)
-      '.codex',
-      '.opencode',
-    ]
-    for (const name of readOnlySymlinks) {
-      const src = join(realHome, name)
-      const dst = join(sessionHome, name)
-      if (!existsSync(src)) continue
-      // For nested paths like .cache/pip, create parent dirs
-      const dstDir = join(dst, '..')
-      mkdirSync(dstDir, { recursive: true })
-      try { if (!existsSync(dst)) execFileSync('ln', ['-sf', src, dst], { stdio: 'ignore' }) } catch {}
-    }
-    // Claude Code: symlink the entire .claude/ directory.
-    // Previous approach (selective symlinks) broke OAuth auth — Claude stores
-    // tokens in the keychain and needs its full config directory to authenticate.
-    // The session HOME still provides isolation for npm/pip/other tools.
-    const claudeSymlink = join(sessionHome, '.claude')
-    const realClaudeDir = join(realHome, '.claude')
-    try { if (existsSync(realClaudeDir) && !existsSync(claudeSymlink)) execFileSync('ln', ['-sf', realClaudeDir, claudeSymlink], { stdio: 'ignore' }) } catch {}
-
+    // No HOME isolation — it breaks Claude's OAuth keychain auth every time.
+    // Worktree provides git isolation. Side effects are acceptable tradeoff
+    // vs sessions that can't authenticate.
     tmuxQuiet(['new-session', '-d', '-s', name, '-c', workDir])
-    // Set isolated HOME in the tmux session
-    tmuxQuiet(['send-keys', '-t', name, `export HOME=${sessionHome}`, 'Enter'])
 
     const logFile = join(FOREMAN_HOME, 'logs', `session-${name}.log`)
     mkdirSync(join(FOREMAN_HOME, 'logs'), { recursive: true })
