@@ -297,43 +297,8 @@ Generate 3-4 plans that:
 3. Have clear reasoning tied to evidence from the data above
 4. Are ranked: critical (must do), high (should do), medium (nice to have), low (consider)
 
-Each plan MUST have ALL of these fields (be thorough):
-
-Respond with JSON array. Each element:
-{
-  "title": "short title",
-  "type": "product|research|engineering|marketing|paper",
-  "rank": "critical|high|medium|low",
-  "overview": "1-2 sentences: what and why NOW",
-  "motivation": "why this exists — specific evidence from the data",
-  "value_if_done": "what changes if we do this (quantified)",
-  "cost_of_inaction": "what happens if we DON'T (specific consequences)",
-  "approach": "technical approach in 3-5 bullet points",
-  "alternatives": [
-    {"name": "alt approach", "pros": "...", "cons": "...", "rejected_because": "..."}
-  ],
-  "checklist": ["step 1: specific action", "step 2: ...", "step 3: ..."],
-  "scorecard": {
-    "impact": {"score": 8, "why": "..."},
-    "feasibility": {"score": 7, "why": "..."},
-    "risk": {"score": 6, "why": "lower=riskier"},
-    "novelty": {"score": 5, "why": "..."},
-    "taste_alignment": {"score": 9, "why": "..."},
-    "time_to_value": {"score": 7, "why": "..."},
-    "learning_potential": {"score": 6, "why": "..."},
-    "cross_project_leverage": {"score": 4, "why": "..."},
-    "defensibility": {"score": 5, "why": "..."},
-    "fun": {"score": 7, "why": "..."}
-  },
-  "pitfalls": ["specific thing that could go wrong"],
-  "edge_cases": ["specific edge case to handle"],
-  "success_criteria": ["measurable outcome 1", "measurable outcome 2"],
-  "effort": {"hours": 8, "cost_usd": 5, "prerequisites": ["..."]},
-  "evidence": ["decision:15 — ...", "pattern: ..."],
-  "proposed_goal": {"intent": "...", "workspace_path": "...", "first_skill": "/evolve"},
-  "risks": ["..."],
-  "opportunities": ["what could go surprisingly RIGHT"]
-}`
+Respond with a JSON array. Keep each plan concise — the full document will be generated separately.
+[{"title":"Plan Title","rank":"critical|high|medium|low","type":"product|research|engineering","overview":"2 sentences","motivation":"why now","proposed_goal":{"intent":"goal description","workspace_path":"/path/if/applicable","first_skill":"/skill"},"risks":["risk"],"opportunities":["opportunity"]}]`
 }
 
 function buildExplorationPrompt(ctx: PlanGeneratorContext): string {
@@ -367,20 +332,16 @@ Respond with the SAME JSON format as exploitation plans (with overview, motivati
 
 async function callLLMForPlans(prompt: string, isExploration: boolean): Promise<Plan[]> {
   try {
-    // Write prompt to temp file and run claude with the file
-    const promptFile = join(FOREMAN_HOME, 'plans', `_prompt_${Date.now()}.txt`)
-    mkdirSync(join(FOREMAN_HOME, 'plans'), { recursive: true })
-    writeFileSync(promptFile, prompt)
+    // Use Sonnet for fast JSON generation (Opus for full plans later)
+    // Pass prompt directly — keep it under 4K chars
+    const shortPrompt = prompt.slice(0, 4000)
     const { stdout } = await execFileAsync(CLAUDE_BIN, [
-      '-p', `Read the instructions from ${promptFile} and follow them exactly. Respond with a JSON array only.`,
-      '--output-format', 'text', '--model', 'claude-opus-4-6',
-      '--dangerously-skip-permissions',
+      '-p', shortPrompt,
+      '--output-format', 'text', '--model', 'claude-sonnet-4-6',
     ], {
-      timeout: 120_000,
+      timeout: 60_000,
       env: { ...process.env, PATH: `${homedir()}/.local/bin:${process.env.PATH}` },
-      cwd: FOREMAN_HOME,
     })
-    try { require('fs').unlinkSync(promptFile) } catch {}
 
     const match = stdout.match(/\[[\s\S]*\]/)
     if (!match) return []
