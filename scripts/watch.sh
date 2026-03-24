@@ -1,44 +1,34 @@
 #!/usr/bin/env bash
 # Watch all active Foreman sessions in a tmux grid
 # Usage: bash scripts/watch.sh
-#        bash scripts/watch.sh 4    # max 4 panes
 
 set -euo pipefail
 
-MAX_PANES=${1:-6}
 WATCH_SESSION="foreman-watch"
-
-# Kill existing watch session
 tmux kill-session -t "$WATCH_SESSION" 2>/dev/null || true
 
-# Get active foreman sessions
-SESSIONS=($(tmux list-sessions -F "#{session_name}" 2>/dev/null | grep "^foreman-" | grep -v "^foreman:" | grep -v "^foreman-watch" | head -$MAX_PANES))
+SESSIONS=($(tmux list-sessions -F "#{session_name}" 2>/dev/null | grep "^foreman-" | grep -v "^foreman:" | grep -v "^foreman-watch" | head -6))
 
 if [ ${#SESSIONS[@]} -eq 0 ]; then
   echo "No active Foreman sessions."
   exit 0
 fi
 
-echo "Watching ${#SESSIONS[@]} sessions:"
-for s in "${SESSIONS[@]}"; do echo "  $s"; done
-echo ""
+echo "Watching ${#SESSIONS[@]} sessions (refresh every 2s):"
 
-# Create watch session with first pane
-tmux new-session -d -s "$WATCH_SESSION"
-tmux send-keys -t "$WATCH_SESSION" "tmux attach -t ${SESSIONS[0]} -r" Enter
+# Create watch session — each pane runs `watch` on tmux capture-pane
+tmux new-session -d -s "$WATCH_SESSION" \
+  "watch -n2 -t 'echo \"═══ ${SESSIONS[0]} ═══\"; tmux capture-pane -t ${SESSIONS[0]} -p -S -40 2>/dev/null | tail -35'"
 
-# Add remaining panes
 for ((i=1; i<${#SESSIONS[@]}; i++)); do
   if (( i % 2 == 1 )); then
-    tmux split-window -t "$WATCH_SESSION" -h
+    tmux split-window -t "$WATCH_SESSION" -h \
+      "watch -n2 -t 'echo \"═══ ${SESSIONS[$i]} ═══\"; tmux capture-pane -t ${SESSIONS[$i]} -p -S -40 2>/dev/null | tail -35'"
   else
-    tmux split-window -t "$WATCH_SESSION" -v
+    tmux split-window -t "$WATCH_SESSION" -v \
+      "watch -n2 -t 'echo \"═══ ${SESSIONS[$i]} ═══\"; tmux capture-pane -t ${SESSIONS[$i]} -p -S -40 2>/dev/null | tail -35'"
   fi
-  tmux send-keys -t "$WATCH_SESSION" "tmux attach -t ${SESSIONS[$i]} -r" Enter
 done
 
-# Even out the layout
 tmux select-layout -t "$WATCH_SESSION" tiled
-
-# Attach
-tmux attach -t "$WATCH_SESSION"
+exec tmux attach -t "$WATCH_SESSION"
