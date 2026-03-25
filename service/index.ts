@@ -33,6 +33,9 @@ import { callClaudeForJSON } from './lib/claude-runner.js'
 // ─── Deliverable verification (Gen 9: measure achievement, not activity) ─
 import { verifyDeliverable, runTestGate, type DeliverableSpec, type ScopeSpec } from './lib/verify-deliverable.js'
 
+// ─── Scope enforcement (Gen 10: git-level scope control) ─
+import { installScopeHook, removeScopeHook, type ScopeConfig } from './lib/scope-enforcer.js'
+
 // ─── Confidence store (from packages/memory) ─────────────────────────
 // Tracks per-(skill, project) confidence that earns autonomy through evidence.
 import { ConfidenceStore } from '@drew/foreman-memory/confidence'
@@ -924,6 +927,9 @@ async function harvestOutcome(sessionName: string, goalId: number, backend: Exec
       }
     } catch (e) { log(`Plan ideation parse failed: ${e}`) }
   }
+
+  // Clean up scope hook before push (hooks shouldn't be in the committed tree)
+  removeScopeHook(workDir)
 
   // Ensure work is pushed and a PR exists — the operator reviews via PR, not worktree diffs.
   if (commits > 0 && worktreeBranch && baseBranch) {
@@ -2853,6 +2859,12 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       if (deliverableSpec || scopeSpec || deliverablePath) {
         db.prepare(`UPDATE decisions SET deliverable_path = ?, deliverable_spec = ?, scope_spec = ? WHERE id = ?`)
           .run(deliverablePath, deliverableSpec, scopeSpec, Number(result.lastInsertRowid))
+      }
+
+      // Gen 10: Install git pre-commit hook for scope enforcement
+      if (body.scope?.allowedPaths && worktreePath) {
+        const hookPath = installScopeHook(worktreePath, body.scope as ScopeConfig)
+        if (hookPath) log(`Scope hook installed in ${worktreePath}: ${body.scope.allowedPaths.join(', ')}`)
       }
       const decisionId = Number(result.lastInsertRowid)
 
