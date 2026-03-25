@@ -39,6 +39,13 @@
   .empty { color: var(--muted); font-style: italic; padding: 12px 0; }
   #live-indicator { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; margin-right: 6px; animation: pulse 2s infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .taste-btn { background: none; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; padding: 2px 6px; font-size: 14px; line-height: 1; margin: 0 2px; transition: background 0.15s, border-color 0.15s; }
+  .taste-btn:hover { border-color: var(--muted); }
+  .taste-btn.approve:hover { background: rgba(63,185,80,0.15); border-color: var(--green); }
+  .taste-btn.reject:hover { background: rgba(248,81,73,0.15); border-color: var(--red); }
+  .taste-btn:disabled { opacity: 0.4; cursor: default; }
+  tr.taste-approved { background: rgba(63,185,80,0.08); }
+  tr.taste-rejected { background: rgba(248,81,73,0.08); }
 </style>
 </head>
 <body>
@@ -160,13 +167,14 @@ async function loadStatus() {
   // Decisions
   if (s.recentDecisions?.length > 0) {
     document.getElementById('decisions').innerHTML = `<table>
-      <tr><th>Skill</th><th>Task</th><th>Status</th><th>Outcome</th><th>When</th></tr>
-      ${s.recentDecisions.slice(0, 15).map(d => `<tr>
+      <tr><th>Skill</th><th>Task</th><th>Status</th><th>Outcome</th><th>When</th><th></th></tr>
+      ${s.recentDecisions.slice(0, 15).map(d => `<tr data-decision-id="${d.id}">
         <td><span class="badge badge-blue">${esc(d.skill || 'direct')}</span></td>
         <td>${esc((d.task || '').slice(0, 80))}</td>
         <td>${badge(d.status)}</td>
         <td class="session-output">${esc((d.outcome || '').slice(0, 60))}</td>
         <td style="color:var(--muted);white-space:nowrap">${timeAgo(d.created_at)}</td>
+        <td style="white-space:nowrap"><button class="taste-btn approve" onclick="sendTaste(${d.id},'approved',this)" title="Approve">&#x1F44D;</button><button class="taste-btn reject" onclick="sendTaste(${d.id},'rejected',this)" title="Reject">&#x1F44E;</button></td>
       </tr>`).join('')}
     </table>`
   } else {
@@ -206,6 +214,27 @@ async function loadHealth() {
     const m = Math.floor(h.uptime / 60)
     const hrs = Math.floor(m / 60)
     document.getElementById('uptime').textContent = hrs > 0 ? `Up ${hrs}h ${m % 60}m` : `Up ${m}m`
+  }
+}
+
+async function sendTaste(decisionId, signal, btn) {
+  const row = btn.closest('tr')
+  const buttons = row.querySelectorAll('.taste-btn')
+  buttons.forEach(b => b.disabled = true)
+  try {
+    const r = await fetch(API + '/api/outcomes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision_id: decisionId, taste_signal: signal })
+    })
+    if (r.ok) {
+      row.classList.remove('taste-approved', 'taste-rejected')
+      row.classList.add(signal === 'approved' ? 'taste-approved' : 'taste-rejected')
+    } else {
+      buttons.forEach(b => b.disabled = false)
+    }
+  } catch {
+    buttons.forEach(b => b.disabled = false)
   }
 }
 
