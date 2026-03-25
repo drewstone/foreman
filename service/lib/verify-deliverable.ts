@@ -51,21 +51,31 @@ export function verifyDeliverable(
 
     if (!existsSync(fullPath)) {
       deliverableStatus = 'fail'
-      details.push(`deliverable not found: ${spec.path}`)
+      details.push(
+        `deliverable not found: ${spec.path} (checked ${fullPath}). ` +
+        `Fix: ensure the agent writes to the correct path relative to workDir, ` +
+        `or check that workDir "${workDir}" is the right project root.`
+      )
     } else {
       const content = readFileSync(fullPath, 'utf8')
       const lines = content.split('\n').length
       let passed = true
 
       if (spec.minLines && lines < spec.minLines) {
-        details.push(`deliverable too short: ${lines} lines < ${spec.minLines} required`)
+        details.push(
+          `deliverable too short: ${fullPath} has ${lines} lines, need >= ${spec.minLines}. ` +
+          `Fix: the agent may have written a stub or placeholder — check file contents.`
+        )
         passed = false
       }
 
       if (spec.mustContain) {
         for (const s of spec.mustContain) {
           if (!content.includes(s)) {
-            details.push(`deliverable missing required content: "${s.slice(0, 50)}"`)
+            details.push(
+              `deliverable missing required content in ${fullPath}: "${s.slice(0, 50)}". ` +
+              `Fix: verify the agent implemented the feature, not just scaffolding.`
+            )
             passed = false
           }
         }
@@ -74,7 +84,10 @@ export function verifyDeliverable(
       if (spec.mustNotContain) {
         for (const s of spec.mustNotContain) {
           if (content.includes(s)) {
-            details.push(`deliverable contains forbidden content: "${s.slice(0, 50)}"`)
+            details.push(
+              `deliverable contains forbidden content in ${fullPath}: "${s.slice(0, 50)}". ` +
+              `Fix: the agent left debug/placeholder content that should be removed.`
+            )
             passed = false
           }
         }
@@ -87,15 +100,20 @@ export function verifyDeliverable(
             timeout: 60_000,
             stdio: 'pipe',
           })
-          details.push(`test command passed: ${spec.testCommand.slice(0, 60)}`)
-        } catch {
-          details.push(`test command failed: ${spec.testCommand.slice(0, 60)}`)
+          details.push(`test command passed in ${workDir}: ${spec.testCommand.slice(0, 60)}`)
+        } catch (e: any) {
+          const stderr = (e.stderr || e.stdout || '').slice(-200)
+          details.push(
+            `test command failed in ${workDir}: ${spec.testCommand.slice(0, 60)}` +
+            (stderr ? ` — ${stderr.split('\n').pop()}` : '') +
+            `. Fix: run the command manually in ${workDir} to see full output.`
+          )
           passed = false
         }
       }
 
       deliverableStatus = passed ? 'pass' : 'fail'
-      if (passed) details.push(`deliverable verified: ${spec.path} (${lines} lines)`)
+      if (passed) details.push(`deliverable verified: ${fullPath} (${lines} lines)`)
     }
   }
 
@@ -149,9 +167,15 @@ export function verifyDeliverable(
     }
 
     if (outOfScopeFiles.length > 0) {
-      details.push(`scope violation: ${outOfScopeFiles.length} files modified outside allowlist: ${outOfScopeFiles.slice(0, 3).join(', ')}`)
+      details.push(
+        `scope violation in ${workDir}: ${outOfScopeFiles.length} files modified outside allowlist: ` +
+        `${outOfScopeFiles.slice(0, 5).join(', ')}` +
+        (outOfScopeFiles.length > 5 ? ` (+${outOfScopeFiles.length - 5} more)` : '') +
+        `. Fix: tighten the dispatch prompt to specify which files may be changed, ` +
+        `or widen allowedPaths if these changes are expected.`
+      )
     } else if (scopeStatus === 'clean') {
-      details.push(`scope clean: ${modifiedFiles.length} files, all within allowlist`)
+      details.push(`scope clean in ${workDir}: ${modifiedFiles.length} files, all within allowlist`)
     }
   }
 
