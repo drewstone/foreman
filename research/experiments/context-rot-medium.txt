@@ -1,0 +1,18 @@
+tb-easy-02 expected count bug
+==============================
+
+Finding: The verify assertion expected "3" but the correct answer is "4".
+
+Setup creates these files:
+  /tmp/.../one.js        (.js)
+  /tmp/.../two.js        (.js)
+  /tmp/.../a/three.js    (.js)  <-- missed in the bug report
+  /tmp/.../a/four.txt    (not .js)
+  /tmp/.../a/b/five.js   (.js)
+
+4 files match *.js. four.txt is the only non-.js file.
+
+The original bug report claimed the count should be 3, listing only one.js,
+two.js, and five.js -- but it overlooked three.js in the a/ subdirectory.
+
+Fix: Changed verify from "3" to "4".
