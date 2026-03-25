@@ -1,0 +1,15 @@
+tb-easy-02 verify bug — fixed
+
+Claim: count should be 3 (.js files: one.js, two.js, five.js; four.txt is not .js)
+Reality: count should be 4
+
+The setup creates:
+  /tmp/tb-$$-02/one.js
+  /tmp/tb-$$-02/two.js
+  /tmp/tb-$$-02/a/three.js    ← overlooked in the claim
+  /tmp/tb-$$-02/a/four.txt    (not .js, correct)
+  /tmp/tb-$$-02/a/b/five.js
+
+.js files: one.js, two.js, three.js, five.js = 4 total
+
+Fix: changed verify from checking "3" to checking "4".
