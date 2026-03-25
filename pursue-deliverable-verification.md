@@ -2,7 +2,7 @@
 
 Generation: 9
 Date: 2026-03-24
-Status: designing
+Status: building → BUILT (2026-03-24 18:05)
 
 ## Thesis
 
@@ -208,14 +208,25 @@ Before dispatching, check if another active session targets the same worktree/br
 
 | # | Change | Status | Files Changed |
 |---|--------|--------|---------------|
-| 1 | Deliverable assertions | not started | service/index.ts (dispatch API + harvester) |
-| 2 | Verification agent | not started | service/lib/verify-agent.ts |
-| 3 | Scope diff verification | not started | service/index.ts (harvester) |
-| 4 | Slim execution prompts | not started | service/index.ts (composePrompt) |
-| 5 | Honest success metric | not started | service/index.ts (harvester + API) |
-| 6 | Prompt section tracking | not started | service/index.ts (composePrompt + decisions schema) |
-| 7 | Test gate for self-improvement | not started | service/index.ts (harvester) |
-| 8 | Sibling deduplication | not started | service/index.ts (dispatch) |
+| 1 | Deliverable assertions | DONE | service/index.ts (dispatch API + harvester) |
+| 2 | Verification module | DONE | service/lib/verify-deliverable.ts |
+| 3 | Scope diff verification | DONE | service/lib/verify-deliverable.ts |
+| 4 | Slim execution prompts | DONE | service/index.ts (composePrompt) |
+| 5 | Honest success metric | DONE | service/index.ts (harvester — deliverableStatus field) |
+| 6 | Prompt section tracking | DONE | service/index.ts (composePrompt + decisions schema) |
+| 7 | Test gate for self-improvement | DONE | service/index.ts (harvester) |
+| 8 | Sibling deduplication | DONE | service/index.ts (dispatch — logs warning) |
+
+## First Test Result
+
+Dispatched `/verify` with deliverable spec: path=/tmp/foreman-gen9-test.txt, mustContain=["GENERATION_9_WORKS"].
+- Session ran, made 1 commit, created PR
+- **Deliverable check: FAIL** (file not at expected path)
+- Status overridden to **failure** (Gen 8 would have said "success")
+- Quality score: 2/10 (correctly low)
+- Confidence: failure signal (correct)
+
+The 35pp gap is now measurable and enforceable.
 
 ## Hypotheses to Test After Building
 
