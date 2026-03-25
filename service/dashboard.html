@@ -37,6 +37,12 @@
   .confidence-bar { display: inline-block; width: 60px; height: 6px; background: var(--border); border-radius: 3px; margin-right: 6px; vertical-align: middle; }
   .confidence-fill { height: 100%; border-radius: 3px; }
   .empty { color: var(--muted); font-style: italic; padding: 12px 0; }
+  .taste-btn { background: none; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; padding: 2px 6px; font-size: 14px; line-height: 1; transition: all 0.15s; }
+  .taste-btn:hover { border-color: var(--muted); }
+  .taste-btn:disabled { opacity: 0.4; cursor: default; }
+  .taste-btn.approved { border-color: var(--green); background: rgba(63,185,80,0.15); }
+  .taste-btn.rejected { border-color: var(--red); background: rgba(248,81,73,0.15); }
+  .taste-btns { display: flex; gap: 4px; }
   #live-indicator { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; margin-right: 6px; animation: pulse 2s infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 </style>
@@ -101,6 +107,35 @@ function confBar(score) {
   return `<span class="confidence-bar"><span class="confidence-fill" style="width:${pct}%;background:${color}"></span></span>${pct}%`
 }
 
+function tasteButtons(d) {
+  if (d.taste_signal === 'approved') return '<span class="badge badge-green">approved</span>'
+  if (d.taste_signal === 'rejected') return '<span class="badge badge-red">rejected</span>'
+  return `<div class="taste-btns">
+    <button class="taste-btn" onclick="sendTaste(${d.id},'approved',this)" title="Approve">&#x1F44D;</button>
+    <button class="taste-btn" onclick="sendTaste(${d.id},'rejected',this)" title="Reject">&#x1F44E;</button>
+  </div>`
+}
+
+async function sendTaste(decisionId, signal, btn) {
+  const row = btn.closest('.taste-btns')
+  row.querySelectorAll('.taste-btn').forEach(b => { b.disabled = true })
+  try {
+    const r = await fetch(API + '/api/outcomes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision_id: decisionId, taste_signal: signal })
+    })
+    if (r.ok) {
+      const badgeClass = signal === 'approved' ? 'green' : 'red'
+      row.outerHTML = `<span class="badge badge-${badgeClass}">${signal}</span>`
+    } else {
+      row.querySelectorAll('.taste-btn').forEach(b => { b.disabled = false })
+    }
+  } catch {
+    row.querySelectorAll('.taste-btn').forEach(b => { b.disabled = false })
+  }
+}
+
 function timeAgo(ts) {
   if (!ts) return ''
   const d = new Date(ts)
@@ -160,13 +195,14 @@ async function loadStatus() {
   // Decisions
   if (s.recentDecisions?.length > 0) {
     document.getElementById('decisions').innerHTML = `<table>
-      <tr><th>Skill</th><th>Task</th><th>Status</th><th>Outcome</th><th>When</th></tr>
+      <tr><th>Skill</th><th>Task</th><th>Status</th><th>Outcome</th><th>When</th><th>Taste</th></tr>
       ${s.recentDecisions.slice(0, 15).map(d => `<tr>
         <td><span class="badge badge-blue">${esc(d.skill || 'direct')}</span></td>
         <td>${esc((d.task || '').slice(0, 80))}</td>
         <td>${badge(d.status)}</td>
         <td class="session-output">${esc((d.outcome || '').slice(0, 60))}</td>
         <td style="color:var(--muted);white-space:nowrap">${timeAgo(d.created_at)}</td>
+        <td>${tasteButtons(d)}</td>
       </tr>`).join('')}
     </table>`
   } else {
