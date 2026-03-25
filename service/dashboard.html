@@ -39,6 +39,15 @@
   .empty { color: var(--muted); font-style: italic; padding: 12px 0; }
   #live-indicator { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; margin-right: 6px; animation: pulse 2s infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .session-name { color: var(--accent); cursor: pointer; text-decoration: none; }
+  .session-name:hover { text-decoration: underline; }
+  .session-detail td { padding: 0; border-bottom: 1px solid var(--border); }
+  .session-detail-inner { padding: 12px 16px; background: var(--bg); border-left: 2px solid var(--accent); }
+  .session-detail-inner h3 { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 12px 0 6px; }
+  .session-detail-inner h3:first-child { margin-top: 0; }
+  .session-detail-inner pre { font-family: monospace; font-size: 11px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 10px; overflow-x: auto; max-height: 400px; overflow-y: auto; white-space: pre; margin: 0; }
+  .session-detail-inner .kill-btn { margin-top: 12px; padding: 6px 14px; background: rgba(248,81,73,0.15); color: var(--red); border: 1px solid var(--red); border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 500; }
+  .session-detail-inner .kill-btn:hover { background: rgba(248,81,73,0.3); }
 </style>
 </head>
 <body>
@@ -145,14 +154,17 @@ async function loadStatus() {
 
   // Sessions
   if (s.sessions?.length > 0) {
+    const prev = expandedSession
     document.getElementById('sessions').innerHTML = `<table>
       <tr><th>Name</th><th>Status</th><th>Output</th></tr>
       ${s.sessions.map(sess => `<tr>
-        <td>${esc(sess.name)}</td>
+        <td><span class="session-name" data-session="${esc(sess.name)}">${esc(sess.name)}</span></td>
         <td>${badge(sess.alive ? (sess.idle ? 'idle' : sess.status) : 'dead')}</td>
         <td class="session-output">${esc(sess.lastOutput || '')}</td>
-      </tr>`).join('')}
+      </tr>
+      <tr class="session-detail" id="detail-${esc(sess.name)}" style="display:none"><td colspan="3"></td></tr>`).join('')}
     </table>`
+    if (prev) showSessionDetail(prev)
   } else {
     document.getElementById('sessions').innerHTML = '<div class="empty">No active sessions</div>'
   }
@@ -209,6 +221,55 @@ async function loadHealth() {
   }
 }
 
+let expandedSession = null
+
+async function toggleSession(name) {
+  const row = document.getElementById('detail-' + name)
+  if (!row) return
+  if (expandedSession === name) {
+    row.style.display = 'none'
+    expandedSession = null
+    return
+  }
+  if (expandedSession) {
+    const prev = document.getElementById('detail-' + expandedSession)
+    if (prev) prev.style.display = 'none'
+  }
+  expandedSession = name
+  await showSessionDetail(name)
+}
+
+async function showSessionDetail(name) {
+  const row = document.getElementById('detail-' + name)
+  if (!row) { expandedSession = null; return }
+  const cell = row.querySelector('td')
+  cell.innerHTML = '<div class="session-detail-inner"><div class="empty">Loading...</div></div>'
+  row.style.display = ''
+
+  const data = await fetchJSON('/api/sessions/' + encodeURIComponent(name) + '?lines=80')
+  if (!data) {
+    cell.innerHTML = '<div class="session-detail-inner"><div class="empty">Failed to load session</div></div>'
+    return
+  }
+
+  cell.innerHTML = `<div class="session-detail-inner">
+    <h3>Tmux Output</h3>
+    <pre>${esc(data.output || '(no output)')}</pre>
+    <h3>Git Log</h3>
+    <pre>${esc(data.gitLog || '(no git history)')}</pre>
+    <button class="kill-btn" data-kill="${esc(name)}">Kill Session</button>
+  </div>`
+}
+
+async function killSession(name) {
+  if (!confirm('Kill session ' + name + '?')) return
+  try {
+    await fetch(API + '/api/sessions/' + encodeURIComponent(name), { method: 'DELETE' })
+  } catch {}
+  expandedSession = null
+  await refresh()
+}
+
 async function refresh() {
   await Promise.all([loadStats(), loadStatus(), loadConfidence(), loadHealth()])
 }
@@ -219,6 +280,13 @@ function connectSSE() {
   es.onmessage = () => { refresh() }
   es.onerror = () => { setTimeout(connectSSE, 5000) }
 }
+
+document.addEventListener('click', e => {
+  const nameEl = e.target.closest('[data-session]')
+  if (nameEl) { toggleSession(nameEl.dataset.session); return }
+  const killEl = e.target.closest('[data-kill]')
+  if (killEl) { killSession(killEl.dataset.kill); return }
+})
 
 refresh()
 setInterval(refresh, 15000)
