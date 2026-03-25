@@ -37,6 +37,12 @@
   .confidence-bar { display: inline-block; width: 60px; height: 6px; background: var(--border); border-radius: 3px; margin-right: 6px; vertical-align: middle; }
   .confidence-fill { height: 100%; border-radius: 3px; }
   .empty { color: var(--muted); font-style: italic; padding: 12px 0; }
+  .taste-btn { background: none; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; padding: 2px 6px; font-size: 14px; line-height: 1; transition: background 0.15s, border-color 0.15s; }
+  .taste-btn:hover { background: rgba(88,166,255,0.1); }
+  .taste-btn:disabled { opacity: 0.4; cursor: default; }
+  .taste-btn.active-approve { border-color: var(--green); background: rgba(63,185,80,0.15); }
+  .taste-btn.active-reject { border-color: var(--red); background: rgba(248,81,73,0.15); }
+  .taste-actions { display: flex; gap: 4px; white-space: nowrap; }
   #live-indicator { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; margin-right: 6px; animation: pulse 2s infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 </style>
@@ -116,6 +122,30 @@ async function fetchJSON(path) {
   catch { return null }
 }
 
+async function sendTaste(decisionId, signal, btn) {
+  btn.disabled = true
+  try {
+    const r = await fetch(API + '/api/outcomes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision_id: decisionId, taste_signal: signal })
+    })
+    if (r.ok) {
+      const row = btn.closest('.taste-actions')
+      row.querySelectorAll('.taste-btn').forEach(b => {
+        b.classList.remove('active-approve', 'active-reject')
+        b.disabled = false
+      })
+      btn.classList.add(signal === 'approved' ? 'active-approve' : 'active-reject')
+      btn.disabled = true
+    } else {
+      btn.disabled = false
+    }
+  } catch {
+    btn.disabled = false
+  }
+}
+
 async function loadStats() {
   const s = await fetchJSON('/api/stats')
   if (!s) return
@@ -160,14 +190,19 @@ async function loadStatus() {
   // Decisions
   if (s.recentDecisions?.length > 0) {
     document.getElementById('decisions').innerHTML = `<table>
-      <tr><th>Skill</th><th>Task</th><th>Status</th><th>Outcome</th><th>When</th></tr>
-      ${s.recentDecisions.slice(0, 15).map(d => `<tr>
+      <tr><th>Skill</th><th>Task</th><th>Status</th><th>Outcome</th><th>When</th><th>Taste</th></tr>
+      ${s.recentDecisions.slice(0, 15).map(d => {
+        const ts = d.taste_signal
+        const approveClass = ts === 'approved' ? ' active-approve' : ''
+        const rejectClass = ts === 'rejected' ? ' active-reject' : ''
+        return `<tr>
         <td><span class="badge badge-blue">${esc(d.skill || 'direct')}</span></td>
         <td>${esc((d.task || '').slice(0, 80))}</td>
         <td>${badge(d.status)}</td>
         <td class="session-output">${esc((d.outcome || '').slice(0, 60))}</td>
         <td style="color:var(--muted);white-space:nowrap">${timeAgo(d.created_at)}</td>
-      </tr>`).join('')}
+        <td><div class="taste-actions"><button class="taste-btn${approveClass}" onclick="sendTaste(${d.id},'approved',this)"${ts === 'approved' ? ' disabled' : ''} title="Approve">&#x1F44D;</button><button class="taste-btn${rejectClass}" onclick="sendTaste(${d.id},'rejected',this)"${ts === 'rejected' ? ' disabled' : ''} title="Reject">&#x1F44E;</button></div></td>
+      </tr>`}).join('')}
     </table>`
   } else {
     document.getElementById('decisions').innerHTML = '<div class="empty">No decisions yet</div>'
