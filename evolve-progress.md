@@ -40,6 +40,22 @@ Produces 80-100% deliverable success. The improvement from ~56% to 80% comes fro
 - **Slim prompts reduce distraction**: less context = more focus on the task
 - **Verification catches real failures**: the test earlier today correctly caught a missing file
 
+## Round 2 Results (Self-Improvement + Context Rot)
+
+### Self-Improvement with Scope Locks: 0/3 STILL FAILING
+Even with deliverable specs + scope locks + slim prompts:
+- SI-1: Modified index.ts (174 lines) when only verify-deliverable.ts was allowed. Scope creep.
+- SI-2: Went beyond task scope entirely. Scope violation detected.
+- SI-3: Created test file but used wrong test patterns. tsc gate failed.
+
+**Verdict: ITERATE.** Scope locks *detect* violations but don't *prevent* them. The agent ignores file constraints in the prompt. Need enforcement at filesystem level, not prompt level.
+
+### Context Rot Ablation: 3/3 ALL PASS (task too easy)
+Same task at 3 prompt lengths (2875/4379/7393 chars): all succeeded.
+**Verdict: ABANDON this specific test.** Need harder tasks to differentiate. Simple verification tasks don't stress context length.
+
 ## Remaining Gap
 
-The test gate needs tuning (false positives on non-code changes). Otherwise the system has converged above target.
+1. Self-improvement: 0/21 lifetime deliverable rate. Prompt-level scope locks don't work. Need filesystem-level enforcement (read-only mounts, git hooks, or pre-commit allowlists).
+2. Context rot: not measurable on simple tasks. Need to test on SWE-bench or multi-step tasks where the model actually struggles.
+3. Test gate: tuned for .ts-only, but still false-positives on new .ts files that don't compile standalone.
