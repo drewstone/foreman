@@ -30,6 +30,9 @@ import { buildIdeationDispatch, buildFullPlanDispatch, parseIdeationOutput, list
 // ─── Claude runner (for digest/analysis until migrated to dispatches) ─
 import { callClaudeForJSON } from './lib/claude-runner.js'
 
+// ─── Deliverable verification (Gen 9: measure achievement, not activity) ─
+import { verifyDeliverable, runTestGate, type DeliverableSpec, type ScopeSpec } from './lib/verify-deliverable.js'
+
 // ─── Confidence store (from packages/memory) ─────────────────────────
 // Tracks per-(skill, project) confidence that earns autonomy through evidence.
 import { ConfidenceStore } from '@drew/foreman-memory/confidence'
@@ -92,6 +95,12 @@ db.exec(`
     base_branch TEXT,
     template_version INTEGER,
     cost_usd REAL,
+    origin TEXT DEFAULT 'operator',
+    deliverable_path TEXT,
+    deliverable_spec TEXT,
+    scope_spec TEXT,
+    prompt_sections TEXT,
+    deliverable_status TEXT DEFAULT 'unchecked',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
@@ -166,6 +175,11 @@ db.exec(`
 try { db.exec(`ALTER TABLE decisions ADD COLUMN origin TEXT NOT NULL DEFAULT 'operator'`) } catch {}
 try { db.exec(`ALTER TABLE decisions ADD COLUMN base_branch TEXT`) } catch {}
 try { db.exec(`ALTER TABLE decisions ADD COLUMN template_version INTEGER`) } catch {}
+try { db.exec(`ALTER TABLE decisions ADD COLUMN deliverable_path TEXT`) } catch {}
+try { db.exec(`ALTER TABLE decisions ADD COLUMN deliverable_spec TEXT`) } catch {}
+try { db.exec(`ALTER TABLE decisions ADD COLUMN scope_spec TEXT`) } catch {}
+try { db.exec(`ALTER TABLE decisions ADD COLUMN prompt_sections TEXT`) } catch {}
+try { db.exec(`ALTER TABLE decisions ADD COLUMN deliverable_status TEXT DEFAULT 'unchecked'`) } catch {}
 
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
@@ -756,15 +770,55 @@ async function harvestOutcome(sessionName: string, goalId: number, backend: Exec
     if (match) { costUsd = parseFloat(match[1]); break }
   }
 
-  // Determine success — sessions with 0 commits but no errors are "completed" not "failed"
+  // ── Gen 9: Deliverable verification (measure achievement, not activity) ──
+  // Check if the dispatch declared a deliverable spec. If so, verify it.
+  let deliverableStatus: 'pass' | 'fail' | 'unchecked' = 'unchecked'
+  let scopeStatus: 'clean' | 'violation' | 'unchecked' = 'unchecked'
+  let verificationDetails: string[] = []
+
+  const deliverableSpecRaw = (decision as any).deliverable_spec
+  const scopeSpecRaw = (decision as any).scope_spec
+  if (deliverableSpecRaw || scopeSpecRaw) {
+    try {
+      const dSpec: DeliverableSpec | null = deliverableSpecRaw ? JSON.parse(deliverableSpecRaw) : null
+      const sSpec: ScopeSpec | null = scopeSpecRaw ? JSON.parse(scopeSpecRaw) : null
+      const verification = verifyDeliverable(workDir, dSpec, sSpec)
+      deliverableStatus = verification.deliverableStatus
+      scopeStatus = verification.scopeStatus
+      verificationDetails = verification.details
+      log(`Verification for ${sessionName}: deliverable=${deliverableStatus} scope=${scopeStatus} ${verificationDetails.join('; ')}`)
+    } catch (e) { log(`Verification failed for ${sessionName}: ${e}`) }
+  }
+
+  // Test gate for self-improvement dispatches
+  const isSelfImprovement = workDir.includes('foreman') && (decision.skill === '/pursue' || decision.skill === '/evolve')
+  if (isSelfImprovement && commits > 0) {
+    const gate = runTestGate(workDir)
+    if (!gate.passed) {
+      deliverableStatus = 'fail'
+      verificationDetails.push(`test gate failed: ${gate.output.slice(0, 100)}`)
+      log(`Test gate FAILED for self-improvement session ${sessionName}`)
+    }
+  }
+
+  // Determine success — Gen 9: deliverable_status overrides session heuristics
   const hasErrors = output.includes('Error:') || output.includes('FAIL') || output.includes('fatal:')
-  const status = commits > 0 && !hasErrors ? 'success'
-    : commits > 0 && hasErrors ? 'success' // commits + errors = partial success (still made progress)
-    : hasErrors ? 'failure'
-    : 'success' // no commits, no errors = completed successfully (e.g. verification task)
+  let status: string
+  if (deliverableStatus === 'fail') {
+    status = 'failure' // deliverable missing/wrong overrides everything
+  } else if (deliverableStatus === 'pass') {
+    status = 'success' // verified deliverable = true success
+  } else {
+    // No spec — fall back to old heuristics (but honestly)
+    status = commits > 0 && !hasErrors ? 'success'
+      : hasErrors ? 'failure'
+      : 'success'
+  }
 
   // Generate outcome text
   const outcomeParts: string[] = []
+  if (deliverableStatus !== 'unchecked') outcomeParts.push(`deliverable: ${deliverableStatus}`)
+  if (scopeStatus === 'violation') outcomeParts.push(`SCOPE VIOLATION`)
   if (commits > 0) outcomeParts.push(`${commits} commits`)
   if (hasPR) outcomeParts.push('PR created')
   if (testsPassed === true) outcomeParts.push('tests passing')
@@ -825,19 +879,29 @@ async function harvestOutcome(sessionName: string, goalId: number, backend: Exec
     }
   } catch {}
 
+  // Store verification details in learnings
+  if (verificationDetails.length > 0) {
+    learnings.push(...verificationDetails.map(d => `verify: ${d}`))
+  }
+
   // Store the outcome
   stmts.updateDecision.run(
     status,
     outcomeText,
     learnings.length > 0 ? JSON.stringify(learnings) : null,
-    JSON.stringify({ commits, hasPR, testsPassed, gitLog }),
+    JSON.stringify({ commits, hasPR, testsPassed, gitLog, deliverableStatus, scopeStatus }),
     null, // taste_signal — operator sets this
     costUsd,
     decision.id,
   )
 
+  // Store deliverable status
+  if (deliverableStatus !== 'unchecked') {
+    db.prepare(`UPDATE decisions SET deliverable_status = ? WHERE id = ?`).run(deliverableStatus, decision.id)
+  }
+
   log(`Auto-harvested outcome for ${sessionName}: ${outcomeText}`)
-  emitEvent('outcome_harvested', sessionName, goalId, { decisionId: decision.id, status, commits })
+  emitEvent('outcome_harvested', sessionName, goalId, { decisionId: decision.id, status, commits, deliverableStatus })
 
   // Parse plan ideation output if this was a plan ideation session
   if (sessionName.includes('plan-ideate')) {
@@ -1274,7 +1338,7 @@ async function maybeAutoDispatch(skill: string, project: string, goalId: number)
   )
   const decisionId = Number(result.lastInsertRowid)
 
-  const prompt = composePrompt({
+  const composed = composePrompt({
     skill: nextSkill,
     task: nextTask,
     workDir: wt.path,
@@ -1284,9 +1348,11 @@ async function maybeAutoDispatch(skill: string, project: string, goalId: number)
     baseBranch: wt.baseBranch,
     repoDir,
   })
+  db.prepare(`UPDATE decisions SET prompt_sections = ? WHERE id = ?`)
+    .run(JSON.stringify(composed.sections), decisionId)
 
   const model = selectModel(nextSkill, nextTask)
-  spawnSession({ name: sName, workDir: wt.path, prompt, goalId: goal.id, decisionId, model: model ?? undefined })
+  spawnSession({ name: sName, workDir: wt.path, prompt: composed.text, goalId: goal.id, decisionId, model: model ?? undefined })
 
   emitEvent('auto_dispatched', sName, goal.id, { skill: nextSkill, confidence: level })
 }
@@ -2254,7 +2320,7 @@ function composePrompt(opts: {
   worktreeBranch?: string | null
   baseBranch?: string | null
   repoDir?: string | null
-}): string {
+}): { text: string, sections: string[], tier: string } {
   const { skill, task, workDir, goalIntent, goalId, worktreeBranch, baseBranch, repoDir } = opts
   const sections: string[] = []
   const projectName = (repoDir ?? workDir).split('/').pop() ?? 'project'
@@ -2571,31 +2637,49 @@ function composePrompt(opts: {
 
   // Context sections (trimmed to fit — Claude Code has limited initial prompt space)
   // Scale context budget by task complexity.
-  // Simple tasks (short, direct commands) get less context.
-  // Complex tasks (multi-step goals, architectural work) get full context.
-  const taskWords = task.split(/\s+/).length
-  const isComplex = taskWords > 20 || skill === '/pursue' || skill === '/evolve' ||
-    skill === '/research' || skill === '/critical-audit' ||
-    task.includes('redesign') || task.includes('architect') || task.includes('refactor')
-  let contextBudget = isComplex ? 6000 : taskWords > 10 ? 3500 : 1500
+  // Gen 9: Slim prompts for execution, rich for reasoning.
+  // Context rot (EMNLP 2025): every token degrades execution 13-85%.
+  // SWE-bench data: bare (78% partial) outperforms full (50% partial).
+  const executionSkills = new Set(['/verify', '/converge', '/polish'])
+  const reasoningSkills = new Set(['/pursue', '/plan', '/research', '/reflect'])
+  const isExecution = executionSkills.has(skill) || (!skill && task.split(/\s+/).length < 15)
+  const isReasoning = reasoningSkills.has(skill)
+
+  let contextBudget: number
+  let promptTier: string
+  if (isExecution) {
+    contextBudget = 1500  // bare: task + CLAUDE.md + git workflow
+    promptTier = 'slim'
+  } else if (isReasoning) {
+    contextBudget = 6000  // full context for planning/research
+    promptTier = 'rich'
+  } else {
+    contextBudget = 3000  // medium: evolve, critical-audit, direct
+    promptTier = 'medium'
+  }
+
+  const includedSections: string[] = []
   for (const section of sections) {
     if (contextBudget <= 0) break
+    // Track which sections are included for ablation analysis
+    const sectionName = section.match(/^## (.+)/m)?.[1] ?? section.slice(0, 30)
     if (section.length <= contextBudget) {
       prompt += section + '\n\n'
       contextBudget -= section.length
+      includedSections.push(sectionName)
     } else {
       prompt += section.slice(0, contextBudget) + '\n...(truncated)\n\n'
       contextBudget = 0
+      includedSections.push(sectionName + ' (truncated)')
     }
   }
 
   // If there's a skill, prepend it so it's the FIRST thing Claude sees
-  if (skill && skill.startsWith('/')) {
-    // Skill goes as the very first line — Claude Code will recognize the slash command
-    return `${skill} ${prompt.trim()}`
-  }
+  const text = skill?.startsWith('/')
+    ? `${skill} ${prompt.trim()}`
+    : prompt.trim()
 
-  return prompt.trim()
+  return { text, sections: includedSections, tier: promptTier }
 }
 
 // ─── Logging ─────────────────────────────────────────────────────────
@@ -2718,6 +2802,13 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
       if (!repoDir) return error(res, 'cannot resolve work directory')
 
+      // Gen 9: Sibling deduplication — check if another active session targets the same repo
+      const activeSessions = stmts.activeSessions.all() as Array<{ name: string, work_dir: string }>
+      const siblingCount = activeSessions.filter(s => s.work_dir.includes(repoDir.split('/').pop()!)).length
+      if (siblingCount > 0 && !body.force) {
+        log(`Sibling dedup: ${siblingCount} active sessions on ${repoDir}`)
+      }
+
       // Create worktree — Foreman always works in isolation.
       // Branches from the operator's current branch so it builds on their latest work.
       // Auto-generates a label if none provided (skill name + timestamp).
@@ -2745,13 +2836,23 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const tplVersion = activeTpl?.version ?? 1
 
       // Truncate task for DB storage — full prompt goes in sessions.prompt
+      // Deliverable + scope specs (Gen 9: measure achievement, not activity)
+      const deliverableSpec = body.deliverable ? JSON.stringify(body.deliverable) : null
+      const scopeSpec = body.scope ? JSON.stringify(body.scope) : null
+      const deliverablePath = body.deliverable?.path ?? null
+
       const taskTruncated = task.slice(0, 500)
       const result = stmts.insertDecision.run(goalId || null, skill, taskTruncated, reasoning, sName, worktreePath, worktreeBranch, baseBranch, tplVersion, 'operator')
+      // Store deliverable/scope specs
+      if (deliverableSpec || scopeSpec || deliverablePath) {
+        db.prepare(`UPDATE decisions SET deliverable_path = ?, deliverable_spec = ?, scope_spec = ? WHERE id = ?`)
+          .run(deliverablePath, deliverableSpec, scopeSpec, Number(result.lastInsertRowid))
+      }
       const decisionId = Number(result.lastInsertRowid)
 
-      // Compose rich, context-loaded prompt (reads project context from the REPO, not the worktree)
+      // Compose prompt (Gen 9: slim for execution, rich for reasoning)
       const goalRow = goalId ? stmts.getGoal.get(goalId) as { intent?: string } | undefined : undefined
-      const prompt = composePrompt({
+      const composed = composePrompt({
         skill,
         task,
         workDir: effectiveWorkDir,
@@ -2759,21 +2860,20 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         goalId: goalId || undefined,
         worktreeBranch,
         baseBranch,
-        repoDir: worktreePath ? repoDir : null, // pass original repo for context reading
+        repoDir: worktreePath ? repoDir : null,
       })
+      // Store prompt sections for ablation analysis
+      db.prepare(`UPDATE decisions SET prompt_sections = ? WHERE id = ?`)
+        .run(JSON.stringify(composed.sections), decisionId)
 
-      // Select model (cost optimization — cheap for mechanical, expensive for creative)
       const model = selectModel(skill, task)
-
-      // Spawn (non-blocking — returns immediately)
-      // Model: explicit override > API request > auto-selected > default
       const requestedModel = body.model ? String(body.model) : undefined
       const effectiveModel = requestedModel ?? model ?? undefined
 
       spawnSession({
         name: sName,
         workDir: effectiveWorkDir,
-        prompt,
+        prompt: composed.text,
         goalId: goalId || null as unknown as number,
         decisionId,
         backend: backendName,
@@ -2786,7 +2886,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const confidenceLevel = confidence.getLevel(skill || 'direct', dispatchProject)
       const confidenceScore = confidence.getConfidence(skill || 'direct', dispatchProject)
 
-      return json(res, { decision, session: sName, backend: backendName, model: effectiveModel, worktree: worktreePath, branch: worktreeBranch, baseBranch, confidenceLevel, confidenceScore, promptLength: prompt.length, promptPreview: prompt.slice(0, 300) }, 201)
+      return json(res, { decision, session: sName, backend: backendName, model: effectiveModel, worktree: worktreePath, branch: worktreeBranch, baseBranch, confidenceLevel, confidenceScore, promptLength: composed.text.length, promptTier: composed.tier, promptSections: composed.sections, promptPreview: composed.text.slice(0, 300) }, 201)
     }
 
     // ── Sessions ──────────────────────────────────────────────
@@ -3014,13 +3114,15 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const result = stmts.insertDecision.run(goalId, skill, selfTask.slice(0, 500), 'self-improvement dispatch', sName, wt.path, wt.branch, wt.baseBranch, activeTpl?.version ?? 1, 'auto')
       const decisionId = Number(result.lastInsertRowid)
 
-      const prompt = composePrompt({
+      const composed = composePrompt({
         skill, task: selfTask, workDir: wt.path, goalIntent: 'Improve Foreman itself',
         goalId, worktreeBranch: wt.branch, baseBranch: wt.baseBranch, repoDir: foremanRepo,
       })
+      db.prepare(`UPDATE decisions SET prompt_sections = ? WHERE id = ?`)
+        .run(JSON.stringify(composed.sections), decisionId)
 
       const model = selectModel(skill, selfTask)
-      spawnSession({ name: sName, workDir: wt.path, prompt, goalId, decisionId, model: model ?? undefined })
+      spawnSession({ name: sName, workDir: wt.path, prompt: composed.text, goalId, decisionId, model: model ?? undefined })
 
       return json(res, { decision: stmts.getDecision.get(decisionId), session: sName, worktree: wt.path, branch: wt.branch }, 201)
     }
