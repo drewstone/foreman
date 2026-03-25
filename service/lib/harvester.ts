@@ -271,6 +271,18 @@ export async function harvestOutcome(sessionName: string, goalId: number, backen
   const enrichedLearnings = digest.learnings ?? learnings
   updateLearningsFromOutcome(decision.id, decision.skill, decision.task, status, digest.summary ?? outcomeText, enrichedLearnings)
 
+  // Record outcome for active prompt lab experiments
+  try {
+    const labRow = db.prepare(
+      `SELECT id, surface FROM prompt_lab WHERE status = 'testing' ORDER BY created_at DESC LIMIT 1`
+    ).get() as { id: string, surface: string } | undefined
+    if (labRow) {
+      db.prepare(`UPDATE prompt_lab SET dispatches = dispatches + 1, successes = successes + ? WHERE id = ?`)
+        .run(status === 'success' ? 1 : 0, labRow.id)
+      log(`Lab experiment ${labRow.id}: recorded ${status} (${labRow.surface})`)
+    }
+  } catch {}
+
   // Read next-dispatch recommendation from session (skill chaining)
   let sessionNextDispatch: { skill: string, task: string, reasoning?: string } | null = null
   try {

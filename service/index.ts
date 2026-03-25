@@ -1088,6 +1088,17 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
             stmts.insertLearning.run('session_review', l.slice(0, 500), `decision:${foremanSession.id}`, null, 1.5)
           }
 
+          // Record outcome for active prompt lab experiment
+          try {
+            const labRow = db.prepare(
+              `SELECT id, surface FROM prompt_lab WHERE status = 'testing' ORDER BY created_at DESC LIMIT 1`
+            ).get() as { id: string, surface: string } | undefined
+            if (labRow) {
+              db.prepare(`UPDATE prompt_lab SET dispatches = dispatches + 1, successes = successes + ? WHERE id = ?`)
+                .run(review.status === 'success' ? 1 : 0, labRow.id)
+            }
+          } catch {}
+
           // Store next-dispatch recommendation
           if (review.nextDispatch) {
             stmts.insertLearning.run(
