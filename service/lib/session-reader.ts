@@ -34,6 +34,7 @@ export interface SessionSummary {
   totalInputTokens: number
   totalOutputTokens: number
   totalCacheReadTokens: number
+  estimatedCostUSD: number
   lastAssistantText: string
   closingBlock: ClosingBlock | null
   startTime: string
@@ -126,6 +127,8 @@ export function readSessionTranscript(transcriptPath: string): SessionSummary | 
     // Parse closing block from last assistant text
     const closingBlock = parseClosingBlock(lastAssistantText)
 
+    const estimatedCostUSD = estimateCost(model, totalInputTokens, totalOutputTokens)
+
     return {
       sessionId,
       cwd,
@@ -136,6 +139,7 @@ export function readSessionTranscript(transcriptPath: string): SessionSummary | 
       totalInputTokens,
       totalOutputTokens,
       totalCacheReadTokens,
+      estimatedCostUSD,
       lastAssistantText: lastAssistantText.slice(0, 5000),
       closingBlock,
       startTime,
@@ -144,6 +148,20 @@ export function readSessionTranscript(transcriptPath: string): SessionSummary | 
   } catch {
     return null
   }
+}
+
+// Per-million-token pricing: [input, output]
+const MODEL_PRICING: Record<string, [number, number]> = {
+  opus: [15, 75],
+  sonnet: [3, 15],
+  haiku: [0.25, 1.25],
+}
+
+function estimateCost(model: string, inputTokens: number, outputTokens: number): number {
+  const key = model.toLowerCase()
+  const tier = Object.keys(MODEL_PRICING).find(k => key.includes(k))
+  const [inputRate, outputRate] = tier ? MODEL_PRICING[tier] : MODEL_PRICING.sonnet
+  return (inputTokens * inputRate + outputTokens * outputRate) / 1_000_000
 }
 
 /**
