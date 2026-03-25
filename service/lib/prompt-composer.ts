@@ -14,11 +14,20 @@ import {
 
 const execFileAsync = promisify(execFile)
 
+import { getCurrentInstruction } from './optimization/experiment-runner.js'
+
 /**
- * Read a promoted lab variant instruction for a surface.
- * Returns null if no promoted experiment exists (use default).
+ * Read the current live instruction for a surface.
+ * Checks: 1) optimization/current/<surface>.ts (file-based, versioned)
+ *         2) prompt_lab table (database, legacy)
+ *         3) null (use hardcoded default)
  */
 function getPromotedInstruction(surface: string): string | null {
+  // Primary: file-based versioned module
+  const fromFile = getCurrentInstruction(surface)
+  if (fromFile) return fromFile
+
+  // Fallback: database (prompt_lab table)
   try {
     const db = getDb()
     const row = db.prepare(
@@ -26,7 +35,7 @@ function getPromotedInstruction(surface: string): string | null {
     ).get(surface) as { variant: string } | undefined
     return row?.variant ?? null
   } catch {
-    return null // table may not exist yet
+    return null
   }
 }
 
