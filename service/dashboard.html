@@ -37,6 +37,16 @@
   .confidence-bar { display: inline-block; width: 60px; height: 6px; background: var(--border); border-radius: 3px; margin-right: 6px; vertical-align: middle; }
   .confidence-fill { height: 100%; border-radius: 3px; }
   .empty { color: var(--muted); font-style: italic; padding: 12px 0; }
+  .session-name { cursor: pointer; color: var(--accent); text-decoration: none; }
+  .session-name:hover { text-decoration: underline; }
+  .session-detail { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 12px; margin: 4px 0; }
+  .session-detail pre { font-family: monospace; font-size: 11px; color: var(--muted); white-space: pre-wrap; word-break: break-all; max-height: 400px; overflow-y: auto; margin: 8px 0; line-height: 1.4; }
+  .session-detail .detail-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .session-detail .detail-header span { font-size: 12px; color: var(--muted); }
+  .session-detail .git-log { font-size: 11px; color: var(--muted); margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+  .session-detail .git-log pre { max-height: 100px; }
+  .kill-btn { background: rgba(248,81,73,0.15); color: var(--red); border: 1px solid rgba(248,81,73,0.3); border-radius: 4px; padding: 4px 12px; font-size: 12px; cursor: pointer; font-family: inherit; }
+  .kill-btn:hover { background: rgba(248,81,73,0.3); }
   #live-indicator { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; margin-right: 6px; animation: pulse 2s infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 </style>
@@ -145,14 +155,33 @@ async function loadStatus() {
 
   // Sessions
   if (s.sessions?.length > 0) {
-    document.getElementById('sessions').innerHTML = `<table>
+    const el = document.getElementById('sessions')
+    // Preserve which sessions are expanded
+    const expanded = new Set()
+    el.querySelectorAll('.session-detail[data-name]').forEach(d => expanded.add(d.dataset.name))
+
+    el.innerHTML = `<table>
       <tr><th>Name</th><th>Status</th><th>Output</th></tr>
       ${s.sessions.map(sess => `<tr>
-        <td>${esc(sess.name)}</td>
+        <td><a class="session-name" data-session="${esc(sess.name)}">${esc(sess.name)}</a></td>
         <td>${badge(sess.alive ? (sess.idle ? 'idle' : sess.status) : 'dead')}</td>
         <td class="session-output">${esc(sess.lastOutput || '')}</td>
+      </tr>
+      <tr class="session-expand-row" data-session="${esc(sess.name)}" style="display:none">
+        <td colspan="3"><div class="session-detail" data-name="${esc(sess.name)}"><div class="empty">Loading...</div></div></td>
       </tr>`).join('')}
     </table>`
+
+    // Re-expand previously expanded sessions
+    expanded.forEach(name => toggleSession(name))
+
+    // Click handlers
+    el.querySelectorAll('.session-name').forEach(a => {
+      a.addEventListener('click', e => {
+        e.preventDefault()
+        toggleSession(a.dataset.session)
+      })
+    })
   } else {
     document.getElementById('sessions').innerHTML = '<div class="empty">No active sessions</div>'
   }
@@ -207,6 +236,41 @@ async function loadHealth() {
     const hrs = Math.floor(m / 60)
     document.getElementById('uptime').textContent = hrs > 0 ? `Up ${hrs}h ${m % 60}m` : `Up ${m}m`
   }
+}
+
+async function toggleSession(name) {
+  const rows = document.querySelectorAll(`.session-expand-row[data-session="${CSS.escape(name)}"]`)
+  for (const row of rows) {
+    if (row.style.display === 'none') {
+      row.style.display = ''
+      loadSessionDetail(name, row.querySelector('.session-detail'))
+    } else {
+      row.style.display = 'none'
+    }
+  }
+}
+
+async function loadSessionDetail(name, container) {
+  const data = await fetchJSON(`/api/sessions/${encodeURIComponent(name)}?lines=80`)
+  if (!data) {
+    container.innerHTML = '<div class="empty">Failed to load session</div>'
+    return
+  }
+  container.innerHTML = `
+    <div class="detail-header">
+      <span>${badge(data.alive ? (data.idle ? 'idle' : data.status || 'running') : 'dead')}</span>
+      <button class="kill-btn">Kill</button>
+    </div>
+    <pre>${esc(data.output || '(no output)')}</pre>
+    ${data.gitLog ? `<div class="git-log"><strong>Recent commits</strong><pre>${esc(data.gitLog)}</pre></div>` : ''}
+  `
+  container.querySelector('.kill-btn').addEventListener('click', () => killSession(name))
+}
+
+async function killSession(name) {
+  if (!confirm(`Kill session "${name}"?`)) return
+  const r = await fetch(API + `/api/sessions/${encodeURIComponent(name)}`, { method: 'DELETE' })
+  if (r.ok) refresh()
 }
 
 async function refresh() {
