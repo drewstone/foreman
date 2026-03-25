@@ -25,6 +25,7 @@
  */
 
 import { getDb, getStmts, log } from './state.js'
+import { callClaudeForJSON } from './claude-runner.js'
 
 // ─── River: read dispatch outcomes ───────────────────────────────────
 
