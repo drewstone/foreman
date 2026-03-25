@@ -742,6 +742,19 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       return json(res, stmts.allLearnings.all(limit))
     }
 
+    // ── Project config (teach Foreman about a project) ─────────
+    if (path === '/api/project-config' && method === 'POST') {
+      const body = await readBody(req)
+      const project = String(body.project ?? '')
+      const key = String(body.key ?? '')
+      const value = String(body.value ?? '')
+      if (!project || !key || !value) return error(res, 'project, key, and value required')
+
+      stmts.insertLearning.run('project_config', `${key}:${value}`, 'operator', project, 5.0)
+      log(`Project config: ${project} → ${key}=${value}`)
+      return json(res, { ok: true, project, key, value }, 201)
+    }
+
     if (path === '/api/templates' && method === 'GET') {
       return json(res, stmts.listTemplates.all(10))
     }

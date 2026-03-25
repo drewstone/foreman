@@ -52,11 +52,36 @@ export async function createWorktree(repoPath: string, label: string): Promise<{
   const branch = `foreman/${label}`
   const wtPath = join(FOREMAN_HOME, 'worktrees', `${projectName}-${label}`)
 
+  // Detect the correct base branch for this repo.
+  // Priority: 1) per-project override from learnings table
+  //           2) remote HEAD (what GitHub considers default)
+  //           3) operator's current branch
+  //           4) fallback to 'main'
   let baseBranch = 'main'
+
+  // Check for per-project override (stored by operator feedback)
   try {
-    const { stdout } = await execFileAsync('git', ['branch', '--show-current'], { cwd: repoPath, timeout: 5_000 })
-    if (stdout.trim()) baseBranch = stdout.trim()
+    const db = getDb()
+    const override = db.prepare(
+      `SELECT content FROM learnings WHERE type = 'project_config' AND project = ? AND content LIKE 'base_branch:%'`
+    ).get(projectName) as { content: string } | undefined
+    if (override) baseBranch = override.content.replace('base_branch:', '').trim()
   } catch {}
+
+  // If no override, detect from remote HEAD
+  if (baseBranch === 'main') {
+    try {
+      const { stdout } = await execFileAsync('git', ['symbolic-ref', 'refs/remotes/origin/HEAD', '--short'], { cwd: repoPath, timeout: 5_000 })
+      const remote = stdout.trim().replace('origin/', '')
+      if (remote) baseBranch = remote
+    } catch {
+      // Fallback: operator's current branch
+      try {
+        const { stdout } = await execFileAsync('git', ['branch', '--show-current'], { cwd: repoPath, timeout: 5_000 })
+        if (stdout.trim()) baseBranch = stdout.trim()
+      } catch {}
+    }
+  }
 
   if (existsSync(wtPath)) {
     try {
