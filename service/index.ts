@@ -979,6 +979,22 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       }
     }
 
+    // ── Dashboard ──────────────────────────────────────────────
+    if (path === '/' || path === '/dashboard') {
+      try {
+        // tsx sets __dirname; use process.argv[1] as fallback
+        const serviceDir = typeof __dirname !== 'undefined' ? __dirname : join(process.argv[1], '..')
+        const dashboardPath = join(serviceDir, 'dashboard.html')
+        const html = readFileSync(dashboardPath, 'utf8')
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+        res.end(html)
+        return
+      } catch {
+        error(res, 'Dashboard not found', 500)
+        return
+      }
+    }
+
     // ── 404 ───────────────────────────────────────────────────
     error(res, `Not found: ${path}`, 404)
 
