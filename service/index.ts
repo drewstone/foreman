@@ -51,6 +51,7 @@ import { ConfidenceStore } from '@drew/foreman-memory/confidence'
 import { readSessionTranscript, type SessionSummary } from './lib/session-reader.js'
 import { reviewSession } from './lib/session-reviewer.js'
 import { maybeAutoDispatch } from './lib/auto-dispatch.js'
+import { runPromptLabCycle, pullSamples, getActiveExperiment, getDefaultSurfaces } from './lib/prompt-lab.js'
 
 // ─── Database ────────────────────────────────────────────────────────
 
@@ -745,6 +746,30 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       return json(res, stmts.listTemplates.all(10))
     }
 
+    // ── Prompt Lab ──────────────────────────────────────────
+    if (path === '/api/lab' && method === 'GET') {
+      const samples = pullSamples(100)
+      const surfaces = getDefaultSurfaces()
+      const experiments = surfaces.map(s => ({
+        surface: s.name,
+        currentInstruction: s.currentInstruction.slice(0, 200),
+        activeExperiment: getActiveExperiment(s.name),
+      }))
+      const baselineRate = samples.length > 0
+        ? Math.round(samples.filter(s => s.success).length / samples.length * 100)
+        : 0
+      return json(res, { samples: samples.length, baselineRate, surfaces: experiments })
+    }
+
+    if (path === '/api/lab/optimize' && method === 'POST') {
+      try {
+        const result = await runPromptLabCycle()
+        return json(res, result)
+      } catch (e) {
+        return error(res, e instanceof Error ? e.message : String(e), 500)
+      }
+    }
+
     if (path === '/api/stats' && method === 'GET') {
       const sessionCount = (stmts.operatorSessionCount.get() as { count: number }).count
       const decisionCount = (db.prepare(`SELECT COUNT(*) as c FROM decisions`).get() as { c: number }).c
@@ -1186,6 +1211,20 @@ server.listen(PORT, '127.0.0.1', () => {
     const cleaned = await cleanupWorktrees()
     if (cleaned > 0) log(`Cleaned ${cleaned} stale worktrees`)
   }, 6 * 60 * 60 * 1000)
+
+  // Prompt Lab — runs every 2 hours, generates and evaluates prompt variants
+  setTimeout(async () => {
+    try {
+      const result = await runPromptLabCycle()
+      log(`Prompt Lab: ${result.action} (${result.samples} samples)`)
+    } catch (e) { log(`Prompt Lab failed: ${e}`) }
+  }, 10 * 60 * 1000) // first run after 10 minutes
+  setInterval(async () => {
+    try {
+      const result = await runPromptLabCycle()
+      log(`Prompt Lab: ${result.action} (${result.samples} samples)`)
+    } catch (e) { log(`Prompt Lab failed: ${e}`) }
+  }, 2 * 60 * 60 * 1000)
 
   // GEPA dispatch policy — retrain every 6 hours from accumulated decisions
   if (process.env.FOREMAN_DISPATCH_POLICY === 'gepa') {
