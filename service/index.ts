@@ -48,6 +48,7 @@ import { callClaudeForJSON } from './lib/claude-runner.js'
 import { verifyDeliverable, runTestGate, type DeliverableSpec, type ScopeSpec } from './lib/verify-deliverable.js'
 import { installScopeHook, removeScopeHook, type ScopeConfig } from './lib/scope-enforcer.js'
 import { ConfidenceStore } from '@drew/foreman-memory/confidence'
+import { readSessionTranscript, type SessionSummary, type ClosingBlock } from './lib/session-reader.js'
 
 // ─── Database ────────────────────────────────────────────────────────
 
@@ -977,6 +978,109 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         // Session index may not be built yet
         return json(res, [])
       }
+    }
+
+    // ── Session complete (from Claude Code Stop hook) ──────────
+    if (path === '/api/session-complete' && method === 'POST') {
+      const body = await readBody(req)
+      const sessionId = String(body.session_id ?? '')
+      const transcriptPath = String(body.transcript_path ?? '')
+      const sessionCwd = String(body.cwd ?? '')
+      const lastMessage = String(body.last_assistant_message ?? '')
+
+      if (!sessionId) return error(res, 'session_id required')
+
+      // Read the full session transcript for structured data
+      let summary: SessionSummary | null = null
+      if (transcriptPath) {
+        summary = readSessionTranscript(transcriptPath)
+      }
+
+      // Find matching Foreman decision by session name pattern
+      const foremanSession = db.prepare(
+        `SELECT d.id, d.skill, d.task, d.goal_id, d.session_name, d.worktree_path, d.worktree_branch, d.base_branch
+         FROM decisions d
+         JOIN sessions s ON s.decision_id = d.id
+         WHERE d.status = 'dispatched'
+         AND (s.work_dir = ? OR s.work_dir LIKE ?)
+         ORDER BY d.created_at DESC LIMIT 1`
+      ).get(sessionCwd, `%${sessionCwd.split('/').pop()}%`) as {
+        id: number, skill: string, task: string, goal_id: number | null,
+        session_name: string, worktree_path: string | null,
+        worktree_branch: string | null, base_branch: string | null,
+      } | undefined
+
+      // Store the session data
+      const result: Record<string, unknown> = {
+        sessionId,
+        transcriptPath,
+        cwd: sessionCwd,
+        turnCount: summary?.turnCount,
+        toolCallCount: summary?.toolCalls?.length,
+        model: summary?.model,
+        inputTokens: summary?.totalInputTokens,
+        outputTokens: summary?.totalOutputTokens,
+        closingBlock: summary?.closingBlock,
+        matchedDecision: foremanSession?.id,
+      }
+
+      // If this matches a Foreman dispatch, use the closing block to drive next steps
+      if (foremanSession && summary?.closingBlock) {
+        const cb = summary.closingBlock
+
+        // Update decision with structured outcome
+        const outcomeText = cb.summary || lastMessage.slice(0, 200)
+        const learnings = [
+          ...cb.stepsCompleted.map(s => `step: ${s}`),
+          ...cb.deliverables.map(d => `deliverable: ${d}`),
+        ]
+        const status = cb.status === 'complete' ? 'success' : cb.status === 'blocked' ? 'failure' : 'success'
+
+        stmts.updateDecision.run(
+          status, outcomeText.slice(0, 500),
+          learnings.length > 0 ? JSON.stringify(learnings) : null,
+          JSON.stringify({
+            turnCount: summary.turnCount,
+            toolCalls: summary.toolCalls.length,
+            inputTokens: summary.totalInputTokens,
+            outputTokens: summary.totalOutputTokens,
+            closingStatus: cb.status,
+          }),
+          null, null, foremanSession.id,
+        )
+
+        // Store skill recommendations for next dispatch
+        if (cb.skillRecommendations.length > 0) {
+          for (const rec of cb.skillRecommendations) {
+            stmts.insertLearning.run(
+              'session_recommendation',
+              `${foremanSession.skill} → ${rec.skill}: ${rec.task.slice(0, 200)}`,
+              `decision:${foremanSession.id}`, null, 2.0,
+            )
+          }
+          log(`Session ${sessionId} recommends: ${cb.skillRecommendations.map(r => `${r.skill} (${r.task.slice(0, 50)})`).join(', ')}`)
+        }
+
+        emitEvent('session_complete', foremanSession.session_name, foremanSession.goal_id, {
+          decisionId: foremanSession.id,
+          status: cb.status,
+          turnCount: summary.turnCount,
+          toolCalls: summary.toolCalls.length,
+          recommendations: cb.skillRecommendations.length,
+        })
+
+        log(`Session complete via hook: ${sessionId} → decision ${foremanSession.id} (${cb.status})`)
+      } else {
+        // Not a Foreman dispatch — just log the event for the operator session scanner
+        emitEvent('external_session_complete', null, null, {
+          sessionId,
+          cwd: sessionCwd,
+          turnCount: summary?.turnCount,
+        })
+        log(`External session complete: ${sessionId} in ${sessionCwd}`)
+      }
+
+      return json(res, result, 200)
     }
 
     // ── Dashboard ──────────────────────────────────────────────

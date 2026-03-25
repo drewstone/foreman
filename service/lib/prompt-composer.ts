@@ -339,12 +339,30 @@ export function composePrompt(opts: {
     prompt += `Use them when appropriate during your work.\n`
   }
 
-  prompt += `\n## Next-Dispatch Recommendation\n`
-  prompt += `When your work is complete, write \`.foreman/next-dispatch.json\` with:\n`
+  prompt += `\n## Session Closing Protocol — REQUIRED\n`
+  prompt += `Your LAST message in this session MUST end with a structured closing block.\n`
+  prompt += `This is how Foreman reads your results and decides what to dispatch next.\n\n`
+  prompt += `Include this JSON block at the end of your final response:\n`
   prompt += `\`\`\`json\n`
-  prompt += `{"skill": "/skill-name", "task": "specific next task description", "reasoning": "why this is the right next step"}\n`
-  prompt += `\`\`\`\n`
-  prompt += `This tells Foreman what to dispatch next. Base it on what you learned during this session.\n`
+  prompt += `{\n`
+  prompt += `  "status": "complete" | "partial" | "blocked",\n`
+  prompt += `  "summary": "2-3 sentence summary of what you accomplished",\n`
+  prompt += `  "stepsCompleted": ["step 1 description", "step 2 description"],\n`
+  prompt += `  "deliverables": ["path/to/file1", "path/to/file2"],\n`
+  prompt += `  "skillRecommendations": [\n`
+  prompt += `    {"skill": "/verify", "task": "run tests and check nothing broke", "reasoning": "I made changes to X"},\n`
+  prompt += `    {"skill": "/evolve", "task": "improve Y metric", "reasoning": "baseline established at Z"}\n`
+  prompt += `  ],\n`
+  prompt += `  "nextContext": "Any context the next session needs that isn't in git — observations, hypotheses, dead ends discovered"\n`
+  prompt += `}\n`
+  prompt += `\`\`\`\n\n`
+  prompt += `Rules:\n`
+  prompt += `- "complete": task fully done, all deliverables exist\n`
+  prompt += `- "partial": made progress but not finished — say what's left\n`
+  prompt += `- "blocked": hit an obstacle you can't resolve — describe what blocks you\n`
+  prompt += `- skillRecommendations: what Foreman should dispatch next based on what you learned\n`
+  prompt += `- nextContext: knowledge that would be lost if the next session starts fresh\n`
+  prompt += `- This block is machine-read by Foreman. Be precise, not verbose.\n`
 
   if (worktreeBranch && baseBranch) {
     prompt += `\n## Git Workflow — CRITICAL\n`
