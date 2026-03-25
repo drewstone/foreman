@@ -17,26 +17,30 @@ const execFileAsync = promisify(execFile)
 import { getCurrentInstruction } from './optimization/experiment-runner.js'
 
 /**
- * Read the current live instruction for a surface.
- * Checks: 1) optimization/current/<surface>.ts (file-based, versioned)
- *         2) prompt_lab table (database, legacy)
- *         3) null (use hardcoded default)
+ * Read the active instruction for a surface.
+ * Priority: 1) active 'testing' experiment (A/B test in progress)
+ *           2) 'promoted' experiment (proven winner)
+ *           3) optimization/current/<surface>.ts (file-based)
+ *           4) null (use hardcoded default)
  */
 function getPromotedInstruction(surface: string): string | null {
-  // Primary: file-based versioned module
-  const fromFile = getCurrentInstruction(surface)
-  if (fromFile) return fromFile
-
-  // Fallback: database (prompt_lab table)
   try {
     const db = getDb()
-    const row = db.prepare(
+    // If there's an active A/B test, use the variant
+    const testing = db.prepare(
+      `SELECT variant FROM prompt_lab WHERE surface = ? AND status = 'testing' ORDER BY created_at DESC LIMIT 1`
+    ).get(surface) as { variant: string } | undefined
+    if (testing?.variant) return testing.variant
+
+    // Otherwise use the last promoted winner
+    const promoted = db.prepare(
       `SELECT variant FROM prompt_lab WHERE surface = ? AND status = 'promoted' ORDER BY promoted_at DESC LIMIT 1`
     ).get(surface) as { variant: string } | undefined
-    return row?.variant ?? null
-  } catch {
-    return null
-  }
+    if (promoted?.variant) return promoted.variant
+  } catch {}
+
+  // Fallback: file-based
+  return getCurrentInstruction(surface)
 }
 
 // ─── Git worktree ────────────────────────────────────────────────────
