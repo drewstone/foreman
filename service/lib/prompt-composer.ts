@@ -14,6 +14,22 @@ import {
 
 const execFileAsync = promisify(execFile)
 
+/**
+ * Read a promoted lab variant instruction for a surface.
+ * Returns null if no promoted experiment exists (use default).
+ */
+function getPromotedInstruction(surface: string): string | null {
+  try {
+    const db = getDb()
+    const row = db.prepare(
+      `SELECT variant FROM prompt_lab WHERE surface = ? AND status = 'promoted' ORDER BY promoted_at DESC LIMIT 1`
+    ).get(surface) as { variant: string } | undefined
+    return row?.variant ?? null
+  } catch {
+    return null // table may not exist yet
+  }
+}
+
 // ─── Git worktree ────────────────────────────────────────────────────
 
 export async function createWorktree(repoPath: string, label: string): Promise<{
@@ -315,15 +331,19 @@ export function composePrompt(opts: {
   // Compose final prompt
   let prompt = ''
   prompt += `## Your Task\n${task}\n\n`
-  prompt += `## Standards\n`
-  prompt += `- L7/L8 staff engineer quality. Zero tolerance for slop.\n`
-  prompt += `- Complete everything fully. No TODOs, no stubs.\n`
-  prompt += `- ONLY create or modify the files specified in your task. Do NOT create dashboards, CLIs, hooks, or other files unless your task explicitly asks for them.\n`
-  prompt += `- ALWAYS commit your work. After every meaningful change: git add <specific-file> && git commit -m "feat/fix: description".\n`
-  prompt += `- Do NOT use "git add -A" or "git add .". Add files by name.\n`
-  prompt += `- If your commit is rejected by a scope hook, run: git reset HEAD . && git add <your-allowed-file> && git commit. Do NOT create files outside your allowed scope.\n`
-  prompt += `- If tests exist, run them. Fix failures before moving on.\n`
-  prompt += `- Never ask for permission. Act.\n`
+
+  // Standards — check for promoted lab variant, fall back to default
+  const standardsInstruction = getPromotedInstruction('standards') ?? [
+    'L7/L8 staff engineer quality. Zero tolerance for slop.',
+    'Complete everything fully. No TODOs, no stubs.',
+    'ONLY create or modify the files specified in your task. Do NOT create dashboards, CLIs, hooks, or other files unless your task explicitly asks for them.',
+    'ALWAYS commit your work. After every meaningful change: git add <specific-file> && git commit -m "feat/fix: description".',
+    'Do NOT use "git add -A" or "git add .". Add files by name.',
+    'If your commit is rejected by a scope hook, run: git reset HEAD . && git add <your-allowed-file> && git commit. Do NOT create files outside your allowed scope.',
+    'If tests exist, run them. Fix failures before moving on.',
+    'Never ask for permission. Act.',
+  ].join('\n- ')
+  prompt += `## Standards\n- ${standardsInstruction}\n`
 
   // Skill chaining: tell the session what skills are available and how to recommend next work
   const reasoningSkillsSet = new Set(['/pursue', '/plan', '/research', '/reflect'])
