@@ -1,0 +1,1 @@
+gen9-verify: 2026-03-25T00:04:32Z result=PASS file=/tmp/foreman-gen9-test.txt
