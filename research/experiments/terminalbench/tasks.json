@@ -10,7 +10,7 @@
     "id": "tb-easy-02", "tier": "easy",
     "description": "Find all .js files in the current directory tree and count them. Write the count to count.txt",
     "setup": "cd /tmp/tb-$$-02 && mkdir -p /tmp/tb-$$-02/a/b && touch /tmp/tb-$$-02/{one.js,two.js} && touch /tmp/tb-$$-02/a/{three.js,four.txt} && touch /tmp/tb-$$-02/a/b/five.js",
-    "verify": "test \"$(cat count.txt)\" = \"3\" || test \"$(cat count.txt | tr -d '[:space:]')\" = \"3\"",
+    "verify": "test \"$(cat count.txt)\" = \"4\" || test \"$(cat count.txt | tr -d '[:space:]')\" = \"4\"",
     "cleanup": "rm -rf /tmp/tb-$$-02"
   },
   {

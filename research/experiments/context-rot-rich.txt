@@ -1,0 +1,17 @@
+Bug fix: tb-easy-02 expected count was wrong (3 -> 4)
+
+The setup command creates these .js files:
+  /tmp/.../one.js       (from touch {one.js,two.js})
+  /tmp/.../two.js       (from touch {one.js,two.js})
+  /tmp/.../a/three.js   (from touch a/{three.js,four.txt})
+  /tmp/.../a/b/five.js  (from touch a/b/five.js)
+
+four.txt is not .js (correct), but three.js IS .js (missed).
+Total .js files: 4, not 3.
+
+The verify assertion checked for "3" — fixed to "4".
+
+Root cause: the task prompt that identified this bug also miscounted,
+listing "one.js, two.js, five.js" while omitting three.js. This is
+itself an example of context rot: the brace expansion {three.js,four.txt}
+creates TWO files, but a quick scan conflates the pair and drops one.
