@@ -83,6 +83,15 @@ export async function createWorktree(repoPath: string, label: string): Promise<{
     }
   }
 
+  // Fetch latest from remote so we branch from what's on GitHub, not local state.
+  // This prevents including the operator's unpushed work in Foreman's PRs.
+  try {
+    await execFileAsync('git', ['fetch', 'origin', baseBranch], { cwd: repoPath, timeout: 15_000 })
+  } catch {}
+
+  // Branch from origin/<baseBranch> — clean start, no local noise
+  const startPoint = `origin/${baseBranch}`
+
   if (existsSync(wtPath)) {
     try {
       await execFileAsync('git', ['worktree', 'remove', '--force', wtPath], { cwd: repoPath, timeout: 10_000 })
@@ -94,11 +103,12 @@ export async function createWorktree(repoPath: string, label: string): Promise<{
   } catch {}
 
   try {
-    await execFileAsync('git', ['worktree', 'add', '-b', branch, wtPath, baseBranch], { cwd: repoPath, timeout: 15_000 })
+    await execFileAsync('git', ['worktree', 'add', '-b', branch, wtPath, startPoint], { cwd: repoPath, timeout: 15_000 })
     return { path: wtPath, branch, baseBranch }
   } catch (e) {
+    // Fallback: try local baseBranch if origin doesn't exist
     try {
-      await execFileAsync('git', ['worktree', 'add', '-b', branch, wtPath], { cwd: repoPath, timeout: 15_000 })
+      await execFileAsync('git', ['worktree', 'add', '-b', branch, wtPath, baseBranch], { cwd: repoPath, timeout: 15_000 })
       return { path: wtPath, branch, baseBranch }
     } catch { return null }
   }
