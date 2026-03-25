@@ -32,7 +32,17 @@
   th { text-align: left; color: var(--muted); font-size: 12px; text-transform: uppercase; padding: 8px 4px; border-bottom: 1px solid var(--border); }
   td { padding: 8px 4px; border-bottom: 1px solid var(--border); font-size: 13px; }
   tr:hover { background: rgba(88,166,255,0.04); }
+  tr.taste-approved { background: rgba(63,185,80,0.1); }
+  tr.taste-rejected { background: rgba(248,81,73,0.1); }
   .session-output { font-family: monospace; font-size: 11px; color: var(--muted); max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .taste-btn { background: none; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; padding: 2px 6px; font-size: 14px; line-height: 1; transition: border-color 0.15s, opacity 0.15s; }
+  .taste-btn:hover { border-color: var(--muted); }
+  .taste-btn:disabled { opacity: 0.3; cursor: default; }
+  .taste-btn-approve { color: var(--green); }
+  .taste-btn-reject { color: var(--red); }
+  .taste-btn-approve.active { background: rgba(63,185,80,0.2); border-color: var(--green); }
+  .taste-btn-reject.active { background: rgba(248,81,73,0.2); border-color: var(--red); }
+  .taste-actions { white-space: nowrap; }
   .full-width { grid-column: 1 / -1; }
   .confidence-bar { display: inline-block; width: 60px; height: 6px; background: var(--border); border-radius: 3px; margin-right: 6px; vertical-align: middle; }
   .confidence-fill { height: 100%; border-radius: 3px; }
@@ -160,13 +170,17 @@ async function loadStatus() {
   // Decisions
   if (s.recentDecisions?.length > 0) {
     document.getElementById('decisions').innerHTML = `<table>
-      <tr><th>Skill</th><th>Task</th><th>Status</th><th>Outcome</th><th>When</th></tr>
-      ${s.recentDecisions.slice(0, 15).map(d => `<tr>
+      <tr><th>Skill</th><th>Task</th><th>Status</th><th>Outcome</th><th>When</th><th>Taste</th></tr>
+      ${s.recentDecisions.slice(0, 15).map(d => `<tr id="decision-${d.id}" class="${d.taste_signal === 'approved' ? 'taste-approved' : d.taste_signal === 'rejected' ? 'taste-rejected' : ''}">
         <td><span class="badge badge-blue">${esc(d.skill || 'direct')}</span></td>
         <td>${esc((d.task || '').slice(0, 80))}</td>
         <td>${badge(d.status)}</td>
         <td class="session-output">${esc((d.outcome || '').slice(0, 60))}</td>
         <td style="color:var(--muted);white-space:nowrap">${timeAgo(d.created_at)}</td>
+        <td class="taste-actions">
+          <button class="taste-btn taste-btn-approve${d.taste_signal === 'approved' ? ' active' : ''}" onclick="sendTasteSignal(${d.id},'approved')" ${d.taste_signal ? 'disabled' : ''} title="Approve">&#x1F44D;</button>
+          <button class="taste-btn taste-btn-reject${d.taste_signal === 'rejected' ? ' active' : ''}" onclick="sendTasteSignal(${d.id},'rejected')" ${d.taste_signal ? 'disabled' : ''} title="Reject">&#x1F44E;</button>
+        </td>
       </tr>`).join('')}
     </table>`
   } else {
@@ -206,6 +220,27 @@ async function loadHealth() {
     const m = Math.floor(h.uptime / 60)
     const hrs = Math.floor(m / 60)
     document.getElementById('uptime').textContent = hrs > 0 ? `Up ${hrs}h ${m % 60}m` : `Up ${m}m`
+  }
+}
+
+async function sendTasteSignal(decisionId, signal) {
+  const row = document.getElementById('decision-' + decisionId)
+  const btns = row ? row.querySelectorAll('.taste-btn') : []
+  btns.forEach(b => b.disabled = true)
+  try {
+    const r = await fetch(API + '/api/outcomes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision_id: decisionId, taste_signal: signal })
+    })
+    if (!r.ok) throw new Error('Failed')
+    if (row) {
+      row.className = signal === 'approved' ? 'taste-approved' : 'taste-rejected'
+      const activeBtn = row.querySelector(signal === 'approved' ? '.taste-btn-approve' : '.taste-btn-reject')
+      if (activeBtn) activeBtn.classList.add('active')
+    }
+  } catch {
+    btns.forEach(b => b.disabled = false)
   }
 }
 
