@@ -129,87 +129,81 @@ export interface LabState {
 }
 
 /**
- * Run a GEPA optimization cycle on one surface.
- * Returns a variant instruction to A/B test.
+ * Run an optimization cycle on one surface.
+ *
+ * Strategy: analyze failure patterns in the data, then ask Claude
+ * to generate a better instruction that addresses those patterns.
+ * Uses callClaudeForJSON (Claude Code pipe mode with OAuth auth)
+ * instead of raw AxGEPA (which needs ANTHROPIC_API_KEY).
+ *
+ * When ANTHROPIC_API_KEY is available, this can be upgraded to use
+ * AxGEPA for proper Pareto optimization. The interface stays the same.
  */
 export async function optimizeSurface(
   surface: PromptSurface,
   samples: DispatchSample[],
 ): Promise<string | null> {
-  // Need enough data
   if (samples.length < 10) {
     log(`PromptLab: need 10+ samples for ${surface.name} (have ${samples.length})`)
     return null
   }
 
+  // Analyze failure patterns from the data
+  const failures = samples.filter(s => !s.success)
+  const successes = samples.filter(s => s.success)
+  const scopeViolations = samples.filter(s => s.scopeViolation)
+
+  const failuresBySkill: Record<string, number> = {}
+  const successesBySkill: Record<string, number> = {}
+  for (const s of failures) failuresBySkill[s.skill] = (failuresBySkill[s.skill] ?? 0) + 1
+  for (const s of successes) successesBySkill[s.skill] = (successesBySkill[s.skill] ?? 0) + 1
+
+  const failureTasks = failures.slice(0, 8).map(f => `- [${f.skill}] ${f.task.slice(0, 100)}`)
+  const successTasks = successes.slice(0, 5).map(s => `- [${s.skill}] ${s.task.slice(0, 100)}`)
+
+  const prompt = `You are optimizing the "standards" instruction for an autonomous coding dispatch system.
+
+## Current instruction (baseline: ${Math.round(successes.length / samples.length * 100)}% success rate)
+${surface.currentInstruction}
+
+## Failure analysis (${failures.length}/${samples.length} failed)
+Scope violations: ${scopeViolations.length}
+Failures by skill: ${JSON.stringify(failuresBySkill)}
+Successes by skill: ${JSON.stringify(successesBySkill)}
+
+Failed tasks:
+${failureTasks.join('\n')}
+
+Successful tasks:
+${successTasks.join('\n')}
+
+## Key pattern
+The #1 failure mode is SCOPE VIOLATION — agents create 8-9 files when asked to create 1.
+They ignore "ONLY modify specified files" and build dashboards, CLIs, hooks regardless of task.
+When scope hooks block their commit, they don't recover.
+
+## Your job
+Write an IMPROVED standards instruction that:
+1. More forcefully prevents scope creep
+2. Gives clearer recovery instructions when commits are rejected
+3. Keeps what works (the successes above show the current instruction works for some tasks)
+4. Is concise — every word must earn its place
+
+Respond with JSON only:
+{"instruction": "the new standards instruction text (newline-separated bullet points)"}
+
+Do NOT include anything except the JSON object.`
+
   try {
-    const axLib: any = await import('@ax-llm/ax')
-    const { ai, ax, AxGEPA } = axLib
+    const result = await callClaudeForJSON(prompt) as any
+    if (!result?.instruction) return null
 
-    const studentAI = ai({ name: 'anthropic', config: { model: 'claude-sonnet-4-6' as any } })
-    const teacherAI = ai({ name: 'anthropic', config: { model: 'claude-opus-4-6' as any } })
+    const variant = String(result.instruction)
+    if (variant === surface.currentInstruction) return null
+    if (variant.length < 50 || variant.length > 2000) return null
 
-    // Generator: takes a task + skill, produces the instruction text for this surface
-    const gen = ax(
-      `task:string, skill:string -> ${surface.name}Instruction:string "The ${surface.name} instructions for a Claude Code dispatch prompt"`,
-    )
-    gen.setInstruction(surface.currentInstruction)
-
-    // Training examples from the river
-    const train = samples.slice(0, Math.min(12, samples.length - 3)).map(s => ({
-      task: s.task.slice(0, 200),
-      skill: s.skill,
-      [`${surface.name}Instruction`]: surface.currentInstruction,
-    }))
-
-    const validation = samples.slice(-3).map(s => ({
-      task: s.task.slice(0, 200),
-      skill: s.skill,
-      [`${surface.name}Instruction`]: surface.currentInstruction,
-    }))
-
-    if (train.length < 5 || validation.length < 1) {
-      log(`PromptLab: insufficient train/val split for ${surface.name}`)
-      return null
-    }
-
-    // Metric: did the dispatch succeed? Was scope respected?
-    const successMap = new Map(samples.map(s => [s.task.slice(0, 200), s]))
-    const metric = ({ example }: { prediction: any, example: any }) => {
-      const sample = successMap.get(example.task)
-      if (!sample) return { success: 0.5, scopeCompliance: 0.5 }
-      return {
-        success: sample.success ? 1 : 0,
-        scopeCompliance: sample.scopeViolation ? 0 : 1,
-      }
-    }
-
-    const optimizer = new AxGEPA({
-      studentAI,
-      teacherAI,
-      numTrials: 4,
-      minibatch: true,
-      minibatchSize: 3,
-      earlyStoppingTrials: 2,
-      sampleCount: 1,
-    })
-
-    const result = await optimizer.compile(gen, train, metric, {
-      validationExamples: validation,
-      maxMetricCalls: 30,
-    })
-
-    // Extract optimized instruction
-    const prog = result.optimizedProgram as any
-    const optimized = prog?.instruction
-      ?? (prog?.instructionMap ? Object.values(prog.instructionMap)[0] : null)
-
-    if (optimized && typeof optimized === 'string' && optimized !== surface.currentInstruction) {
-      log(`PromptLab: ${surface.name} variant generated (${optimized.length} chars)`)
-      return optimized
-    }
-
-    return null
+    log(`PromptLab: ${surface.name} variant generated (${variant.length} chars)`)
+    return variant
   } catch (e) {
     log(`PromptLab: optimization failed for ${surface.name}: ${e instanceof Error ? e.message : String(e)}`)
     return null
