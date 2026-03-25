@@ -271,9 +271,29 @@ export async function harvestOutcome(sessionName: string, goalId: number, backen
   const enrichedLearnings = digest.learnings ?? learnings
   updateLearningsFromOutcome(decision.id, decision.skill, decision.task, status, digest.summary ?? outcomeText, enrichedLearnings)
 
-  // Auto-dispatch next
-  if (digest.nextAction) {
-    log(`Pipeline recommends: ${digest.nextAction.skill} — ${digest.nextAction.task.slice(0, 80)}`)
+  // Read next-dispatch recommendation from session (skill chaining)
+  let sessionNextDispatch: { skill: string, task: string, reasoning?: string } | null = null
+  try {
+    const ndPath = join(workDir, '.foreman', 'next-dispatch.json')
+    if (existsSync(ndPath)) {
+      const ndContent = JSON.parse(readFileSync(ndPath, 'utf8'))
+      if (ndContent.skill && ndContent.task) {
+        sessionNextDispatch = ndContent
+        log(`Session recommends next: ${ndContent.skill} — ${ndContent.task.slice(0, 80)}`)
+        // Store as learning for future dispatch decisions
+        stmts.insertLearning.run(
+          'session_recommendation',
+          `${decision.skill} → ${ndContent.skill}: ${ndContent.task.slice(0, 200)}`,
+          `decision:${decision.id}`, null, 1.5
+        )
+      }
+    }
+  } catch {}
+
+  // Auto-dispatch next — prefer session's recommendation over pipeline's
+  const nextAction = sessionNextDispatch ?? digest.nextAction
+  if (nextAction) {
+    log(`Next dispatch source: ${sessionNextDispatch ? 'session' : 'pipeline'} → ${nextAction.skill} — ${nextAction.task.slice(0, 80)}`)
   }
   maybeAutoDispatch(decision.skill, projectName, goalId).catch(e => log(`Auto-dispatch failed: ${e}`))
 }

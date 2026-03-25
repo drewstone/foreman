@@ -322,6 +322,30 @@ export function composePrompt(opts: {
   prompt += `- If tests exist, run them. Fix failures before moving on.\n`
   prompt += `- Never ask for permission. Act.\n`
 
+  // Skill chaining: tell the session what skills are available and how to recommend next work
+  const reasoningSkillsSet = new Set(['/pursue', '/plan', '/research', '/reflect'])
+  if (reasoningSkillsSet.has(skill) || !skill) {
+    prompt += `\n## Available Skills\n`
+    prompt += `You have access to these skills via slash commands:\n`
+    prompt += `- /evolve — iterative improvement toward a measurable target\n`
+    prompt += `- /pursue — architectural redesign, generational leaps\n`
+    prompt += `- /verify — check correctness, run tests, confirm completion\n`
+    prompt += `- /polish — relentless quality loop\n`
+    prompt += `- /converge — drive CI to green\n`
+    prompt += `- /critical-audit — parallel security/quality audit\n`
+    prompt += `- /diagnose — analyze failures, triage results\n`
+    prompt += `- /research — hypothesis-driven experimentation\n`
+    prompt += `- /reflect — meta-analyze sessions and extract patterns\n`
+    prompt += `Use them when appropriate during your work.\n`
+  }
+
+  prompt += `\n## Next-Dispatch Recommendation\n`
+  prompt += `When your work is complete, write \`.foreman/next-dispatch.json\` with:\n`
+  prompt += `\`\`\`json\n`
+  prompt += `{"skill": "/skill-name", "task": "specific next task description", "reasoning": "why this is the right next step"}\n`
+  prompt += `\`\`\`\n`
+  prompt += `This tells Foreman what to dispatch next. Base it on what you learned during this session.\n`
+
   if (worktreeBranch && baseBranch) {
     prompt += `\n## Git Workflow — CRITICAL\n`
     prompt += `You are working in an isolated worktree on branch \`${worktreeBranch}\`.\n`
