@@ -318,7 +318,10 @@ export function composePrompt(opts: {
   prompt += `## Standards\n`
   prompt += `- L7/L8 staff engineer quality. Zero tolerance for slop.\n`
   prompt += `- Complete everything fully. No TODOs, no stubs.\n`
-  prompt += `- ALWAYS commit your work. After every meaningful change: git add -A && git commit -m "feat/fix: description".\n`
+  prompt += `- ONLY create or modify the files specified in your task. Do NOT create dashboards, CLIs, hooks, or other files unless your task explicitly asks for them.\n`
+  prompt += `- ALWAYS commit your work. After every meaningful change: git add <specific-file> && git commit -m "feat/fix: description".\n`
+  prompt += `- Do NOT use "git add -A" or "git add .". Add files by name.\n`
+  prompt += `- If your commit is rejected by a scope hook, run: git reset HEAD . && git add <your-allowed-file> && git commit. Do NOT create files outside your allowed scope.\n`
   prompt += `- If tests exist, run them. Fix failures before moving on.\n`
   prompt += `- Never ask for permission. Act.\n`
 
