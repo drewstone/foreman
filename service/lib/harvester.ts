@@ -240,7 +240,7 @@ export async function harvestOutcome(sessionName: string, goalId: number, backen
 
   // Ensure push + PR
   if (commits > 0 && worktreeBranch && baseBranch) {
-    const prUrl = await ensurePushAndPR(workDir, worktreeBranch, baseBranch, decision.skill, decision.task)
+    const prUrl = await ensurePushAndPR(workDir, worktreeBranch, baseBranch, decision.skill, decision.task, decision.id)
     if (prUrl) log(`PR created/found: ${prUrl}`)
   }
 
@@ -312,25 +312,89 @@ export async function harvestOutcome(sessionName: string, goalId: number, backen
 
 // ─── Ensure push + PR ────────────────────────────────────────────────
 
-async function ensurePushAndPR(workDir: string, branch: string, baseBranch: string, skill: string, task: string): Promise<string | null> {
+async function ensurePushAndPR(
+  workDir: string, branch: string, baseBranch: string,
+  skill: string, task: string, decisionId?: number, goalIntent?: string,
+): Promise<string | null> {
+  const db = getDb()
   const confidence = getConfidence()
 
+  // 1. Verify the branch only contains the agent's own commits (not inherited diff)
+  let commitCount = 0
+  let diffStat = ''
+  try {
+    const { stdout: mergeBase } = await execFileAsync('git', ['merge-base', baseBranch, branch], { cwd: workDir, timeout: 5_000 })
+    const { stdout: logOut } = await execFileAsync('git', ['log', '--oneline', `${mergeBase.trim()}..${branch}`], { cwd: workDir, timeout: 5_000 })
+    commitCount = logOut.trim().split('\n').filter(Boolean).length
+    const { stdout: statOut } = await execFileAsync('git', ['diff', '--stat', `${mergeBase.trim()}..${branch}`], { cwd: workDir, timeout: 5_000 })
+    diffStat = statOut.trim()
+  } catch {}
+
+  if (commitCount === 0) {
+    log(`No commits on ${branch} — skipping PR`)
+    return null
+  }
+
+  // 2. Push
   try {
     await execFileAsync('git', ['push', '-u', 'origin', branch], { cwd: workDir, timeout: 30_000 })
   } catch (e) {
     log(`Push failed for ${branch}: ${e instanceof Error ? e.message : String(e)}`)
   }
 
+  // 3. Dedup: check if a PR already exists for this branch OR similar task
   try {
     const { stdout } = await execFileAsync('gh', ['pr', 'list', '--head', branch, '--json', 'url', '--limit', '1'], { cwd: workDir, timeout: 10_000 })
     const prs = JSON.parse(stdout)
     if (prs.length > 0) return prs[0].url
   } catch {}
 
+  // Also check for similar PRs by title to avoid duplicates
   try {
-    const title = `foreman: ${skill || 'work'} — ${task.slice(0, 60)}`
-    const body = `Automated Foreman dispatch.\n\nSkill: ${skill || 'direct'}\nTask: ${task.slice(0, 200)}\n\n---\n*This PR was created by Foreman. Review the changes before merging.*`
+    const searchTerm = task.slice(0, 40).replace(/['"]/g, '')
+    const { stdout } = await execFileAsync('gh', ['pr', 'list', '--search', searchTerm, '--json', 'url,title', '--limit', '3'], { cwd: workDir, timeout: 10_000 })
+    const similar = JSON.parse(stdout)
+    if (similar.length > 0) {
+      log(`Similar PR already exists: ${similar[0].title} — skipping duplicate`)
+      return similar[0].url
+    }
+  } catch {}
 
+  // 4. Build rich PR body with full provenance
+  const projectName = workDir.split('/').pop() ?? ''
+  const confLevel = confidence.getLevel(skill || 'direct', projectName)
+  const confScore = confidence.getConfidence(skill || 'direct', projectName)
+
+  let goalContext = ''
+  if (decisionId) {
+    const dec = db.prepare(`SELECT goal_id, reasoning, outcome FROM decisions WHERE id = ?`).get(decisionId) as any
+    if (dec?.goal_id) {
+      const goal = db.prepare(`SELECT intent FROM goals WHERE id = ?`).get(dec.goal_id) as any
+      goalContext = goal?.intent ?? ''
+    }
+  }
+
+  const title = `${skill || 'fix'}: ${task.slice(0, 70)}`
+
+  const body = [
+    `## What`,
+    task.slice(0, 500),
+    ``,
+    goalContext ? `## Why\n${goalContext}\n` : '',
+    `## Foreman Context`,
+    `- **Skill**: ${skill || 'direct'}`,
+    `- **Confidence**: ${confLevel} (${Math.round(confScore * 100)}%)`,
+    decisionId ? `- **Decision**: #${decisionId}` : '',
+    `- **Branch**: \`${branch}\` → \`${baseBranch}\``,
+    `- **Commits**: ${commitCount}`,
+    ``,
+    diffStat ? `## Changes\n\`\`\`\n${diffStat.slice(0, 500)}\n\`\`\`\n` : '',
+    `---`,
+    `*Dispatched by [Foreman](http://localhost:7374/). Review before merging.*`,
+  ].filter(Boolean).join('\n')
+
+  // 5. Create PR
+  try {
     const { stdout } = await execFileAsync('gh', [
       'pr', 'create', '--base', baseBranch, '--head', branch,
       '--title', title.slice(0, 100), '--body', body,
@@ -339,18 +403,12 @@ async function ensurePushAndPR(workDir: string, branch: string, baseBranch: stri
     const url = stdout.trim()
     log(`Created PR: ${url}`)
 
-    if (AUTO_MERGE) {
-      const projectName = workDir.split('/').pop() ?? ''
-      const confLevel = confidence.getLevel(skill || 'direct', projectName)
-      if (confLevel === 'autonomous') {
-        try {
-          await execFileAsync('gh', ['pr', 'merge', url, '--squash', '--auto'], { cwd: workDir, timeout: 15_000 })
-          log(`Auto-merged PR: ${url} (confidence: autonomous)`)
-        } catch (e) {
-          log(`Auto-merge failed: ${e instanceof Error ? e.message : String(e)}`)
-        }
-      } else {
-        log(`Auto-merge skipped: confidence is ${confLevel}, need autonomous (0.8+)`)
+    if (AUTO_MERGE && confLevel === 'autonomous') {
+      try {
+        await execFileAsync('gh', ['pr', 'merge', url, '--squash', '--auto'], { cwd: workDir, timeout: 15_000 })
+        log(`Auto-merged PR: ${url}`)
+      } catch (e) {
+        log(`Auto-merge failed: ${e instanceof Error ? e.message : String(e)}`)
       }
     }
 
