@@ -74,6 +74,49 @@
   </div>
 
   <div class="grid">
+    <div class="card full-width">
+      <h2 class="collapsible" onclick="toggleSection(this)" style="cursor:pointer;user-select:none">Dispatch <span style="font-size:10px;vertical-align:middle">&#9654;</span></h2>
+      <div class="collapse-body" style="display:none">
+        <form id="dispatch-form" onsubmit="return submitDispatch(event)" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <label style="display:flex;flex-direction:column;gap:4px">
+            <span class="stat-label">Goal</span>
+            <select id="d-goal" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px;font-size:13px">
+              <option value="">— none —</option>
+            </select>
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px">
+            <span class="stat-label">Skill</span>
+            <select id="d-skill" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px;font-size:13px">
+              <option value="">— direct —</option>
+              <option value="evolve">evolve</option>
+              <option value="pursue">pursue</option>
+              <option value="polish">polish</option>
+              <option value="verify">verify</option>
+              <option value="converge">converge</option>
+              <option value="critical-audit">critical-audit</option>
+              <option value="diagnose">diagnose</option>
+              <option value="research">research</option>
+              <option value="reflect">reflect</option>
+            </select>
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;grid-column:1/-1">
+            <span class="stat-label">Task</span>
+            <textarea id="d-task" rows="3" required placeholder="What should the agent do?" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px;font-size:13px;font-family:inherit;resize:vertical"></textarea>
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px">
+            <span class="stat-label">Work Directory</span>
+            <input id="d-workdir" type="text" placeholder="/home/drew/code/project" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px;font-size:13px">
+          </label>
+          <div style="display:flex;align-items:end">
+            <button type="submit" id="d-submit" style="background:var(--accent);color:#fff;border:none;border-radius:4px;padding:8px 20px;font-size:13px;font-weight:600;cursor:pointer">Dispatch</button>
+            <span id="d-status" style="margin-left:12px;font-size:12px;color:var(--muted)"></span>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid">
     <div class="card">
       <h2>Confidence Matrix</h2>
       <div id="confidence"><div class="empty">Loading...</div></div>
@@ -218,6 +261,72 @@ function connectSSE() {
   const es = new EventSource('/api/events')
   es.onmessage = () => { refresh() }
   es.onerror = () => { setTimeout(connectSSE, 5000) }
+}
+
+function toggleSection(el) {
+  const body = el.nextElementSibling
+  const arrow = el.querySelector('span')
+  if (body.style.display === 'none') {
+    body.style.display = 'block'
+    arrow.innerHTML = '&#9660;'
+    loadGoalOptions()
+  } else {
+    body.style.display = 'none'
+    arrow.innerHTML = '&#9654;'
+  }
+}
+
+async function loadGoalOptions() {
+  const goals = await fetchJSON('/api/goals')
+  const sel = document.getElementById('d-goal')
+  const current = sel.value
+  sel.innerHTML = '<option value="">— none —</option>'
+  if (goals && goals.length) {
+    goals.forEach(g => {
+      const opt = document.createElement('option')
+      opt.value = g.id
+      opt.textContent = `#${g.id} — ${g.intent.slice(0, 60)}`
+      sel.appendChild(opt)
+    })
+  }
+  if (current) sel.value = current
+}
+
+async function submitDispatch(e) {
+  e.preventDefault()
+  const btn = document.getElementById('d-submit')
+  const status = document.getElementById('d-status')
+  const payload = {
+    goal_id: Number(document.getElementById('d-goal').value) || undefined,
+    skill: document.getElementById('d-skill').value || undefined,
+    task: document.getElementById('d-task').value,
+    work_dir: document.getElementById('d-workdir').value || undefined,
+  }
+  btn.disabled = true
+  status.textContent = 'Dispatching...'
+  status.style.color = 'var(--muted)'
+  try {
+    const r = await fetch(API + '/api/dispatch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const data = await r.json()
+    if (r.ok) {
+      status.textContent = `Dispatched: ${data.session_name || 'ok'}`
+      status.style.color = 'var(--green)'
+      document.getElementById('d-task').value = ''
+      refresh()
+    } else {
+      status.textContent = data.error || 'Failed'
+      status.style.color = 'var(--red)'
+    }
+  } catch (err) {
+    status.textContent = err.message
+    status.style.color = 'var(--red)'
+  } finally {
+    btn.disabled = false
+  }
 }
 
 refresh()
