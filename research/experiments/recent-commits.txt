@@ -1,0 +1,22 @@
+8c370d7 data: Gen 9 build status + first test result
+d41e654 feat: Gen 9 — deliverable verification, slim prompts, scope checks
+ea1806b pursue: Gen 9 — deliverable verification, slim prompts, scope locks
+396313f reflect: session analysis — 7/10, honest assessment of dispatch effectiveness
+4e63dfb feat: paper draft — honest results, negative findings on learning loop
+51d8c3a data: exp5 + exp6 results — honest self-improvement and transfer analysis
+7b98867 feat: foreman CLI + installer integration
+d22864a fix: idle detection, prompt delivery, session lifecycle
+d02fcb2 feat: watch.sh streams live output via pipe-pane + tail -f
+76e251a fix: watch.sh uses capture-pane instead of nested attach
+d985367 feat: watch.sh — view all Foreman sessions in a tmux grid
+c402698 fix: remove sessionHome reference from log line
+5287c7b fix: remove HOME isolation — breaks Claude OAuth auth every time
+557240f fix: null goalId for plan dispatches — FK constraint
+ec7301a feat: plans as regular Foreman dispatches — no more inline LLM calls
+13c150e feat: noTools plan generation — produces structured plans with diagrams
+84f811e fix: plan prompt says OUTPUT IS A MARKDOWN DOCUMENT — tools on, but document output
+dc84172 fix: plan generation uses noTools mode — Claude writes plans, doesn't execute
+d5a89c1 fix: revert to -p mode — proven reliable for text capture via pipe-pane
+65febb5 feat: callClaude uses interactive mode — reliable for long prompts
+
+Summary: feat=8, fix=8, other=4 (2 data, 1 pursue, 1 reflect)
