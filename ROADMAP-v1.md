@@ -1,7 +1,7 @@
 # Foreman Roadmap v1
 
-Date: 2026-03-24
-Generation: 10 (current)
+Date: 2026-03-24 (updated 2026-03-24 Gen 11)
+Generation: 11 (current)
 Decisions: 97 | Deliverable-verified: 19 (11 pass, 8 fail) | Goals: 4
 
 ## Where We Are
@@ -39,17 +39,13 @@ Foreman's moat: portfolio orchestration + honest measurement + scope enforcement
 - **Effort**: 2-3 sessions
 - **Blocks**: Self-improvement, CI, contributor onboarding
 
-### 1.2 Service Module Split
-- **Why**: 3,580-line index.ts is unmaintainable. Can't test what you can't isolate.
-- **What**: Extract into ~8 modules: http-server.ts, session-manager.ts, watcher.ts, harvester.ts, prompt-composer.ts, auto-dispatch.ts, learning-loop.ts, api-routes.ts. Keep index.ts as thin entrypoint.
-- **Effort**: 1-2 sessions
-- **Blocks**: Testability, contributor readability
+### 1.2 Service Module Split -- DONE (Gen 11)
+- **Result**: 3,580 -> 1,141 lines in index.ts. 10 extracted modules: state.ts, session-manager.ts, watcher.ts, harvester.ts, post-completion.ts, prompt-optimizer.ts, auto-dispatch.ts, prompt-composer.ts, maintenance.ts, learning-loop.ts.
+- 160 tests passing, clean TypeScript compilation.
 
-### 1.3 Web Dashboard
-- **Why**: Nobody will use tmux. Need visual session viewer, decision log, plan board, confidence display.
-- **What**: Lightweight web UI served from the service (port 7374). React or plain HTML+fetch. Pages: status overview, active sessions (live output), decision history, plans, confidence matrix.
-- **Effort**: 3-5 sessions
-- **Blocks**: First external user, product demos
+### 1.3 Web Dashboard -- STARTED (Gen 11 MVP)
+- **Result**: Single HTML file at http://localhost:7374/. Stats, goals, live sessions, decisions, confidence matrix, events. SSE for live updates. Dark theme, zero build step.
+- **Remaining**: Plan board, session detail view with full output, dispatch form, taste/feedback UI.
 
 ### 1.4 E2E Installer Test
 - **Why**: `curl install.sh` has never been tested on a clean machine.
@@ -144,6 +140,7 @@ Tests ──→ Module split ──→ Web dashboard ──→ Docker backend �
 | 2 | Mar 22-23 | Gen 3-4. Confidence, overnight run (26 dispatches, 85%). |
 | 3 | Mar 23 | Gen 5-7. Self-improvement (0/18), planning layer, SWE-bench harness. |
 | 4 | Mar 24 | Gen 8-10. Evidence pursuit, paper, deliverable verification, scope enforcement. 3 critical bugs fixed. Exp 5/6 honest self-assessment. |
+| 5 | Mar 24 | Gen 11. Module split (3580->1141 lines, 10 modules). Skill chaining. Web dashboard MVP. |
 
 ## Next Session Priorities
 
