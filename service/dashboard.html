@@ -37,6 +37,28 @@
   .confidence-bar { display: inline-block; width: 60px; height: 6px; background: var(--border); border-radius: 3px; margin-right: 6px; vertical-align: middle; }
   .confidence-fill { height: 100%; border-radius: 3px; }
   .empty { color: var(--muted); font-style: italic; padding: 12px 0; }
+  .collapsible { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px; }
+  .collapsible::before { content: '▶'; font-size: 10px; transition: transform 0.15s; }
+  .collapsible.open::before { transform: rotate(90deg); }
+  .collapse-body { display: none; margin-top: 12px; }
+  .collapse-body.open { display: block; }
+  .form-row { margin-bottom: 10px; }
+  .form-row label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .form-row select, .form-row input, .form-row textarea {
+    width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 4px; padding: 6px 8px; font-size: 13px; font-family: inherit;
+  }
+  .form-row textarea { resize: vertical; min-height: 60px; }
+  .form-row select:focus, .form-row input:focus, .form-row textarea:focus { outline: none; border-color: var(--accent); }
+  .btn-dispatch {
+    background: var(--accent); color: #fff; border: none; border-radius: 4px;
+    padding: 6px 16px; font-size: 13px; cursor: pointer; font-weight: 500;
+  }
+  .btn-dispatch:hover { opacity: 0.9; }
+  .btn-dispatch:disabled { opacity: 0.5; cursor: not-allowed; }
+  .dispatch-result { margin-top: 10px; font-size: 12px; padding: 8px; border-radius: 4px; display: none; }
+  .dispatch-result.ok { display: block; background: rgba(63,185,80,0.1); color: var(--green); border: 1px solid rgba(63,185,80,0.3); }
+  .dispatch-result.err { display: block; background: rgba(248,81,73,0.1); color: var(--red); border: 1px solid rgba(248,81,73,0.3); }
   #live-indicator { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; margin-right: 6px; animation: pulse 2s infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 </style>
@@ -47,6 +69,43 @@
     <h1>Foreman</h1>
     <div class="status"><span id="live-indicator"></span><span id="uptime"></span></div>
   </header>
+
+  <div class="grid">
+    <div class="card full-width">
+      <h2 class="collapsible" id="dispatch-toggle" onclick="toggleDispatch()">New Dispatch</h2>
+      <div class="collapse-body" id="dispatch-body">
+        <div class="form-row">
+          <label for="d-goal">Goal</label>
+          <select id="d-goal"><option value="">Loading...</option></select>
+        </div>
+        <div class="form-row">
+          <label for="d-skill">Skill</label>
+          <select id="d-skill">
+            <option value="">None</option>
+            <option value="evolve">evolve</option>
+            <option value="pursue">pursue</option>
+            <option value="verify">verify</option>
+            <option value="polish">polish</option>
+            <option value="converge">converge</option>
+            <option value="critical-audit">critical-audit</option>
+            <option value="diagnose">diagnose</option>
+            <option value="research">research</option>
+            <option value="reflect">reflect</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label for="d-task">Task</label>
+          <textarea id="d-task" placeholder="Describe the task..."></textarea>
+        </div>
+        <div class="form-row">
+          <label for="d-workdir">Work Directory</label>
+          <input id="d-workdir" type="text" placeholder="/home/user/project">
+        </div>
+        <button class="btn-dispatch" id="d-submit" onclick="submitDispatch()">Dispatch</button>
+        <div class="dispatch-result" id="d-result"></div>
+      </div>
+    </div>
+  </div>
 
   <div class="grid">
     <div class="card">
@@ -220,7 +279,66 @@ function connectSSE() {
   es.onerror = () => { setTimeout(connectSSE, 5000) }
 }
 
+function toggleDispatch() {
+  document.getElementById('dispatch-toggle').classList.toggle('open')
+  document.getElementById('dispatch-body').classList.toggle('open')
+}
+
+async function loadGoalOptions() {
+  const goals = await fetchJSON('/api/goals')
+  const sel = document.getElementById('d-goal')
+  if (!goals || goals.length === 0) {
+    sel.innerHTML = '<option value="">No goals</option>'
+    return
+  }
+  sel.innerHTML = '<option value="">Select a goal...</option>' +
+    goals.map(g => `<option value="${g.id}">${esc(g.intent.slice(0, 80))}</option>`).join('')
+}
+
+async function submitDispatch() {
+  const btn = document.getElementById('d-submit')
+  const result = document.getElementById('d-result')
+  const goalId = document.getElementById('d-goal').value
+  const skill = document.getElementById('d-skill').value
+  const task = document.getElementById('d-task').value.trim()
+  const workDir = document.getElementById('d-workdir').value.trim()
+
+  if (!task) { showResult(result, 'Task is required', false); return }
+  if (!goalId && !workDir) { showResult(result, 'Select a goal or provide a work directory', false); return }
+
+  btn.disabled = true
+  btn.textContent = 'Dispatching...'
+  try {
+    const body = { task, skill: skill || undefined, work_dir: workDir || undefined, goal_id: goalId ? Number(goalId) : undefined }
+    const r = await fetch(API + '/api/dispatch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+    const data = await r.json()
+    if (r.ok) {
+      showResult(result, `Dispatched: ${data.session_name || data.name || 'ok'}`, true)
+      document.getElementById('d-task').value = ''
+      setTimeout(refresh, 1000)
+    } else {
+      showResult(result, data.error || 'Dispatch failed', false)
+    }
+  } catch (e) {
+    showResult(result, 'Network error: ' + e.message, false)
+  } finally {
+    btn.disabled = false
+    btn.textContent = 'Dispatch'
+  }
+}
+
+function showResult(el, msg, ok) {
+  el.className = 'dispatch-result ' + (ok ? 'ok' : 'err')
+  el.textContent = msg
+  setTimeout(() => { el.className = 'dispatch-result'; el.textContent = '' }, 5000)
+}
+
 refresh()
+loadGoalOptions()
 setInterval(refresh, 15000)
 connectSSE()
 </script>
