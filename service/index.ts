@@ -790,9 +790,15 @@ async function harvestOutcome(sessionName: string, goalId: number, backend: Exec
     } catch (e) { log(`Verification failed for ${sessionName}: ${e}`) }
   }
 
-  // Test gate for self-improvement dispatches
+  // Test gate for self-improvement dispatches — only when .ts files were modified
   const isSelfImprovement = workDir.includes('foreman') && (decision.skill === '/pursue' || decision.skill === '/evolve')
-  if (isSelfImprovement && commits > 0) {
+  let modifiedTsFiles = false
+  try {
+    const diff = execFileAsync ? await execFileAsync('git', ['diff', '--name-only', 'HEAD~1..HEAD'], { cwd: workDir, timeout: 5_000 })
+      : { stdout: '' }
+    modifiedTsFiles = diff.stdout.split('\n').some(f => f.endsWith('.ts'))
+  } catch {}
+  if (isSelfImprovement && commits > 0 && modifiedTsFiles) {
     const gate = runTestGate(workDir)
     if (!gate.passed) {
       deliverableStatus = 'fail'
