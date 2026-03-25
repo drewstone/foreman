@@ -48,7 +48,9 @@ import { callClaudeForJSON } from './lib/claude-runner.js'
 import { verifyDeliverable, runTestGate, type DeliverableSpec, type ScopeSpec } from './lib/verify-deliverable.js'
 import { installScopeHook, removeScopeHook, type ScopeConfig } from './lib/scope-enforcer.js'
 import { ConfidenceStore } from '@drew/foreman-memory/confidence'
-import { readSessionTranscript, type SessionSummary, type ClosingBlock } from './lib/session-reader.js'
+import { readSessionTranscript, type SessionSummary } from './lib/session-reader.js'
+import { reviewSession } from './lib/session-reviewer.js'
+import { maybeAutoDispatch } from './lib/auto-dispatch.js'
 
 // ─── Database ────────────────────────────────────────────────────────
 
@@ -981,6 +983,9 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     }
 
     // ── Session complete (from Claude Code Stop hook) ──────────
+    // The hook fires when any CC session in this project ends.
+    // Foreman reads the full transcript and dispatches a reviewer
+    // to decide what happened and what to do next.
     if (path === '/api/session-complete' && method === 'POST') {
       const body = await readBody(req)
       const sessionId = String(body.session_id ?? '')
@@ -990,17 +995,16 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
       if (!sessionId) return error(res, 'session_id required')
 
-      // Read the full session transcript for structured data
-      let summary: SessionSummary | null = null
-      if (transcriptPath) {
-        summary = readSessionTranscript(transcriptPath)
-      }
+      // Read transcript for basic stats (fast, no LLM)
+      const summary = transcriptPath ? readSessionTranscript(transcriptPath) : null
 
-      // Find matching Foreman decision by session name pattern
+      // Find matching Foreman decision
       const foremanSession = db.prepare(
-        `SELECT d.id, d.skill, d.task, d.goal_id, d.session_name, d.worktree_path, d.worktree_branch, d.base_branch
+        `SELECT d.id, d.skill, d.task, d.goal_id, d.session_name, d.worktree_path,
+                d.worktree_branch, d.base_branch, g.intent as goal_intent
          FROM decisions d
          JOIN sessions s ON s.decision_id = d.id
+         LEFT JOIN goals g ON g.id = d.goal_id
          WHERE d.status = 'dispatched'
          AND (s.work_dir = ? OR s.work_dir LIKE ?)
          ORDER BY d.created_at DESC LIMIT 1`
@@ -1008,74 +1012,97 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         id: number, skill: string, task: string, goal_id: number | null,
         session_name: string, worktree_path: string | null,
         worktree_branch: string | null, base_branch: string | null,
+        goal_intent: string | null,
       } | undefined
 
-      // Store the session data
       const result: Record<string, unknown> = {
-        sessionId,
-        transcriptPath,
-        cwd: sessionCwd,
+        sessionId, transcriptPath, cwd: sessionCwd,
         turnCount: summary?.turnCount,
         toolCallCount: summary?.toolCalls?.length,
         model: summary?.model,
         inputTokens: summary?.totalInputTokens,
         outputTokens: summary?.totalOutputTokens,
-        closingBlock: summary?.closingBlock,
         matchedDecision: foremanSession?.id,
       }
 
-      // If this matches a Foreman dispatch, use the closing block to drive next steps
-      if (foremanSession && summary?.closingBlock) {
-        const cb = summary.closingBlock
+      if (foremanSession && transcriptPath) {
+        // Dispatch the reviewer asynchronously — don't block the hook response
+        reviewSession({
+          sessionId,
+          transcriptPath,
+          cwd: sessionCwd,
+          lastAssistantMessage: lastMessage,
+          decisionId: foremanSession.id,
+          skill: foremanSession.skill,
+          task: foremanSession.task,
+          goalIntent: foremanSession.goal_intent ?? foremanSession.task,
+          goalId: foremanSession.goal_id,
+        }).then(review => {
+          // Update decision with reviewer's assessment
+          stmts.updateDecision.run(
+            review.status, review.summary.slice(0, 500),
+            review.learnings.length > 0 ? JSON.stringify(review.learnings) : null,
+            JSON.stringify({
+              turnCount: summary?.turnCount,
+              toolCalls: summary?.toolCalls.length,
+              inputTokens: summary?.totalInputTokens,
+              outputTokens: summary?.totalOutputTokens,
+              qualityScore: review.qualityScore,
+              deliverablesMet: review.deliverablesMet,
+            }),
+            null, null, foremanSession.id,
+          )
 
-        // Update decision with structured outcome
-        const outcomeText = cb.summary || lastMessage.slice(0, 200)
-        const learnings = [
-          ...cb.stepsCompleted.map(s => `step: ${s}`),
-          ...cb.deliverables.map(d => `deliverable: ${d}`),
-        ]
-        const status = cb.status === 'complete' ? 'success' : cb.status === 'blocked' ? 'failure' : 'success'
+          // Update confidence
+          const projectName = (foremanSession.worktree_path ?? sessionCwd).split('/').pop() ?? ''
+          const confSignal = review.qualityScore >= 7 ? 'success' as const : review.status === 'success' ? 'success' as const : 'failure' as const
+          confidence.update(foremanSession.skill || 'direct', projectName, confSignal)
 
-        stmts.updateDecision.run(
-          status, outcomeText.slice(0, 500),
-          learnings.length > 0 ? JSON.stringify(learnings) : null,
-          JSON.stringify({
-            turnCount: summary.turnCount,
-            toolCalls: summary.toolCalls.length,
-            inputTokens: summary.totalInputTokens,
-            outputTokens: summary.totalOutputTokens,
-            closingStatus: cb.status,
-          }),
-          null, null, foremanSession.id,
-        )
+          // Store learnings
+          for (const l of review.learnings.slice(0, 5)) {
+            stmts.insertLearning.run('session_review', l.slice(0, 500), `decision:${foremanSession.id}`, null, 1.5)
+          }
 
-        // Store skill recommendations for next dispatch
-        if (cb.skillRecommendations.length > 0) {
-          for (const rec of cb.skillRecommendations) {
+          // Store next-dispatch recommendation
+          if (review.nextDispatch) {
             stmts.insertLearning.run(
               'session_recommendation',
-              `${foremanSession.skill} → ${rec.skill}: ${rec.task.slice(0, 200)}`,
+              `${foremanSession.skill} → ${review.nextDispatch.skill}: ${review.nextDispatch.task.slice(0, 200)}`,
               `decision:${foremanSession.id}`, null, 2.0,
             )
+            log(`Reviewer recommends: ${review.nextDispatch.skill} — ${review.nextDispatch.task.slice(0, 80)}`)
           }
-          log(`Session ${sessionId} recommends: ${cb.skillRecommendations.map(r => `${r.skill} (${r.task.slice(0, 50)})`).join(', ')}`)
-        }
 
-        emitEvent('session_complete', foremanSession.session_name, foremanSession.goal_id, {
-          decisionId: foremanSession.id,
-          status: cb.status,
-          turnCount: summary.turnCount,
-          toolCalls: summary.toolCalls.length,
-          recommendations: cb.skillRecommendations.length,
+          emitEvent('session_reviewed', foremanSession.session_name, foremanSession.goal_id, {
+            decisionId: foremanSession.id,
+            status: review.status,
+            qualityScore: review.qualityScore,
+            shouldContinue: review.shouldContinue,
+            nextSkill: review.nextDispatch?.skill,
+          })
+
+          sendNotification(
+            `Foreman: ${foremanSession.session_name}`,
+            `${review.status} (${review.qualityScore}/10) — ${review.summary.slice(0, 100)}`,
+          )
+
+          log(`Session reviewed: ${sessionId} → ${review.status} (${review.qualityScore}/10)${review.nextDispatch ? ` → next: ${review.nextDispatch.skill}` : ''}`)
+
+          // Auto-dispatch if reviewer says to continue
+          if (review.shouldContinue && review.nextDispatch && foremanSession.goal_id) {
+            maybeAutoDispatch(foremanSession.skill, projectName, foremanSession.goal_id)
+              .catch(e => log(`Auto-dispatch after review failed: ${e}`))
+          }
+        }).catch(e => {
+          log(`Session review failed for ${sessionId}: ${e}`)
         })
 
-        log(`Session complete via hook: ${sessionId} → decision ${foremanSession.id} (${cb.status})`)
+        result.reviewing = true
+        log(`Session complete via hook: ${sessionId} → decision ${foremanSession.id} (reviewing...)`)
       } else {
-        // Not a Foreman dispatch — just log the event for the operator session scanner
+        // Not a Foreman dispatch — log for operator session scanner
         emitEvent('external_session_complete', null, null, {
-          sessionId,
-          cwd: sessionCwd,
-          turnCount: summary?.turnCount,
+          sessionId, cwd: sessionCwd, turnCount: summary?.turnCount,
         })
         log(`External session complete: ${sessionId} in ${sessionCwd}`)
       }
