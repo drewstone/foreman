@@ -51,21 +51,22 @@ export function verifyDeliverable(
 
     if (!existsSync(fullPath)) {
       deliverableStatus = 'fail'
-      details.push(`deliverable not found: ${spec.path}`)
+      details.push(`deliverable not found: expected file at ${spec.path} (resolved to ${fullPath})`)
     } else {
       const content = readFileSync(fullPath, 'utf8')
       const lines = content.split('\n').length
       let passed = true
 
       if (spec.minLines && lines < spec.minLines) {
-        details.push(`deliverable too short: ${lines} lines < ${spec.minLines} required`)
+        details.push(`deliverable too short: found ${lines} lines, expected >= ${spec.minLines}`)
         passed = false
       }
 
       if (spec.mustContain) {
         for (const s of spec.mustContain) {
           if (!content.includes(s)) {
-            details.push(`deliverable missing required content: "${s.slice(0, 50)}"`)
+            const preview = content.slice(0, 200).replace(/\n/g, '\\n')
+            details.push(`deliverable missing required content: "${s.slice(0, 50)}" not found in ${spec.path} (${lines} lines, starts with: "${preview}")`)
             passed = false
           }
         }
@@ -73,8 +74,10 @@ export function verifyDeliverable(
 
       if (spec.mustNotContain) {
         for (const s of spec.mustNotContain) {
-          if (content.includes(s)) {
-            details.push(`deliverable contains forbidden content: "${s.slice(0, 50)}"`)
+          const idx = content.indexOf(s)
+          if (idx !== -1) {
+            const lineNum = content.slice(0, idx).split('\n').length
+            details.push(`deliverable contains forbidden content: "${s.slice(0, 50)}" found at line ${lineNum} of ${spec.path}`)
             passed = false
           }
         }
@@ -88,8 +91,10 @@ export function verifyDeliverable(
             stdio: 'pipe',
           })
           details.push(`test command passed: ${spec.testCommand.slice(0, 60)}`)
-        } catch {
-          details.push(`test command failed: ${spec.testCommand.slice(0, 60)}`)
+        } catch (e: any) {
+          const exitCode = e.status ?? 'unknown'
+          const stderr = (e.stderr || '').toString().trim().slice(-200)
+          details.push(`test command failed (exit ${exitCode}): ${spec.testCommand.slice(0, 60)}${stderr ? ` — stderr: ${stderr}` : ''}`)
           passed = false
         }
       }
