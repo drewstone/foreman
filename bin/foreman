@@ -15,6 +15,7 @@ Usage: foreman <command> [args]
 
 Commands:
   status           Show portfolio status (goals, sessions, recent decisions)
+  setup            Re-run the Foreman onboarding wizard
   goals            List active goals
   goal <intent>    Create a new goal
   dispatch <task>  Dispatch a task (optional: --skill /evolve --workspace ~/code/foo)
@@ -37,6 +38,11 @@ json() { curl -sf "$@" | python3 -m json.tool 2>/dev/null || curl -sf "$@"; }
 case "${1:-help}" in
   status)
     json "$API/status"
+    ;;
+  setup)
+    shift
+    REPO="${FOREMAN_HOME:-$HOME/.foreman}/repo"
+    bash "$REPO/install.sh" --configure "$@"
     ;;
   goals)
     json "$API/goals"

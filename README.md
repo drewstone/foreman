@@ -17,12 +17,14 @@ Operator ↔ Conversation (Pi/Slack/CLI) ↔ Foreman Service ↔ Execution Backe
 ## Quick Start
 
 ```bash
-# Start the service
-cd ~/code/foreman && npm run service
+# Install with the onboarding wizard
+curl -fsSL https://raw.githubusercontent.com/drewstone/foreman/main/install.sh | bash
 
-# In Pi
-/foreman drive phony voice cloning to SOTA, track experiments, write a paper
+# Re-run setup later
+foreman setup
 ```
+
+The installer is consent-first. It explains each capability, asks before enabling it, writes config to `~/.foreman/.env`, and can install only the parts you want: core service, budgets, provider keys, Telegram, and Pi wiring.
 
 ## What It Does
 
