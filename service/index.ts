@@ -1034,16 +1034,23 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
       if (!sessionId) return error(res, 'session_id required')
 
-      // Store transcript_path on any matching session record (for the watcher to use later)
-      if (transcriptPath && sessionCwd) {
-        db.prepare(`UPDATE sessions SET transcript_path = ? WHERE work_dir = ? AND status != 'dead'`)
-          .run(transcriptPath, sessionCwd)
+      // Read transcript for basic stats + get the REAL cwd from the JSONL
+      const summary = transcriptPath ? readSessionTranscript(transcriptPath) : null
+      const realCwd = summary?.cwd || sessionCwd
+
+      // Store transcript_path on matching session record (for watcher to use later)
+      if (transcriptPath) {
+        // Try exact cwd match, then LIKE match (worktree paths vary)
+        const updated = db.prepare(`UPDATE sessions SET transcript_path = ? WHERE work_dir = ? AND status != 'dead'`)
+          .run(transcriptPath, realCwd)
+        if (updated.changes === 0) {
+          // Fallback: match any active session whose work_dir is in the transcript's cwd
+          db.prepare(`UPDATE sessions SET transcript_path = ? WHERE status != 'dead' AND ? LIKE '%' || REPLACE(SUBSTR(work_dir, -30), '/', '%') || '%'`)
+            .run(transcriptPath, realCwd)
+        }
       }
 
-      // Read transcript for basic stats (fast, no LLM)
-      const summary = transcriptPath ? readSessionTranscript(transcriptPath) : null
-
-      // Find matching Foreman decision — match by EXACT work_dir first, then fallback
+      // Find matching Foreman decision — use the REAL cwd from transcript
       const foremanSession = (
         db.prepare(
           `SELECT d.id, d.skill, d.task, d.goal_id, d.session_name, d.worktree_path,
@@ -1053,7 +1060,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
            LEFT JOIN goals g ON g.id = d.goal_id
            WHERE d.status = 'dispatched' AND s.work_dir = ?
            ORDER BY d.created_at DESC LIMIT 1`
-        ).get(sessionCwd) ??
+        ).get(realCwd) ??
         db.prepare(
           `SELECT d.id, d.skill, d.task, d.goal_id, d.session_name, d.worktree_path,
                   d.worktree_branch, d.base_branch, g.intent as goal_intent
@@ -1063,7 +1070,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
            WHERE d.status = 'dispatched'
            AND s.work_dir LIKE ?
            ORDER BY d.created_at DESC LIMIT 1`
-        ).get(`%${sessionCwd}%`)
+        ).get(`%${realCwd}%`)
       ) as {
         id: number, skill: string, task: string, goal_id: number | null,
         session_name: string, worktree_path: string | null,
