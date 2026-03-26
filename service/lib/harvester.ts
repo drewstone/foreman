@@ -402,10 +402,10 @@ export async function harvestOutcome(sessionName: string, goalId: number, backen
     }
   } catch {}
 
-  // Auto-dispatch next — prefer session's recommendation over pipeline's
-  const nextAction = sessionNextDispatch ?? digest.nextAction
+  // Auto-dispatch next — prefer reviewer's recommendation, then session's file, then auto-policy
+  const nextAction = nextSkillRecommendation ?? sessionNextDispatch
   if (nextAction) {
-    log(`Next dispatch source: ${sessionNextDispatch ? 'session' : 'pipeline'} → ${nextAction.skill} — ${nextAction.task.slice(0, 80)}`)
+    log(`Next dispatch: ${nextAction.skill} — ${nextAction.task.slice(0, 80)} (source: ${nextSkillRecommendation ? 'reviewer' : 'session'})`)
   }
   maybeAutoDispatch(decision.skill, projectName, goalId).catch(e => log(`Auto-dispatch failed: ${e}`))
 }
