@@ -39,6 +39,22 @@
   .empty { color: var(--muted); font-style: italic; padding: 12px 0; }
   #live-indicator { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; margin-right: 6px; animation: pulse 2s infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .collapsible-toggle { background: none; border: 1px solid var(--border); color: var(--accent); cursor: pointer; font-size: 13px; padding: 6px 12px; border-radius: 4px; display: flex; align-items: center; gap: 6px; }
+  .collapsible-toggle:hover { background: rgba(88,166,255,0.08); }
+  .collapsible-toggle .arrow { transition: transform 0.2s; display: inline-block; font-size: 10px; }
+  .collapsible-toggle .arrow.open { transform: rotate(90deg); }
+  .dispatch-body { overflow: hidden; max-height: 0; transition: max-height 0.3s ease; }
+  .dispatch-body.open { max-height: 600px; }
+  .dispatch-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding-top: 12px; }
+  .dispatch-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .dispatch-form label.full { grid-column: 1 / -1; }
+  .dispatch-form select, .dispatch-form input, .dispatch-form textarea { background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 4px; padding: 8px; font-size: 13px; font-family: inherit; resize: vertical; }
+  .dispatch-form select:focus, .dispatch-form input:focus, .dispatch-form textarea:focus { outline: none; border-color: var(--accent); }
+  .dispatch-form textarea { min-height: 60px; }
+  .dispatch-btn { background: var(--accent); color: #000; border: none; border-radius: 4px; padding: 8px 20px; font-size: 13px; font-weight: 600; cursor: pointer; justify-self: start; }
+  .dispatch-btn:hover { opacity: 0.9; }
+  .dispatch-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .dispatch-result { grid-column: 1 / -1; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 10px; font-family: monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; display: none; }
 </style>
 </head>
 <body>
@@ -70,6 +86,42 @@
     <div class="card full-width">
       <h2>Recent Decisions</h2>
       <div id="decisions"><div class="empty">Loading...</div></div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card full-width">
+      <button class="collapsible-toggle" onclick="toggleDispatch()">
+        <span class="arrow" id="dispatch-arrow">&#9654;</span> Dispatch
+      </button>
+      <div class="dispatch-body" id="dispatch-body">
+        <div class="dispatch-form" id="dispatch-form">
+          <label>Goal
+            <select id="d-goal"><option value="">Loading...</option></select>
+          </label>
+          <label>Skill
+            <select id="d-skill">
+              <option value="">(none)</option>
+              <option value="/evolve">/evolve</option>
+              <option value="/pursue">/pursue</option>
+              <option value="/verify">/verify</option>
+              <option value="/polish">/polish</option>
+              <option value="/converge">/converge</option>
+              <option value="/critical-audit">/critical-audit</option>
+              <option value="/diagnose">/diagnose</option>
+              <option value="/research">/research</option>
+            </select>
+          </label>
+          <label class="full">Task
+            <textarea id="d-task" placeholder="What should the agent do?"></textarea>
+          </label>
+          <label class="full">Work Directory
+            <input type="text" id="d-workdir" placeholder="/path/to/repo">
+          </label>
+          <button class="dispatch-btn" id="d-submit" onclick="submitDispatch()">Dispatch</button>
+          <div class="dispatch-result" id="d-result"></div>
+        </div>
+      </div>
     </div>
   </div>
 
