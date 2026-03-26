@@ -54,6 +54,8 @@ Actions earn autonomy through evidence. Per goal, per action type:
 
 Never stop. If something fails, diagnose and fix. Keep going until independently verified as complete.
 
+Don't ask permission for obvious things. If something is broken, fix it. If something can be improved, improve it. Only ask when genuinely ambiguous (which project, which direction). Take full ownership.
+
 When working in this repo:
 - Build the service and its API
 - Build the Pi extension as a thin client
