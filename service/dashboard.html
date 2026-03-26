@@ -39,6 +39,15 @@
   .empty { color: var(--muted); font-style: italic; padding: 12px 0; }
   #live-indicator { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; margin-right: 6px; animation: pulse 2s infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .session-name { cursor: pointer; color: var(--accent); text-decoration: none; }
+  .session-name:hover { text-decoration: underline; }
+  .session-detail { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 12px; margin: 4px 0; }
+  .session-detail-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .session-detail-header span { font-size: 12px; color: var(--muted); }
+  .session-detail pre { font-family: monospace; font-size: 11px; color: var(--muted); white-space: pre-wrap; word-break: break-all; max-height: 400px; overflow-y: auto; line-height: 1.4; }
+  .kill-btn { background: rgba(248,81,73,0.15); color: var(--red); border: 1px solid var(--red); border-radius: 4px; padding: 4px 12px; font-size: 12px; cursor: pointer; font-family: inherit; }
+  .kill-btn:hover { background: rgba(248,81,73,0.3); }
+  .kill-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>
 </head>
 <body>
@@ -148,11 +157,16 @@ async function loadStatus() {
     document.getElementById('sessions').innerHTML = `<table>
       <tr><th>Name</th><th>Status</th><th>Output</th></tr>
       ${s.sessions.map(sess => `<tr>
-        <td>${esc(sess.name)}</td>
+        <td><a class="session-name" onclick="toggleSession('${esc(sess.name)}')">${esc(sess.name)}</a></td>
         <td>${badge(sess.alive ? (sess.idle ? 'idle' : sess.status) : 'dead')}</td>
         <td class="session-output">${esc(sess.lastOutput || '')}</td>
-      </tr>`).join('')}
+      </tr>
+      <tr id="detail-${esc(sess.name)}" style="display:none"><td colspan="3"></td></tr>`).join('')}
     </table>`
+  // Re-expand any sessions that were open before refresh
+    for (const name of expandedSessions) {
+      toggleSession(name)
+    }
   } else {
     document.getElementById('sessions').innerHTML = '<div class="empty">No active sessions</div>'
   }
@@ -206,6 +220,57 @@ async function loadHealth() {
     const m = Math.floor(h.uptime / 60)
     const hrs = Math.floor(m / 60)
     document.getElementById('uptime').textContent = hrs > 0 ? `Up ${hrs}h ${m % 60}m` : `Up ${m}m`
+  }
+}
+
+const expandedSessions = new Set()
+
+async function toggleSession(name) {
+  const row = document.getElementById('detail-' + name)
+  if (!row) return
+
+  if (expandedSessions.has(name)) {
+    expandedSessions.delete(name)
+    row.style.display = 'none'
+    return
+  }
+
+  expandedSessions.add(name)
+  row.style.display = ''
+  const td = row.querySelector('td')
+  td.innerHTML = '<div class="session-detail"><div class="empty">Loading...</div></div>'
+
+  const data = await fetchJSON('/api/sessions/' + encodeURIComponent(name) + '?lines=80')
+  if (!data) {
+    td.innerHTML = '<div class="session-detail"><div class="empty">Failed to load session</div></div>'
+    return
+  }
+
+  td.innerHTML = `<div class="session-detail">
+    <div class="session-detail-header">
+      <span>${data.alive ? (data.idle ? 'idle' : 'running') : 'dead'}${data.gitLog ? ' · has git activity' : ''}</span>
+      <button class="kill-btn" onclick="killSession('${esc(name)}')" ${data.alive ? '' : 'disabled'}>Kill</button>
+    </div>
+    <pre>${esc(data.output || '(no output)')}</pre>
+  </div>`
+}
+
+async function killSession(name) {
+  const btn = event.target
+  btn.disabled = true
+  btn.textContent = 'Killing...'
+  try {
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name), { method: 'DELETE' })
+    if (r.ok) {
+      btn.textContent = 'Killed'
+      setTimeout(() => { expandedSessions.delete(name); refresh() }, 1000)
+    } else {
+      btn.textContent = 'Failed'
+      btn.disabled = false
+    }
+  } catch {
+    btn.textContent = 'Failed'
+    btn.disabled = false
   }
 }
 
