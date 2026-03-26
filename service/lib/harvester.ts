@@ -21,6 +21,9 @@ import { runPostCompletionPipeline } from './post-completion.js'
 import { reviewSession } from './session-reviewer.js'
 import { updateLearningsFromOutcome } from './prompt-optimizer.js'
 import { maybeAutoDispatch } from './auto-dispatch.js'
+import telemetry from './telemetry.js'
+
+const { recordTelemetryRun } = telemetry
 
 const execFileAsync = promisify(execFile)
 
@@ -33,10 +36,18 @@ export async function harvestOutcome(sessionName: string, goalId: number, backen
     .get(sessionName) as { id: number, skill: string, task: string, worktree_branch: string | null, base_branch: string | null } | undefined
   if (!decision) return
 
-  const session = stmts.getSession.get(sessionName) as { work_dir: string, status: string, transcript_path?: string } | undefined
+  const session = stmts.getSession.get(sessionName) as {
+    work_dir: string
+    status: string
+    transcript_path?: string
+    backend?: string | null
+    model?: string | null
+    started_at?: string
+  } | undefined
   if (!session) return
 
   const workDir = session.work_dir
+  const repoName = workDir.split('/').pop() ?? ''
 
   // ── PRIMARY: Read structured data from CC session JSONL ────────────
   // Priority: 1) transcript_path stored by Stop hook (exact, no scanning)
@@ -123,11 +134,24 @@ export async function harvestOutcome(sessionName: string, goalId: number, backen
 
   // ── Cost from transcript (structured) or regex (fallback) ──────────
   let costUsd: number | null = null
+  let inputTokens = 0
+  let outputTokens = 0
+  let cacheReadTokens = 0
+  let cacheCreationTokens = 0
+  let effectiveModel = session.model ?? null
+  let provider = 'unknown'
+  let harness = session.backend ?? 'tmux'
   if (transcript) {
     // Estimate from token counts + model
     const model = transcript.model?.toLowerCase() ?? ''
     const inTokens = transcript.totalInputTokens
     const outTokens = transcript.totalOutputTokens
+    inputTokens = inTokens
+    outputTokens = outTokens
+    cacheReadTokens = transcript.totalCacheReadTokens
+    effectiveModel = transcript.model || effectiveModel
+    if (harness === 'tmux') harness = 'claude'
+    provider = model.includes('gpt') || model.includes('o1') || model.includes('o3') ? 'openai' : 'anthropic'
     if (model.includes('opus')) {
       costUsd = (inTokens * 15 + outTokens * 75) / 1_000_000
     } else if (model.includes('haiku')) {
@@ -203,6 +227,35 @@ export async function harvestOutcome(sessionName: string, goalId: number, backen
   if (transcript) outcomeParts.push(`${transcript.toolCalls.length} tool calls, ${transcript.turnCount} turns`)
   if (costUsd) outcomeParts.push(`$${costUsd.toFixed(2)}`)
   const outcomeText = outcomeParts.length > 0 ? outcomeParts.join(', ') : 'session completed'
+
+  recordTelemetryRun(db, {
+    eventKey: `session:${sessionName}:decision:${decision.id}`,
+    decisionId: decision.id,
+    goalId,
+    sessionName,
+    source: 'harvester',
+    harness,
+    provider,
+    model: effectiveModel,
+    skill: decision.skill,
+    repo: repoName,
+    status,
+    inputTokens,
+    outputTokens,
+    cacheCreationTokens,
+    cacheReadTokens,
+    costUsd,
+    startedAt: session.started_at ?? transcript?.startTime ?? null,
+    finishedAt: transcript?.endTime ?? new Date().toISOString(),
+    metadata: {
+      transcriptSessionId: transcript?.sessionId ?? null,
+      toolCalls: transcript?.toolCalls.length ?? null,
+      turns: transcript?.turnCount ?? null,
+      testsPassed,
+      deliverableStatus,
+      scopeStatus,
+    },
+  })
 
   // Extract learnings
   const learnings: string[] = []

@@ -20,7 +20,7 @@ const execFileAsync = promisify(execFile)
 
 // ─── Shared state ────────────────────────────────────────────────────
 import {
-  PORT, FOREMAN_HOME,
+  PORT, FOREMAN_HOME, MAX_DAILY_COST_USD,
   WATCHER_INTERVAL_MS,
   type Stmts,
   sseClients,
@@ -52,6 +52,9 @@ import { readSessionTranscript, type SessionSummary } from './lib/session-reader
 import { reviewSession } from './lib/session-reviewer.js'
 import { maybeAutoDispatch } from './lib/auto-dispatch.js'
 import { runPromptLabCycle, pullSamples, getActiveExperiment, getDefaultSurfaces } from './lib/prompt-lab.js'
+import telemetry from './lib/telemetry.js'
+
+const { ensureTelemetrySchema, recordTelemetryRun, summarizeTelemetry, listTelemetryRuns, getDailyTelemetryCost } = telemetry
 
 // ─── Database ────────────────────────────────────────────────────────
 
@@ -118,6 +121,8 @@ db.exec(`
     work_dir TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'starting',
     prompt TEXT,
+    backend TEXT,
+    model TEXT,
     started_at TEXT NOT NULL DEFAULT (datetime('now')),
     last_checked_at TEXT,
     last_output TEXT
@@ -176,6 +181,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_decisions_goal ON decisions(goal_id);
   CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status);
 `)
+ensureTelemetrySchema(db)
 
 // Migrations for existing databases
 try { db.exec(`ALTER TABLE decisions ADD COLUMN origin TEXT NOT NULL DEFAULT 'operator'`) } catch {}
@@ -187,6 +193,8 @@ try { db.exec(`ALTER TABLE decisions ADD COLUMN scope_spec TEXT`) } catch {}
 try { db.exec(`ALTER TABLE decisions ADD COLUMN prompt_sections TEXT`) } catch {}
 try { db.exec(`ALTER TABLE decisions ADD COLUMN deliverable_status TEXT DEFAULT 'unchecked'`) } catch {}
 try { db.exec(`ALTER TABLE sessions ADD COLUMN transcript_path TEXT`) } catch {}
+try { db.exec(`ALTER TABLE sessions ADD COLUMN backend TEXT`) } catch {}
+try { db.exec(`ALTER TABLE sessions ADD COLUMN model TEXT`) } catch {}
 
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
@@ -221,7 +229,7 @@ const stmts = {
   searchDecisions: db.prepare(`SELECT * FROM decisions WHERE task LIKE ? OR outcome LIKE ? OR learnings LIKE ? OR skill LIKE ? OR session_name LIKE ? OR reasoning LIKE ? ORDER BY created_at DESC LIMIT ?`),
   goalDecisions: db.prepare(`SELECT * FROM decisions WHERE goal_id = ? ORDER BY created_at DESC`),
 
-  insertSession: db.prepare(`INSERT OR REPLACE INTO sessions (name, goal_id, decision_id, work_dir, status, prompt) VALUES (?, ?, ?, ?, 'starting', ?)`),
+  insertSession: db.prepare(`INSERT OR REPLACE INTO sessions (name, goal_id, decision_id, work_dir, status, prompt, backend, model) VALUES (?, ?, ?, ?, 'starting', ?, ?, ?)`),
   updateSession: db.prepare(`UPDATE sessions SET status = ?, last_checked_at = datetime('now'), last_output = ? WHERE name = ?`),
   getSession: db.prepare(`SELECT * FROM sessions WHERE name = ?`),
   listSessions: db.prepare(`SELECT * FROM sessions ORDER BY started_at DESC`),
@@ -363,6 +371,10 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
       if (!task) return error(res, 'task required')
       if (!workDir && !goalId) return error(res, 'work_dir or goal_id required')
+      const dailyCost = getDailyTelemetryCost(db)
+      if (dailyCost >= MAX_DAILY_COST_USD) {
+        return error(res, `daily cost cap reached: $${dailyCost.toFixed(2)} >= $${MAX_DAILY_COST_USD}`, 429)
+      }
 
       // Resolve work directory (the operator's repo)
       let repoDir = workDir
@@ -530,9 +542,47 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const learnings = body.learnings ? JSON.stringify(body.learnings) : null
       const metrics = body.metrics ? JSON.stringify(body.metrics) : null
       const tasteSignal = body.taste_signal ? String(body.taste_signal) : null
-      const costUsd = body.cost_usd ? Number(body.cost_usd) : null
+      const telemetryPayload = body.telemetry && typeof body.telemetry === 'object'
+        ? body.telemetry as Record<string, unknown>
+        : null
+      const telemetryCostUsd = telemetryPayload?.costUsd != null ? Number(telemetryPayload.costUsd) : null
+      const costUsd = body.cost_usd != null ? Number(body.cost_usd) : telemetryCostUsd
 
       stmts.updateDecision.run(status, outcome, learnings, metrics, tasteSignal, costUsd, decisionId)
+      if (telemetryPayload) {
+        try {
+          const decision = stmts.getDecision.get(decisionId) as {
+            goal_id?: number | null
+            session_name?: string | null
+            skill?: string | null
+            worktree_path?: string | null
+          } | undefined
+          recordTelemetryRun(db, {
+            eventKey: String(telemetryPayload.eventKey ?? `manual:${decisionId}`),
+            decisionId,
+            goalId: decision?.goal_id ?? null,
+            sessionName: decision?.session_name ?? null,
+            source: 'api/outcomes',
+            harness: String(telemetryPayload.harness ?? 'unknown'),
+            provider: telemetryPayload.provider ? String(telemetryPayload.provider) : null,
+            model: telemetryPayload.model ? String(telemetryPayload.model) : null,
+            skill: decision?.skill ?? null,
+            repo: decision?.worktree_path ? String(decision.worktree_path).split('/').pop() ?? null : null,
+            status,
+            inputTokens: telemetryPayload.inputTokens != null ? Number(telemetryPayload.inputTokens) : null,
+            outputTokens: telemetryPayload.outputTokens != null ? Number(telemetryPayload.outputTokens) : null,
+            cacheCreationTokens: telemetryPayload.cacheCreationTokens != null ? Number(telemetryPayload.cacheCreationTokens) : null,
+            cacheReadTokens: telemetryPayload.cacheReadTokens != null ? Number(telemetryPayload.cacheReadTokens) : null,
+            totalTokens: telemetryPayload.totalTokens != null ? Number(telemetryPayload.totalTokens) : null,
+            costUsd,
+            startedAt: telemetryPayload.startedAt ? String(telemetryPayload.startedAt) : null,
+            finishedAt: telemetryPayload.finishedAt ? String(telemetryPayload.finishedAt) : new Date().toISOString(),
+            metadata: telemetryPayload,
+          })
+        } catch (e) {
+          log(`Telemetry ingest failed for decision ${decisionId}: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
 
       // Record taste if signal provided + update confidence
       if (tasteSignal && tasteSignal !== 'neutral') {
@@ -785,6 +835,9 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     }
 
     if (path === '/api/stats' && method === 'GET') {
+      const telemetry24h = summarizeTelemetry(db, 24)
+      const telemetryAll = summarizeTelemetry(db, 24 * 365 * 20)
+      const todayCost = getDailyTelemetryCost(db)
       const sessionCount = (stmts.operatorSessionCount.get() as { count: number }).count
       const decisionCount = (db.prepare(`SELECT COUNT(*) as c FROM decisions`).get() as { c: number }).c
       const learningCount = (db.prepare(`SELECT COUNT(*) as c FROM learnings`).get() as { c: number }).c
@@ -797,8 +850,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const autoDispatches = (db.prepare(`SELECT COUNT(*) as c FROM decisions WHERE origin = 'auto'`).get() as { c: number }).c
 
       // Cost breakdown
-      const totalCost = (db.prepare(`SELECT COALESCE(SUM(cost_usd), 0) as total FROM decisions`).get() as { total: number }).total
-      const todayCost = (db.prepare(`SELECT COALESCE(SUM(cost_usd), 0) as total FROM decisions WHERE date(created_at) = date('now')`).get() as { total: number }).total
+      const totalCost = telemetryAll.totalCostUsd
       const costBySkill = db.prepare(`
         SELECT skill, COUNT(*) as dispatches, SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) as successes,
                COALESCE(SUM(cost_usd), 0) as cost
@@ -816,9 +868,70 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         cost: {
           total: totalCost,
           today: todayCost,
+          budgetBlocked: todayCost >= MAX_DAILY_COST_USD,
+          runs24h: telemetry24h.runs,
+          tokens24h: telemetry24h.totalTokens,
+          byHarness: telemetry24h.byHarness,
+          byProvider: telemetry24h.byProvider,
+          byModel: telemetry24h.byModel,
+          byRepo: telemetry24h.byRepo,
           bySkill: costBySkill,
         },
       })
+    }
+
+    if (path === '/api/telemetry/summary' && method === 'GET') {
+      const hours = parseInt(parseQuery(url).get('hours') ?? '24', 10)
+      const summary = summarizeTelemetry(db, Number.isFinite(hours) ? hours : 24)
+      const todayCost = getDailyTelemetryCost(db)
+      return json(res, {
+        ...summary,
+        budget: {
+          dailyUsd: MAX_DAILY_COST_USD,
+          todayCostUsd: todayCost,
+          blocked: todayCost >= MAX_DAILY_COST_USD,
+        },
+      })
+    }
+
+    if (path === '/api/telemetry/runs' && method === 'GET') {
+      const hours = parseInt(parseQuery(url).get('hours') ?? '168', 10)
+      const limit = parseInt(parseQuery(url).get('limit') ?? '100', 10)
+      return json(res, listTelemetryRuns(db, {
+        hoursBack: Number.isFinite(hours) ? hours : 168,
+        limit: Number.isFinite(limit) ? limit : 100,
+      }))
+    }
+
+    if (path === '/api/telemetry/runs' && method === 'POST') {
+      const body = await readBody(req)
+      const eventKey = String(body.eventKey ?? body.event_key ?? '')
+      const harness = String(body.harness ?? '')
+      if (!eventKey || !harness) return error(res, 'eventKey and harness required')
+
+      recordTelemetryRun(db, {
+        eventKey,
+        decisionId: body.decisionId != null ? Number(body.decisionId) : null,
+        goalId: body.goalId != null ? Number(body.goalId) : null,
+        sessionName: body.sessionName ? String(body.sessionName) : null,
+        source: body.source ? String(body.source) : 'api/telemetry/runs',
+        harness,
+        provider: body.provider ? String(body.provider) : null,
+        model: body.model ? String(body.model) : null,
+        skill: body.skill ? String(body.skill) : null,
+        repo: body.repo ? String(body.repo) : null,
+        status: body.status ? String(body.status) : null,
+        inputTokens: body.inputTokens != null ? Number(body.inputTokens) : null,
+        outputTokens: body.outputTokens != null ? Number(body.outputTokens) : null,
+        cacheCreationTokens: body.cacheCreationTokens != null ? Number(body.cacheCreationTokens) : null,
+        cacheReadTokens: body.cacheReadTokens != null ? Number(body.cacheReadTokens) : null,
+        totalTokens: body.totalTokens != null ? Number(body.totalTokens) : null,
+        costUsd: body.costUsd != null ? Number(body.costUsd) : null,
+        startedAt: body.startedAt ? String(body.startedAt) : null,
+        finishedAt: body.finishedAt ? String(body.finishedAt) : new Date().toISOString(),
+        metadata: body.metadata && typeof body.metadata === 'object' ? body.metadata as Record<string, unknown> : null,
+      })
+      return json(res, { ok: true }, 201)
     }
 
     // ── MCP servers ─────────────────────────────────────────

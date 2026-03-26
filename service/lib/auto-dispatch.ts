@@ -10,6 +10,9 @@ import {
 import { getDispatchPolicy, type DispatchContext } from './dispatch-policy.js'
 import { sessionName, spawnSession, selectModel } from './session-manager.js'
 import { composePrompt, createWorktree } from './prompt-composer.js'
+import telemetry from './telemetry.js'
+
+const { getDailyTelemetryCost } = telemetry
 
 export async function maybeAutoDispatch(skill: string, project: string, goalId: number): Promise<void> {
   const db = getDb()
@@ -19,8 +22,7 @@ export async function maybeAutoDispatch(skill: string, project: string, goalId: 
   const level = confidence.getLevel(skill || 'direct', project)
   if (level === 'dry-run' || level === 'propose') return
 
-  const today = new Date().toISOString().slice(0, 10)
-  const dailyCost = (db.prepare(`SELECT COALESCE(SUM(cost_usd), 0) as total FROM decisions WHERE date(created_at) = ?`).get(today) as { total: number }).total
+  const dailyCost = getDailyTelemetryCost(db)
   if (dailyCost >= MAX_DAILY_COST_USD) {
     log(`Auto-dispatch blocked: daily cost $${dailyCost.toFixed(2)} >= $${MAX_DAILY_COST_USD} cap`)
     return
