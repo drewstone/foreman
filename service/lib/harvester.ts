@@ -218,7 +218,9 @@ export async function harvestOutcome(sessionName: string, goalId: number, backen
 
   // Snapshot evolve state
   try {
-    const evolveFile = join(workDir, 'evolve-progress.md')
+    const evolveFile = existsSync(join(workDir, '.evolve', 'progress.md'))
+      ? join(workDir, '.evolve', 'progress.md')
+      : join(workDir, 'evolve-progress.md')
     if (existsSync(evolveFile)) {
       const evolveContent = readFileSync(evolveFile, 'utf8')
       const scoreMatch = evolveContent.match(/Score:\s*([\d.]+)\s*→\s*target\s*([\d.]+)/i)
