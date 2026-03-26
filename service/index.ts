@@ -1212,8 +1212,8 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
 const server = http.createServer(handleRequest)
 
-server.listen(PORT, '127.0.0.1', () => {
-  log(`Foreman service listening on http://127.0.0.1:${PORT}`)
+server.listen(PORT, '0.0.0.0', () => {
+  log(`Foreman service listening on http://0.0.0.0:${PORT}`)
   log(`Database: ${DB_PATH}`)
   log(`Home: ${FOREMAN_HOME}`)
 
