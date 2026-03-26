@@ -1022,6 +1022,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         model: summary?.model,
         inputTokens: summary?.totalInputTokens,
         outputTokens: summary?.totalOutputTokens,
+        estimatedCostUSD: summary?.estimatedCostUSD,
         matchedDecision: foremanSession?.id,
       }
 

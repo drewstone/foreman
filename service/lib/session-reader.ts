@@ -34,6 +34,7 @@ export interface SessionSummary {
   totalInputTokens: number
   totalOutputTokens: number
   totalCacheReadTokens: number
+  estimatedCostUSD: number
   lastAssistantText: string
   closingBlock: ClosingBlock | null
   startTime: string
@@ -47,6 +48,26 @@ export interface ClosingBlock {
   skillRecommendations: Array<{ skill: string, task: string, reasoning: string }>
   nextContext: string
   deliverables: string[]
+}
+
+// Per-million-token pricing: [input, output, cache_read_input]
+const MODEL_PRICING: Record<string, [number, number, number]> = {
+  opus:   [15,    75,   1.50],
+  sonnet: [3,     15,   0.30],
+  haiku:  [0.25,  1.25, 0.03],
+}
+
+function resolveModelTier(model: string): [number, number, number] {
+  const m = model.toLowerCase()
+  if (m.includes('opus'))   return MODEL_PRICING.opus
+  if (m.includes('haiku'))  return MODEL_PRICING.haiku
+  // Default to sonnet for any sonnet variant or unknown model
+  return MODEL_PRICING.sonnet
+}
+
+function estimateCost(model: string, inputTokens: number, outputTokens: number, cacheReadTokens: number): number {
+  const [inputRate, outputRate, cacheRate] = resolveModelTier(model)
+  return (inputTokens * inputRate + outputTokens * outputRate + cacheReadTokens * cacheRate) / 1_000_000
 }
 
 /**
@@ -136,6 +157,7 @@ export function readSessionTranscript(transcriptPath: string): SessionSummary | 
       totalInputTokens,
       totalOutputTokens,
       totalCacheReadTokens,
+      estimatedCostUSD: estimateCost(model, totalInputTokens, totalOutputTokens, totalCacheReadTokens),
       lastAssistantText: lastAssistantText.slice(0, 5000),
       closingBlock,
       startTime,
