@@ -2737,6 +2737,40 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       return json(res, { status: 'ok', uptime: process.uptime() })
     }
 
+    // ── Stats (aggregate metrics) ─────────────────────────────
+    if (path === '/api/stats' && method === 'GET') {
+      const decisionRows = db.prepare(`
+        SELECT
+          COUNT(*) as total,
+          SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+          SUM(CASE WHEN status = 'failure' THEN 1 ELSE 0 END) as failure
+        FROM decisions
+      `).get() as { total: number, success: number, failure: number }
+
+      const sessionRows = db.prepare(`
+        SELECT
+          COUNT(*) as total,
+          SUM(CASE WHEN status IN ('starting', 'running') THEN 1 ELSE 0 END) as active,
+          SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed
+        FROM sessions
+      `).get() as { total: number, active: number, completed: number }
+
+      const deliverableRows = db.prepare(`
+        SELECT
+          SUM(CASE WHEN deliverable_status = 'pass' THEN 1 ELSE 0 END) as pass,
+          SUM(CASE WHEN deliverable_status = 'fail' THEN 1 ELSE 0 END) as fail,
+          SUM(CASE WHEN deliverable_status = 'unchecked' OR deliverable_status IS NULL THEN 1 ELSE 0 END) as unchecked
+        FROM decisions
+      `).get() as { pass: number, fail: number, unchecked: number }
+
+      return json(res, {
+        decisions: { total: decisionRows.total, success: decisionRows.success, failure: decisionRows.failure },
+        sessions: { total: sessionRows.total, active: sessionRows.active, completed: sessionRows.completed },
+        deliverables: { pass: deliverableRows.pass, fail: deliverableRows.fail, unchecked: deliverableRows.unchecked },
+        uptime_seconds: Math.floor(process.uptime()),
+      })
+    }
+
     // ── Status (portfolio overview) ───────────────────────────
     if (path === '/api/status' && method === 'GET') {
       const goals = stmts.listGoals.all()
