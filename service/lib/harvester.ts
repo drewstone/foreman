@@ -33,19 +33,18 @@ export async function harvestOutcome(sessionName: string, goalId: number, backen
     .get(sessionName) as { id: number, skill: string, task: string, worktree_branch: string | null, base_branch: string | null } | undefined
   if (!decision) return
 
-  const session = stmts.getSession.get(sessionName) as { work_dir: string, status: string } | undefined
+  const session = stmts.getSession.get(sessionName) as { work_dir: string, status: string, transcript_path?: string } | undefined
   if (!session) return
 
   const workDir = session.work_dir
 
   // ── PRIMARY: Read structured data from CC session JSONL ────────────
-  // Find the Claude Code session transcript for this worktree.
-  // This gives us: tool calls, token counts, cost, last assistant message.
-  // No terminal scraping, no ANSI parsing, no regex on pipe-pane output.
+  // Priority: 1) transcript_path stored by Stop hook (exact, no scanning)
+  //           2) findSessionTranscript (filesystem scan, fallback)
   let transcript: SessionSummary | null = null
   let output = ''
 
-  const transcriptPath = findSessionTranscript(workDir)
+  const transcriptPath = session.transcript_path ?? findSessionTranscript(workDir)
   if (transcriptPath) {
     transcript = readSessionTranscript(transcriptPath)
     if (transcript) {

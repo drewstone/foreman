@@ -186,6 +186,7 @@ try { db.exec(`ALTER TABLE decisions ADD COLUMN deliverable_spec TEXT`) } catch 
 try { db.exec(`ALTER TABLE decisions ADD COLUMN scope_spec TEXT`) } catch {}
 try { db.exec(`ALTER TABLE decisions ADD COLUMN prompt_sections TEXT`) } catch {}
 try { db.exec(`ALTER TABLE decisions ADD COLUMN deliverable_status TEXT DEFAULT 'unchecked'`) } catch {}
+try { db.exec(`ALTER TABLE sessions ADD COLUMN transcript_path TEXT`) } catch {}
 
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
@@ -1033,20 +1034,37 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
       if (!sessionId) return error(res, 'session_id required')
 
+      // Store transcript_path on any matching session record (for the watcher to use later)
+      if (transcriptPath && sessionCwd) {
+        db.prepare(`UPDATE sessions SET transcript_path = ? WHERE work_dir = ? AND status != 'dead'`)
+          .run(transcriptPath, sessionCwd)
+      }
+
       // Read transcript for basic stats (fast, no LLM)
       const summary = transcriptPath ? readSessionTranscript(transcriptPath) : null
 
-      // Find matching Foreman decision
-      const foremanSession = db.prepare(
-        `SELECT d.id, d.skill, d.task, d.goal_id, d.session_name, d.worktree_path,
-                d.worktree_branch, d.base_branch, g.intent as goal_intent
-         FROM decisions d
-         JOIN sessions s ON s.decision_id = d.id
-         LEFT JOIN goals g ON g.id = d.goal_id
-         WHERE d.status = 'dispatched'
-         AND (s.work_dir = ? OR s.work_dir LIKE ?)
-         ORDER BY d.created_at DESC LIMIT 1`
-      ).get(sessionCwd, `%${sessionCwd.split('/').pop()}%`) as {
+      // Find matching Foreman decision — match by EXACT work_dir first, then fallback
+      const foremanSession = (
+        db.prepare(
+          `SELECT d.id, d.skill, d.task, d.goal_id, d.session_name, d.worktree_path,
+                  d.worktree_branch, d.base_branch, g.intent as goal_intent
+           FROM decisions d
+           JOIN sessions s ON s.decision_id = d.id
+           LEFT JOIN goals g ON g.id = d.goal_id
+           WHERE d.status = 'dispatched' AND s.work_dir = ?
+           ORDER BY d.created_at DESC LIMIT 1`
+        ).get(sessionCwd) ??
+        db.prepare(
+          `SELECT d.id, d.skill, d.task, d.goal_id, d.session_name, d.worktree_path,
+                  d.worktree_branch, d.base_branch, g.intent as goal_intent
+           FROM decisions d
+           JOIN sessions s ON s.decision_id = d.id
+           LEFT JOIN goals g ON g.id = d.goal_id
+           WHERE d.status = 'dispatched'
+           AND s.work_dir LIKE ?
+           ORDER BY d.created_at DESC LIMIT 1`
+        ).get(`%${sessionCwd}%`)
+      ) as {
         id: number, skill: string, task: string, goal_id: number | null,
         session_name: string, worktree_path: string | null,
         worktree_branch: string | null, base_branch: string | null,

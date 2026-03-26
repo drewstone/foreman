@@ -57,14 +57,19 @@ export function watcherTick(): void {
       log(`Session ${s.name} appears idle — confirming on next tick`)
     } else if (idle && s.status === 'idle') {
       emitEvent('session_idle', s.name, s.goal_id)
-      log(`Session ${s.name} confirmed idle — harvesting`)
-      harvestOutcome(s.name, s.goal_id, backend)
-        .then(() => {
-          backend.kill(s.name)
-          stmts.updateSession.run('dead', 'completed', s.name)
-          log(`Cleaned up completed session: ${s.name}`)
-        })
-        .catch(e => log(`Harvest failed for ${s.name}: ${e}`))
+      // Wait 5s for the CC Stop hook to fire and store transcript_path.
+      // The hook sends transcript_path to /api/session-complete which stores it
+      // on the session record. The harvester reads it from there.
+      log(`Session ${s.name} confirmed idle — waiting for hook, then harvesting`)
+      setTimeout(() => {
+        harvestOutcome(s.name, s.goal_id, backend)
+          .then(() => {
+            backend.kill(s.name)
+            stmts.updateSession.run('dead', 'completed', s.name)
+            log(`Cleaned up completed session: ${s.name}`)
+          })
+          .catch(e => log(`Harvest failed for ${s.name}: ${e}`))
+      }, 5000)
     } else {
       stmts.updateSession.run(idle ? 'idle' : 'running', output, s.name)
     }
