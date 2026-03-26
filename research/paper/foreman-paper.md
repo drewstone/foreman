@@ -276,4 +276,4 @@ The methodology contribution may be the most valuable: distinguishing genuine ag
 
 ## Appendix B: Pursuit History
 
-See `pursue-*.md` files in the repository for detailed generation-by-generation development history including architecture decisions, failed experiments, and pivots.
+See `.evolve/pursuits/*.md` for detailed generation-by-generation development history including architecture decisions, failed experiments, and pivots.

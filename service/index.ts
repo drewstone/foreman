@@ -621,7 +621,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       } catch {}
 
       // Evolve/autoresearch state
-      for (const f of ['evolve-progress.md', 'autoresearch.md', '.evolve/scorecard.json']) {
+      for (const f of ['.evolve/current.json', '.evolve/progress.md', 'evolve-progress.md', 'autoresearch.md', '.evolve/scorecard.json']) {
         const fp = join(projectPath, f)
         if (existsSync(fp)) {
           try { context[f] = readFileSync(fp, 'utf8').slice(0, 1000) } catch {}
@@ -630,9 +630,18 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
       // Pursue docs
       try {
-        for (const f of readdirSync(projectPath)) {
-          if (f.startsWith('pursue-') && f.endsWith('.md')) {
-            context[f] = readFileSync(join(projectPath, f), 'utf8').slice(0, 1000)
+        const pursueDir = join(projectPath, '.evolve', 'pursuits')
+        if (existsSync(pursueDir)) {
+          for (const f of readdirSync(pursueDir)) {
+            if (f.endsWith('.md')) {
+              context[`.evolve/pursuits/${f}`] = readFileSync(join(pursueDir, f), 'utf8').slice(0, 1000)
+            }
+          }
+        } else {
+          for (const f of readdirSync(projectPath)) {
+            if (f.startsWith('pursue-') && f.endsWith('.md')) {
+              context[f] = readFileSync(join(projectPath, f), 'utf8').slice(0, 1000)
+            }
           }
         }
       } catch {}

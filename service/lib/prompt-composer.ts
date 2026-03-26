@@ -170,9 +170,12 @@ export function composePrompt(opts: {
   } catch {}
 
   // Evolve state + experiment trajectory
-  const evolveProgress = readProjectFile(workDir, 'evolve-progress.md', 1000)
+  const evolveProgress = readProjectFile(workDir, '.evolve/progress.md', 1000)
+    ?? readProjectFile(workDir, 'evolve-progress.md', 1000)
+  const evolveCurrent = readProjectFile(workDir, '.evolve/current.json', 1000)
   const autoresearchMd = readProjectFile(workDir, 'autoresearch.md', 1000)
   if (evolveProgress) sections.push(`## Current Evolve State\n${evolveProgress}`)
+  if (evolveCurrent) sections.push(`## Evolve Pointer\n${evolveCurrent}`)
   if (autoresearchMd) sections.push(`## Autoresearch Config\n${autoresearchMd}`)
 
   // Experiment history
@@ -225,12 +228,24 @@ export function composePrompt(opts: {
 
   // Pursue docs
   try {
-    const pursueFiles = readdirSync(workDir).filter(f => f.startsWith('pursue-') && f.endsWith('.md'))
-    for (const f of pursueFiles) {
-      const content = readProjectFile(workDir, f, 2000)
+    const pursueEntries: Array<{ label: string, path: string }> = []
+    const pursueDir = join(workDir, '.evolve', 'pursuits')
+    if (existsSync(pursueDir)) {
+      for (const f of readdirSync(pursueDir).filter(f => f.endsWith('.md')).sort()) {
+        pursueEntries.push({ label: f, path: `.evolve/pursuits/${f}` })
+      }
+    }
+    if (pursueEntries.length === 0) {
+      for (const f of readdirSync(workDir).filter(f => f.startsWith('pursue-') && f.endsWith('.md')).sort()) {
+        pursueEntries.push({ label: f, path: f })
+      }
+    }
+
+    for (const entry of pursueEntries) {
+      const content = readProjectFile(workDir, entry.path, 2000)
       if (!content) continue
 
-      const lines = [`## ${f}`]
+      const lines = [`## ${entry.label}`]
       const statusMatch = content.match(/Status:\s*(.+)/i)
       const thesisMatch = content.match(/###?\s*Thesis\n+(.+)/i)
       if (statusMatch) lines.push(`Status: ${statusMatch[1]}`)
