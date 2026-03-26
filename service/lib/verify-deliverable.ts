@@ -47,7 +47,8 @@ export function verifyDeliverable(
 
   // ── Deliverable check ──────────────────────────────────────────────
   if (spec) {
-    const fullPath = join(workDir, spec.path)
+    // Absolute paths (e.g. /tmp/foo.txt) are used as-is; relative paths resolve from workDir
+    const fullPath = spec.path.startsWith('/') ? spec.path : join(workDir, spec.path)
 
     if (!existsSync(fullPath)) {
       deliverableStatus = 'fail'
