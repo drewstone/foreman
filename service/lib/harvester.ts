@@ -18,6 +18,7 @@ import { findSessionTranscript, readSessionTranscript, type SessionSummary } fro
 import { removeScopeHook } from './scope-enforcer.js'
 import { parseIdeationOutput } from './plan-generator.js'
 import { runPostCompletionPipeline } from './post-completion.js'
+import { reviewSession } from './session-reviewer.js'
 import { updateLearningsFromOutcome } from './prompt-optimizer.js'
 import { maybeAutoDispatch } from './auto-dispatch.js'
 
@@ -287,32 +288,88 @@ export async function harvestOutcome(sessionName: string, goalId: number, backen
     if (prUrl) log(`PR created/found: ${prUrl}`)
   }
 
-  // Post-completion pipeline
-  const digest = await runPostCompletionPipeline(decision.id, sessionName, decision.skill, decision.task, workDir, output, status, outcomeText)
+  // ── Reviewer: audit the session and recommend next skill ────────────
+  // When we have a transcript, use the reviewer (reads JSONL with full Foreman context).
+  // Otherwise fall back to the old post-completion pipeline (LLM summary via claude -p).
+  let reviewSummary = outcomeText
+  let reviewLearnings = learnings
+  let reviewQuality = 0
+  let nextSkillRecommendation: { skill: string, task: string, reasoning: string } | null = null
 
-  if (digest.summary) {
-    db.prepare(`UPDATE decisions SET outcome = ?, learnings = ?, updated_at = datetime('now') WHERE id = ?`)
-      .run(digest.summary.slice(0, 2000), digest.learnings ? JSON.stringify(digest.learnings) : null, decision.id)
+  const goalRow = goalId ? stmts.getGoal.get(goalId) as { intent?: string } | undefined : undefined
+
+  if (transcriptPath) {
+    try {
+      const review = await reviewSession({
+        sessionId: sessionName,
+        transcriptPath,
+        cwd: workDir,
+        lastAssistantMessage: output.slice(-3000),
+        decisionId: decision.id,
+        skill: decision.skill,
+        task: decision.task,
+        goalIntent: goalRow?.intent ?? decision.task,
+        goalId,
+      })
+
+      reviewSummary = review.summary || outcomeText
+      reviewQuality = review.qualityScore
+      reviewLearnings = review.learnings.length > 0 ? review.learnings : learnings
+      nextSkillRecommendation = review.nextDispatch
+
+      // Override status with reviewer's assessment if it disagrees
+      if (review.status === 'success' && status === 'failure') {
+        status = 'success'
+        log(`Reviewer overrode failure → success for ${sessionName}`)
+      }
+
+      db.prepare(`UPDATE decisions SET outcome = ?, learnings = ?, updated_at = datetime('now') WHERE id = ?`)
+        .run(reviewSummary.slice(0, 2000), JSON.stringify(reviewLearnings), decision.id)
+
+      log(`Reviewed ${sessionName}: ${review.status} (${review.qualityScore}/10)${nextSkillRecommendation ? ` → next: ${nextSkillRecommendation.skill}` : ''}`)
+    } catch (e) {
+      log(`Reviewer failed for ${sessionName}: ${e}, falling back to pipeline`)
+    }
   }
 
-  const notifyText = digest.summary ?? outcomeText
-  sendNotification(`Foreman: ${sessionName}`, `${decision.skill} → ${notifyText.slice(0, 200)}`)
+  // Fallback: old post-completion pipeline when no transcript
+  if (!transcriptPath) {
+    const digest = await runPostCompletionPipeline(decision.id, sessionName, decision.skill, decision.task, workDir, output, status, outcomeText)
+    if (digest.summary) {
+      reviewSummary = digest.summary
+      db.prepare(`UPDATE decisions SET outcome = ?, learnings = ?, updated_at = datetime('now') WHERE id = ?`)
+        .run(digest.summary.slice(0, 2000), digest.learnings ? JSON.stringify(digest.learnings) : null, decision.id)
+    }
+    if (digest.nextAction) nextSkillRecommendation = { ...digest.nextAction, reasoning: '' }
+    reviewQuality = digest.qualityScore ?? 0
+    reviewLearnings = digest.learnings ?? learnings
+  }
+
+  sendNotification(`Foreman: ${sessionName}`, `${decision.skill} → ${reviewSummary.slice(0, 200)}`)
 
   // Update confidence
   let projectName = workDir.split('/').pop() ?? workDir
   if (goalId) {
-    const goal = stmts.getGoal.get(goalId) as { workspace_path?: string } | undefined
-    if (goal?.workspace_path) projectName = goal.workspace_path.split('/').pop() ?? projectName
+    if (goalRow?.workspace_path) projectName = (goalRow as any).workspace_path.split('/').pop() ?? projectName
   }
-  const confSignal = (digest.qualityScore ?? 0) >= 7 ? 'success' as const
+  const confSignal = reviewQuality >= 7 ? 'success' as const
     : status === 'success' ? 'success' as const : 'failure' as const
   confidence.update(decision.skill || 'direct', projectName, confSignal)
   const newLevel = confidence.getLevel(decision.skill || 'direct', projectName)
   log(`Confidence: ${decision.skill || 'direct'}@${projectName} → ${newLevel} (${confSignal})`)
 
   // Trigger learning
-  const enrichedLearnings = digest.learnings ?? learnings
-  updateLearningsFromOutcome(decision.id, decision.skill, decision.task, status, digest.summary ?? outcomeText, enrichedLearnings)
+  updateLearningsFromOutcome(decision.id, decision.skill, decision.task, status, reviewSummary, reviewLearnings)
+
+  // Store reviewer's next-skill recommendation
+  if (nextSkillRecommendation) {
+    stmts.insertLearning.run(
+      'session_recommendation',
+      `${decision.skill} → ${nextSkillRecommendation.skill}: ${nextSkillRecommendation.task.slice(0, 200)}`,
+      `decision:${decision.id}`, null, 2.0,
+    )
+    log(`Reviewer recommends: ${nextSkillRecommendation.skill} — ${nextSkillRecommendation.task.slice(0, 80)}`)
+  }
 
   // Record outcome for active prompt lab experiments
   try {
