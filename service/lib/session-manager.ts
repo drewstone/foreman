@@ -134,7 +134,7 @@ export const tmuxBackend: ExecutionBackend = {
 
     pendingPrompts.set(name, req)
     const stmts = getStmts()
-    stmts.insertSession.run(name, req.goalId, req.decisionId, workDir, prompt)
+    stmts.insertSession.run(name, req.goalId, req.decisionId, workDir, prompt, req.backend ?? 'tmux', req.model ?? null)
     log(`Spawned session ${name} in ${workDir}${model ? ` (model: ${model})` : ''}${mcpFlag ? ' +mcp' : ''}`)
   },
 
@@ -244,7 +244,7 @@ export const tangleBackend: ExecutionBackend = {
   spawn(req: SpawnRequest): void {
     const stmts = getStmts()
     tangleSandboxes.set(req.name, { sandboxId: '', status: 'creating' })
-    stmts.insertSession.run(req.name, req.goalId, req.decisionId, req.workDir, req.prompt)
+    stmts.insertSession.run(req.name, req.goalId, req.decisionId, req.workDir, req.prompt, req.backend ?? 'tangle', req.model ?? null)
 
     spawnTangleSandbox(req).catch(e => {
       const msg = e instanceof Error ? e.message : String(e)

@@ -83,6 +83,13 @@
       <div id="events"><div class="empty">Loading...</div></div>
     </div>
   </div>
+
+  <div class="grid">
+    <div class="card full-width">
+      <h2>Telemetry (24h)</h2>
+      <div id="telemetry"><div class="empty">Loading...</div></div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -119,14 +126,39 @@ async function fetchJSON(path) {
 async function loadStats() {
   const s = await fetchJSON('/api/stats')
   if (!s) return
+  const blocked = s.cost?.budgetBlocked ? ' 🔴' : ''
   document.getElementById('stats').innerHTML = `
     <div class="stat-row"><span class="stat-label">Decisions</span><span class="stat-value">${s.decisions}</span></div>
     <div class="stat-row"><span class="stat-label">Success Rate</span><span class="stat-value">${s.successRate}%</span></div>
     <div class="stat-row"><span class="stat-label">Operator / Auto</span><span class="stat-value">${s.operatorDispatches} / ${s.autoDispatches}</span></div>
     <div class="stat-row"><span class="stat-label">Learnings</span><span class="stat-value">${s.learnings}</span></div>
-    <div class="stat-row"><span class="stat-label">Cost (today)</span><span class="stat-value">$${(s.cost?.today ?? 0).toFixed(2)}</span></div>
+    <div class="stat-row"><span class="stat-label">Cost (today)</span><span class="stat-value">$${(s.cost?.today ?? 0).toFixed(2)}${blocked}</span></div>
     <div class="stat-row"><span class="stat-label">Cost (total)</span><span class="stat-value">$${(s.cost?.total ?? 0).toFixed(2)}</span></div>
+    <div class="stat-row"><span class="stat-label">Telemetry Runs (24h)</span><span class="stat-value">${s.cost?.runs24h ?? 0}</span></div>
+    <div class="stat-row"><span class="stat-label">Tokens (24h)</span><span class="stat-value">${(s.cost?.tokens24h ?? 0).toLocaleString()}</span></div>
     <div class="stat-row"><span class="stat-label">Operator Sessions</span><span class="stat-value">${s.operatorSessions}</span></div>
+  `
+}
+
+async function loadTelemetry() {
+  const t = await fetchJSON('/api/telemetry/summary?hours=24')
+  if (!t) return
+  const topHarnesses = t.byHarness?.slice(0, 6) ?? []
+  const topModels = t.byModel?.slice(0, 6) ?? []
+  document.getElementById('telemetry').innerHTML = `
+    <div class="stat-row"><span class="stat-label">24h Cost / Budget</span><span class="stat-value">$${(t.budget?.todayCostUsd ?? 0).toFixed(2)} / $${(t.budget?.dailyUsd ?? 0).toFixed(2)}</span></div>
+    <div class="stat-row"><span class="stat-label">24h Runs</span><span class="stat-value">${t.runs ?? 0}</span></div>
+    <div class="stat-row"><span class="stat-label">24h Tokens</span><span class="stat-value">${(t.totalTokens ?? 0).toLocaleString()}</span></div>
+    <br>
+    <table>
+      <tr><th>Harness</th><th>Runs</th><th>Cost</th><th>Tokens</th></tr>
+      ${topHarnesses.map(h => `<tr><td>${esc(h.key)}</td><td>${h.runs}</td><td>$${Number(h.costUsd || 0).toFixed(2)}</td><td>${Number(h.totalTokens || 0).toLocaleString()}</td></tr>`).join('')}
+    </table>
+    <br>
+    <table>
+      <tr><th>Model</th><th>Runs</th><th>Cost</th></tr>
+      ${topModels.map(m => `<tr><td>${esc(m.key)}</td><td>${m.runs}</td><td>$${Number(m.costUsd || 0).toFixed(2)}</td></tr>`).join('')}
+    </table>
   `
 }
 
@@ -210,7 +242,7 @@ async function loadHealth() {
 }
 
 async function refresh() {
-  await Promise.all([loadStats(), loadStatus(), loadConfidence(), loadHealth()])
+  await Promise.all([loadStats(), loadStatus(), loadConfidence(), loadHealth(), loadTelemetry()])
 }
 
 // SSE for live updates
