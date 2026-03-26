@@ -2839,7 +2839,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       // Deliverable + scope specs (Gen 9: measure achievement, not activity)
       const deliverableSpec = body.deliverable ? JSON.stringify(body.deliverable) : null
       const scopeSpec = body.scope ? JSON.stringify(body.scope) : null
-      const deliverablePath = body.deliverable?.path ?? null
+      const deliverablePath = body.deliverable ? (body.deliverable as DeliverableSpec).path ?? null : null
 
       const taskTruncated = task.slice(0, 500)
       const result = stmts.insertDecision.run(goalId || null, skill, taskTruncated, reasoning, sName, worktreePath, worktreeBranch, baseBranch, tplVersion, 'operator')

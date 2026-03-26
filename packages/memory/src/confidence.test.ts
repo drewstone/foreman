@@ -37,10 +37,10 @@ describe('ConfidenceStore', () => {
     assert.ok(Math.abs(score - 0.05) < 1e-9)
   })
 
-  it('success signal increases score by 0.05', () => {
+  it('success signal increases score by 0.10', () => {
     store.update('run-eval', 'proj-c', 'success')
     const score = store.getConfidence('run-eval', 'proj-c')
-    assert.ok(Math.abs(score - 0.05) < 1e-9)
+    assert.ok(Math.abs(score - 0.10) < 1e-9)
   })
 
   it('failure signal decreases score by 0.1', () => {
