@@ -1236,19 +1236,24 @@ server.listen(PORT, '127.0.0.1', () => {
     if (cleaned > 0) log(`Cleaned ${cleaned} stale worktrees`)
   }, 6 * 60 * 60 * 1000)
 
-  // Prompt Lab — runs every 2 hours, generates and evaluates prompt variants
+  // Prompt Lab — DISABLED auto-cycle. 4 variants tested, all worse than baseline.
+  // Data shows constraints hurt (32% with ONLY vs 71% without). The lab optimized
+  // the wrong surface. Keep manual trigger via POST /api/lab/optimize.
+  // Re-enable when: 500+ samples AND the reviewer-based harvest is proven reliable.
+  /*
   setTimeout(async () => {
     try {
       const result = await runPromptLabCycle()
       log(`Prompt Lab: ${result.action} (${result.samples} samples)`)
     } catch (e) { log(`Prompt Lab failed: ${e}`) }
-  }, 10 * 60 * 1000) // first run after 10 minutes
+  }, 10 * 60 * 1000)
   setInterval(async () => {
     try {
       const result = await runPromptLabCycle()
       log(`Prompt Lab: ${result.action} (${result.samples} samples)`)
     } catch (e) { log(`Prompt Lab failed: ${e}`) }
   }, 2 * 60 * 60 * 1000)
+  */
 
   // GEPA dispatch policy — retrain every 6 hours from accumulated decisions
   if (process.env.FOREMAN_DISPATCH_POLICY === 'gepa') {

@@ -380,16 +380,13 @@ export function composePrompt(opts: {
   let prompt = ''
   prompt += `## Your Task\n${task}\n\n`
 
-  // Standards — check for promoted lab variant, fall back to default
+  // Standards — data shows: constraints HURT (32% with "ONLY" vs 71% without).
+  // Rich context + freedom + post-hoc review beats upfront restriction.
   const standardsInstruction = getPromotedInstruction('standards') ?? [
-    'L7/L8 staff engineer quality. Zero tolerance for slop.',
-    'Complete everything fully. No TODOs, no stubs.',
-    'ONLY create or modify the files specified in your task. Do NOT create dashboards, CLIs, hooks, or other files unless your task explicitly asks for them.',
-    'ALWAYS commit your work. After every meaningful change: git add <specific-file> && git commit -m "feat/fix: description".',
-    'Do NOT use "git add -A" or "git add .". Add files by name.',
-    'If your commit is rejected by a scope hook, run: git reset HEAD . && git add <your-allowed-file> && git commit. Do NOT create files outside your allowed scope.',
+    'Staff engineer quality. Complete the task fully.',
+    'Commit your work after each meaningful change.',
     'If tests exist, run them. Fix failures before moving on.',
-    'Never ask for permission. Act.',
+    'Act decisively. Do what the task requires.',
   ].join('\n- ')
   prompt += `## Standards\n- ${standardsInstruction}\n`
 
@@ -428,23 +425,20 @@ export function composePrompt(opts: {
   }
   prompt += '\n'
 
-  // Context budget by task type
-  const executionSkills = new Set(['/verify', '/converge', '/polish'])
-  const reasoningSkills = new Set(['/pursue', '/plan', '/research', '/reflect'])
-  const isExecution = executionSkills.has(skill) || (!skill && task.split(/\s+/).length < 15)
+  // Context budget — data shows more context = higher success (92% at 400+ chars).
+  // The slim tier (1500) starved agents. Bump everything up.
+  // /evolve and /pursue get full context — they need the most.
+  const reasoningSkills = new Set(['/pursue', '/plan', '/research', '/reflect', '/evolve'])
   const isReasoning = reasoningSkills.has(skill)
 
   let contextBudget: number
   let promptTier: string
-  if (isExecution) {
-    contextBudget = 1500
-    promptTier = 'slim'
-  } else if (isReasoning) {
-    contextBudget = 6000
+  if (isReasoning) {
+    contextBudget = 8000
     promptTier = 'rich'
   } else {
-    contextBudget = 3000
-    promptTier = 'medium'
+    contextBudget = 4000
+    promptTier = 'standard'
   }
 
   const includedSections: string[] = []
