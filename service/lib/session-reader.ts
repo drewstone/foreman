@@ -3,7 +3,9 @@
  * Extracts: tool calls, cost, final outcome, closing protocol block.
  */
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
 
 export interface SessionTurn {
   uuid: string
@@ -238,4 +240,45 @@ export function readLastAssistantMessage(transcriptPath: string): string | null 
   } catch {
     return null
   }
+}
+
+/**
+ * Find the most recent CC session transcript for a given working directory.
+ * CC stores sessions in ~/.claude/projects/<project-hash>/<session-id>.jsonl
+ */
+export function findSessionTranscript(workDir: string): string | null {
+  const projectsDir = join(homedir(), '.claude', 'projects')
+  if (!existsSync(projectsDir)) return null
+
+  const cutoff = Date.now() - 2 * 60 * 60 * 1000 // last 2 hours
+  let bestMatch: { path: string, mtime: number } | null = null
+
+  try {
+    for (const dir of readdirSync(projectsDir)) {
+      const dirPath = join(projectsDir, dir)
+      try { if (!statSync(dirPath).isDirectory()) continue } catch { continue }
+
+      try {
+        for (const file of readdirSync(dirPath)) {
+          if (!file.endsWith('.jsonl')) continue
+          const filePath = join(dirPath, file)
+          try {
+            const st = statSync(filePath)
+            if (st.mtimeMs < cutoff) continue
+            if (bestMatch && st.mtimeMs < bestMatch.mtime) continue
+
+            // Quick check: does this session's cwd match our workDir?
+            const content = readFileSync(filePath, 'utf8')
+            const sample = content.slice(0, 3000)
+
+            if (sample.includes(workDir)) {
+              bestMatch = { path: filePath, mtime: st.mtimeMs }
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+  } catch {}
+
+  return bestMatch?.path ?? null
 }

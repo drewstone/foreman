@@ -14,6 +14,7 @@ import {
   log, emitEvent, sendNotification,
 } from './state.js'
 import { verifyDeliverable, runTestGate, type DeliverableSpec, type ScopeSpec } from './verify-deliverable.js'
+import { findSessionTranscript, readSessionTranscript, type SessionSummary } from './session-reader.js'
 import { removeScopeHook } from './scope-enforcer.js'
 import { parseIdeationOutput } from './plan-generator.js'
 import { runPostCompletionPipeline } from './post-completion.js'
@@ -36,20 +37,37 @@ export async function harvestOutcome(sessionName: string, goalId: number, backen
 
   const workDir = session.work_dir
 
-  // Read session output from log file
-  const logFile = join(FOREMAN_HOME, 'logs', `session-${sessionName}.log`)
+  // ── PRIMARY: Read structured data from CC session JSONL ────────────
+  // Find the Claude Code session transcript for this worktree.
+  // This gives us: tool calls, token counts, cost, last assistant message.
+  // No terminal scraping, no ANSI parsing, no regex on pipe-pane output.
+  let transcript: SessionSummary | null = null
   let output = ''
-  try {
-    if (existsSync(logFile)) {
-      const full = readFileSync(logFile, 'utf8')
-      output = full.slice(-5000)
+
+  const transcriptPath = findSessionTranscript(workDir)
+  if (transcriptPath) {
+    transcript = readSessionTranscript(transcriptPath)
+    if (transcript) {
+      output = transcript.lastAssistantText
+      log(`Harvest: found CC transcript for ${sessionName} (${transcript.turnCount} turns, ${transcript.toolCalls.length} tool calls)`)
     }
-  } catch {}
-  if (!output && backend.isAlive(sessionName)) {
-    output = backend.capture(sessionName, 80)
   }
 
-  // Count session's commits
+  // Fallback: pipe-pane log (unreliable but better than nothing)
+  if (!output) {
+    const logFile = join(FOREMAN_HOME, 'logs', `session-${sessionName}.log`)
+    try {
+      if (existsSync(logFile)) {
+        const full = readFileSync(logFile, 'utf8')
+        output = full.slice(-5000)
+      }
+    } catch {}
+    if (!output && backend.isAlive(sessionName)) {
+      output = backend.capture(sessionName, 80)
+    }
+  }
+
+  // ── Git data (always reliable — reads the actual repo) ─────────────
   let commits = 0
   let gitLog = ''
   let hasPR = false
@@ -81,24 +99,43 @@ export async function harvestOutcome(sessionName: string, goalId: number, backen
     } catch {}
   }
 
-  if (output.includes('tests pass') || output.includes('✅') || output.includes('All tests passed') || output.includes('✓ pass')) {
-    testsPassed = true
-  } else if (output.includes('FAIL') || output.includes('❌') || output.includes('tests fail') || output.includes('✗ fail')) {
-    testsPassed = false
+  // ── Test detection from transcript tool calls (structured) or output (fallback) ──
+  if (transcript) {
+    // Check tool call outputs for test results
+    const bashCalls = transcript.toolCalls.filter(t => t.name === 'Bash')
+    const testCommands = bashCalls.filter(t => {
+      const cmd = JSON.stringify(t.input).toLowerCase()
+      return cmd.includes('test') || cmd.includes('pytest') || cmd.includes('vitest') || cmd.includes('jest')
+    })
+    if (testCommands.length > 0) {
+      // If agent ran tests AND committed, tests likely passed
+      testsPassed = commits > 0 ? true : null
+    }
+  }
+  // Fallback: regex on output text
+  if (testsPassed === null && output) {
+    if (output.includes('tests pass') || output.includes('All tests passed') || output.includes('✓ pass')) {
+      testsPassed = true
+    } else if (output.includes('FAIL') || output.includes('tests fail') || output.includes('✗ fail')) {
+      testsPassed = false
+    }
   }
 
-  // Parse cost
+  // ── Cost from transcript (structured) or regex (fallback) ──────────
   let costUsd: number | null = null
-  const costPatterns = [
-    /Total cost:\s*\$(\d+\.?\d*)/i,
-    /Cost:\s*\$(\d+\.?\d*)/i,
-    /\$(\d+\.\d{2,})\s*total/i,
-    /(\d+\.\d{2,})\s*USD/i,
-    /(?:cost|spent|billed)[:\s]*\$?(\d+\.?\d*)/i,
-  ]
-  for (const pattern of costPatterns) {
-    const match = output.match(pattern)
-    if (match) { costUsd = parseFloat(match[1]); break }
+  if (transcript) {
+    // Estimate from token counts + model
+    const model = transcript.model?.toLowerCase() ?? ''
+    const inTokens = transcript.totalInputTokens
+    const outTokens = transcript.totalOutputTokens
+    if (model.includes('opus')) {
+      costUsd = (inTokens * 15 + outTokens * 75) / 1_000_000
+    } else if (model.includes('haiku')) {
+      costUsd = (inTokens * 0.25 + outTokens * 1.25) / 1_000_000
+    } else {
+      // Default to sonnet pricing
+      costUsd = (inTokens * 3 + outTokens * 15) / 1_000_000
+    }
   }
 
   // Deliverable verification
@@ -136,14 +173,20 @@ export async function harvestOutcome(sessionName: string, goalId: number, backen
     }
   }
 
-  // Determine success
-  const hasErrors = output.includes('Error:') || output.includes('FAIL') || output.includes('fatal:')
+  // Determine success — use structured data when available
   let status: string
   if (deliverableStatus === 'fail') {
     status = 'failure'
   } else if (deliverableStatus === 'pass') {
     status = 'success'
+  } else if (transcript) {
+    // Structured: did the agent actually DO anything?
+    const didWork = transcript.toolCalls.length > 0
+    const madeCommits = commits > 0
+    status = madeCommits ? 'success' : didWork ? 'success' : 'failure'
   } else {
+    // Fallback: old heuristics on pipe-pane output
+    const hasErrors = output.includes('Error:') || output.includes('FAIL') || output.includes('fatal:')
     status = commits > 0 && !hasErrors ? 'success'
       : hasErrors ? 'failure'
       : 'success'
@@ -157,7 +200,7 @@ export async function harvestOutcome(sessionName: string, goalId: number, backen
   if (hasPR) outcomeParts.push('PR created')
   if (testsPassed === true) outcomeParts.push('tests passing')
   if (testsPassed === false) outcomeParts.push('tests failing')
-  if (hasErrors) outcomeParts.push('errors detected')
+  if (transcript) outcomeParts.push(`${transcript.toolCalls.length} tool calls, ${transcript.turnCount} turns`)
   if (costUsd) outcomeParts.push(`$${costUsd.toFixed(2)}`)
   const outcomeText = outcomeParts.length > 0 ? outcomeParts.join(', ') : 'session completed'
 
