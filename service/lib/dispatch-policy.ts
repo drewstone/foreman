@@ -49,6 +49,57 @@ export const identityPolicy: DispatchPolicy = {
   },
 }
 
+export const heuristicPolicy: DispatchPolicy = {
+  name: 'heuristic',
+  async decide(ctx) {
+    const last = ctx.recentDecisions[0]
+    const repeatedFailure = ctx.recentDecisions.length >= 2
+      && ctx.recentDecisions[0]?.status === 'failure'
+      && ctx.recentDecisions[1]?.status === 'failure'
+      && ctx.recentDecisions[0]?.skill === ctx.recentDecisions[1]?.skill
+
+    if (!last) {
+      return {
+        skill: '/evolve',
+        task: `Start improving: ${ctx.goalIntent.slice(0, 200)}`,
+        reasoning: 'heuristic policy — no prior decisions, start with evolve',
+      }
+    }
+
+    if (last.status === 'failure') {
+      if (repeatedFailure) {
+        return {
+          skill: '/pursue',
+          task: `Redesign the failing approach for: ${ctx.goalIntent.slice(0, 200)}`,
+          reasoning: 'heuristic policy — repeated failure suggests architectural change',
+        }
+      }
+      return {
+        skill: '/diagnose',
+        task: `Diagnose why this failed and propose the next concrete move: ${ctx.goalIntent.slice(0, 200)}`,
+        reasoning: 'heuristic policy — analyze the failure before continuing',
+      }
+    }
+
+    if (last.status === 'success') {
+      if (last.skill === '/verify' || last.skill === '/critical-audit') {
+        return {
+          skill: '/evolve',
+          task: `Continue improving: ${ctx.goalIntent.slice(0, 200)}`,
+          reasoning: 'heuristic policy — verification passed, continue forward progress',
+        }
+      }
+      return {
+        skill: '/verify',
+        task: `Verify the latest progress for: ${ctx.goalIntent.slice(0, 200)}`,
+        reasoning: 'heuristic policy — successful changes should be validated explicitly',
+      }
+    }
+
+    return identityPolicy.decide(ctx)
+  },
+}
+
 // ─── LLM policy: Claude reasons about next step ─────────────────────
 
 export const llmPolicy: DispatchPolicy = {
@@ -213,10 +264,29 @@ const DISPATCH_POLICY = process.env.FOREMAN_DISPATCH_POLICY ?? 'llm'
 
 const policies: Record<string, DispatchPolicy> = {
   identity: identityPolicy,
+  heuristic: heuristicPolicy,
   llm: llmPolicy,
 }
 
 export function getDispatchPolicy(): DispatchPolicy {
   if (DISPATCH_POLICY === 'gepa' && gepaPolicy) return gepaPolicy
   return policies[DISPATCH_POLICY] ?? llmPolicy
+}
+
+export function getDispatchPolicyByName(name: string): DispatchPolicy | null {
+  if (name === 'gepa') return gepaPolicy
+  return policies[name] ?? null
+}
+
+export function listDispatchPolicies(): Array<{ name: string, live: boolean, available: boolean }> {
+  return [
+    { name: 'identity', live: false, available: true },
+    { name: 'heuristic', live: false, available: true },
+    { name: 'llm', live: true, available: true },
+    { name: 'gepa', live: true, available: gepaPolicy != null },
+  ]
+}
+
+export function policyRequiresLiveCalls(name: string): boolean {
+  return name === 'llm' || name === 'gepa'
 }

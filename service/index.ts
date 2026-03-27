@@ -42,7 +42,7 @@ import { runLearningLoop, runDeepAnalysis } from './lib/learning-loop.js'
 
 // ─── Existing lib modules ────────────────────────────────────────────
 import { createProposal, listProposals, updateProposalStatus, openProposalPR as openSkillPR } from './lib/skill-proposals.js'
-import { getDispatchPolicy, initGepaPolicy, type DispatchContext } from './lib/dispatch-policy.js'
+import { getDispatchPolicy, getDispatchPolicyByName, initGepaPolicy, listDispatchPolicies, policyRequiresLiveCalls, type DispatchContext } from './lib/dispatch-policy.js'
 import { buildIdeationDispatch, buildFullPlanDispatch, parseIdeationOutput, listPlans, updatePlanStatus, getPlan, openProposalPR as openPlanPR, type PlanGeneratorContext } from './lib/plan-generator.js'
 import { callClaudeForJSON } from './lib/claude-runner.js'
 import { verifyDeliverable, runTestGate, type DeliverableSpec, type ScopeSpec } from './lib/verify-deliverable.js'
@@ -53,8 +53,10 @@ import { reviewSession } from './lib/session-reviewer.js'
 import { maybeAutoDispatch } from './lib/auto-dispatch.js'
 import { runPromptLabCycle, pullSamples, getActiveExperiment, getDefaultSurfaces } from './lib/prompt-lab.js'
 import telemetry from './lib/telemetry.js'
-
 const { ensureTelemetrySchema, recordTelemetryRun, summarizeTelemetry, listTelemetryRuns, getDailyTelemetryCost } = telemetry
+import replay from './lib/replay.js'
+
+const { listReplayExamples, summarizeReplayExamples, exportReplayDataset, evaluateReplayPolicy } = replay
 
 // ─── Database ────────────────────────────────────────────────────────
 
@@ -353,6 +355,69 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
     if (path === '/api/goals' && method === 'GET') {
       return json(res, stmts.listGoals.all())
+    }
+
+    // ── Replay Harness ───────────────────────────────────────
+    if (path === '/api/replay/summary' && method === 'GET') {
+      const limit = parseInt(parseQuery(url).get('limit') ?? '250', 10)
+      const project = parseQuery(url).get('project') ?? undefined
+      const skill = parseQuery(url).get('skill') ?? undefined
+      const examples = listReplayExamples(db, {
+        limit: Number.isFinite(limit) ? limit : 250,
+        project,
+        skill,
+      })
+      return json(res, summarizeReplayExamples(examples))
+    }
+
+    if (path === '/api/replay/examples' && method === 'GET') {
+      const limit = parseInt(parseQuery(url).get('limit') ?? '50', 10)
+      const project = parseQuery(url).get('project') ?? undefined
+      const skill = parseQuery(url).get('skill') ?? undefined
+      return json(res, listReplayExamples(db, {
+        limit: Number.isFinite(limit) ? limit : 50,
+        project,
+        skill,
+      }))
+    }
+
+    if (path === '/api/replay/export' && method === 'GET') {
+      const limit = parseInt(parseQuery(url).get('limit') ?? '250', 10)
+      const project = parseQuery(url).get('project') ?? undefined
+      const skill = parseQuery(url).get('skill') ?? undefined
+      return json(res, exportReplayDataset(db, {
+        limit: Number.isFinite(limit) ? limit : 250,
+        project,
+        skill,
+      }))
+    }
+
+    if (path === '/api/replay/policies' && method === 'GET') {
+      return json(res, listDispatchPolicies())
+    }
+
+    if (path === '/api/replay/evaluate' && method === 'GET') {
+      const policyName = parseQuery(url).get('policy') ?? 'identity'
+      const allowLive = parseQuery(url).get('allow_live') === 'true'
+      const limit = parseInt(parseQuery(url).get('limit') ?? '50', 10)
+      const project = parseQuery(url).get('project') ?? undefined
+      const skill = parseQuery(url).get('skill') ?? undefined
+      const policy = getDispatchPolicyByName(policyName)
+
+      if (!policy) return error(res, `unknown policy: ${policyName}`, 404)
+      if (policyRequiresLiveCalls(policyName) && !allowLive) {
+        return error(res, `policy ${policyName} requires live model calls; pass allow_live=true to run it`, 400)
+      }
+
+      const examples = listReplayExamples(db, {
+        limit: Number.isFinite(limit) ? limit : 50,
+        project,
+        skill,
+      })
+      return json(res, await evaluateReplayPolicy(examples, {
+        policyName,
+        decide: (ctx) => policy.decide(ctx),
+      }))
     }
 
     // ── Dispatch ──────────────────────────────────────────────
