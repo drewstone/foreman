@@ -144,7 +144,7 @@ What Foreman should avoid copying:
 Confidence:
 
 - 90-95%: autoresearch-style narrow loops are the best immediate template for Foreman's self-improvement work.
-- 80-90%: Foreman should optimize one layer at a time, not the full stack at once.
+- 80-90%: Foreman should optimize one bounded subsystem at a time, not the full stack at once.
 - 70-80%: Foreman can reuse this pattern for prompt policy, dispatch policy, and verifier tuning.
 
 ## Direct Proposals
@@ -242,6 +242,9 @@ It should start with:
 2. improve prompt-composer sections
 3. improve verifier prompts/rubrics
 4. improve plan ranking policy
+
+Each target is a bounded subsystem, not necessarily a single file.
+It can span multiple modules if they serve one measurable objective.
 
 Each target gets:
 

@@ -136,16 +136,19 @@ Confidence: 80-88%
 
 ## Phase 3: Constrain Self-Improvement
 
-### 6. Optimize One Layer At A Time
+### 6. Optimize One Bounded Subsystem At A Time
 
 Foreman should not start self-improvement by mutating the whole service.
 
-Start with bounded layers:
+Start with bounded subsystems:
 
 1. dispatch-policy prompts
 2. prompt-composer sections
 3. verifier prompts/rubrics
 4. plan ranking policy
+
+These are not restricted to one file.
+They may span multiple modules, as long as the optimization target is one coherent capability with one evaluation objective.
 
 Each optimization loop should have:
 
@@ -248,7 +251,7 @@ These are the main gaps that still deserve explicit attention:
 2. Finish telemetry wiring across all producers
 3. Add API/integration CI for the real dispatch pipeline
 4. Ship Docker backend as the next serious runtime
-5. Run narrow self-improvement loops on policy and verifier layers
+5. Run narrow self-improvement loops on policy and verifier subsystems
 
 ## Avoid List
 
