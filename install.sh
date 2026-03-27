@@ -8,6 +8,8 @@ FOREMAN_HOME="${FOREMAN_HOME:-$HOME/.foreman}"
 REPO_DIR="$FOREMAN_HOME/repo"
 ENV_FILE="$FOREMAN_HOME/.env"
 SERVICE_PORT="${FOREMAN_PORT:-7374}"
+REPO_SOURCE="${FOREMAN_REPO_SOURCE:-https://github.com/drewstone/foreman.git}"
+SKIP_SYSTEMD="${FOREMAN_SKIP_SYSTEMD:-0}"
 
 AUTO_YES=0
 CONFIG_ONLY=0
@@ -45,7 +47,7 @@ while [[ $# -gt 0 ]]; do
       exit 0
       ;;
     *)
-      err "Unknown argument: $1"
+    err "Unknown argument: $1"
       usage
       exit 1
       ;;
@@ -170,7 +172,7 @@ command -v claude >/dev/null 2>&1 && HAVE_CLAUDE=1
 command -v tmux >/dev/null 2>&1 && HAVE_TMUX=1
 command -v gh >/dev/null 2>&1 && HAVE_GH=1
 [ -d "$HOME/.pi/agent" ] && HAVE_PI=1
-if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+if [ "$SKIP_SYSTEMD" != "1" ] && command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
   HAVE_SYSTEMD=1
 fi
 
@@ -210,8 +212,14 @@ else
     cd "$REPO_DIR"
     git pull --rebase 2>/dev/null || true
   else
-    log "Cloning repository..."
-    git clone https://github.com/drewstone/foreman.git "$REPO_DIR"
+    if [ -d "$REPO_SOURCE" ]; then
+      log "Copying local repository source..."
+      mkdir -p "$REPO_DIR"
+      cp -R "$REPO_SOURCE"/. "$REPO_DIR"
+    else
+      log "Cloning repository..."
+      git clone "$REPO_SOURCE" "$REPO_DIR"
+    fi
     cd "$REPO_DIR"
   fi
 fi

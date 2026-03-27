@@ -15,6 +15,7 @@ Usage: foreman <command> [args]
 
 Commands:
   status           Show portfolio status (goals, sessions, recent decisions)
+  doctor           Check install health, dependencies, config, and service status
   setup            Re-run the Foreman onboarding wizard
   goals            List active goals
   goal <intent>    Create a new goal
@@ -35,9 +36,97 @@ EOF
 
 json() { curl -sf "$@" | python3 -m json.tool 2>/dev/null || curl -sf "$@"; }
 
+doctor() {
+  local foreman_home="${FOREMAN_HOME:-$HOME/.foreman}"
+  local repo="$foreman_home/repo"
+  local env_file="$foreman_home/.env"
+  local failures=0
+  local service_mode="manual"
+  local health="offline"
+  local budget="20"
+  local anthropic="no"
+  local openai="no"
+  local tangle="no"
+  local telegram="no"
+  local claude_ready="no"
+  local pi_ready="no"
+
+  if [ -f "$env_file" ]; then
+    set -a
+    . "$env_file" 2>/dev/null || true
+    set +a
+  fi
+
+  [ -n "${FOREMAN_MAX_DAILY_COST:-}" ] && budget="$FOREMAN_MAX_DAILY_COST"
+  [ -n "${ANTHROPIC_API_KEY:-}" ] && anthropic="yes"
+  [ -n "${OPENAI_API_KEY:-}" ] && openai="yes"
+  [ -n "${TANGLE_API_KEY:-}" ] && tangle="yes"
+  [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && telegram="yes"
+
+  if command -v claude >/dev/null 2>&1 && command -v tmux >/dev/null 2>&1; then
+    claude_ready="yes"
+  fi
+  if [ -d "$HOME/.pi/agent" ]; then
+    pi_ready="yes"
+  fi
+
+  if curl -sf "$API/health" >/dev/null 2>&1; then
+    health="ok"
+  fi
+
+  if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+    if systemctl --user is-enabled foreman.service >/dev/null 2>&1; then
+      service_mode="enabled"
+    else
+      service_mode="disabled"
+    fi
+  fi
+
+  for cmd in node npm git; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      echo "FAIL  missing dependency: $cmd"
+      failures=$((failures + 1))
+    fi
+  done
+
+  [ -d "$repo/.git" ] || { echo "FAIL  missing Foreman repo at $repo"; failures=$((failures + 1)); }
+  [ -f "$env_file" ] || { echo "FAIL  missing config file at $env_file"; failures=$((failures + 1)); }
+
+  if [ "$service_mode" = "enabled" ] && [ "$health" != "ok" ]; then
+    echo "FAIL  service is enabled but health check failed at $FOREMAN_URL/api/health"
+    failures=$((failures + 1))
+  fi
+
+  echo "Foreman doctor"
+  echo "  Home                $foreman_home"
+  echo "  Repo                $repo"
+  echo "  Service URL         $FOREMAN_URL"
+  echo "  Health              $health"
+  echo "  Service mode        $service_mode"
+  echo "  Daily budget        \$$budget"
+  echo "  Claude dispatch     $claude_ready"
+  echo "  Pi detected         $pi_ready"
+  echo "  Anthropic key       $anthropic"
+  echo "  OpenAI key          $openai"
+  echo "  Tangle key          $tangle"
+  echo "  Telegram configured $telegram"
+
+  if [ "$failures" -gt 0 ]; then
+    echo ""
+    echo "Doctor found $failures issue(s)."
+    exit 1
+  fi
+
+  echo ""
+  echo "Doctor passed."
+}
+
 case "${1:-help}" in
   status)
     json "$API/status"
+    ;;
+  doctor)
+    doctor
     ;;
   setup)
     shift

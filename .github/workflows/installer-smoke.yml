@@ -1,0 +1,47 @@
+name: Installer Smoke Test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  installer-smoke:
+    runs-on: ubuntu-latest
+    env:
+      FOREMAN_PORT: "7374"
+      FOREMAN_SKIP_SYSTEMD: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Prepare isolated home
+        run: |
+          mkdir -p "$RUNNER_TEMP/home/.local/bin"
+          echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
+          echo "FOREMAN_HOME=$RUNNER_TEMP/home/.foreman" >> "$GITHUB_ENV"
+          echo "FOREMAN_REPO_SOURCE=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/home/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Syntax checks
+        run: |
+          chmod +x install.sh bin/foreman
+          bash -n install.sh
+          bash -n bin/foreman
+
+      - name: Run installer
+        run: |
+          ./install.sh --yes
+
+      - name: Verify installed artifacts
+        run: |
+          test -x "$HOME/.local/bin/foreman"
+          test -d "$FOREMAN_HOME/repo/.git"
+          test -f "$FOREMAN_HOME/.env"
+          "$HOME/.local/bin/foreman" doctor

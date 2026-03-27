@@ -20,6 +20,9 @@ Operator ↔ Conversation (Pi/Slack/CLI) ↔ Foreman Service ↔ Execution Backe
 # Install with the onboarding wizard
 curl -fsSL https://raw.githubusercontent.com/drewstone/foreman/main/install.sh | bash
 
+# Validate the install
+foreman doctor
+
 # Re-run setup later
 foreman setup
 ```
