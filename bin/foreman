@@ -22,6 +22,7 @@ Commands:
   replay-evaluate  Evaluate a dispatch policy on replay data against a baseline
   replay-promote   Evaluate a policy and optionally apply it when promotion passes
   policy           Show or set the active dispatch policy
+  telemetry-import Import/backfill telemetry from local traces and session artifacts
   goals            List active goals
   goal <intent>    Create a new goal
   dispatch <task>  Dispatch a task (optional: --skill /evolve --workspace ~/code/foo)
@@ -172,6 +173,29 @@ case "${1:-help}" in
     POLICY_NAME="$1"
     BODY="{\"policy\":\"$POLICY_NAME\",\"source\":\"manual_override\"}"
     curl -sf -X POST "$API/policy/dispatch" -H 'Content-Type: application/json' -d "$BODY" | python3 -m json.tool
+    ;;
+  telemetry-import)
+    shift
+    MAX_AGE_HOURS=""
+    TRACE_ROOT=""
+    while [[ $# -gt 0 ]]; do
+      case $1 in
+        --hours) MAX_AGE_HOURS="$2"; shift 2;;
+        --trace-root) TRACE_ROOT="$2"; shift 2;;
+        *) echo "Unknown option: $1"; exit 1;;
+      esac
+    done
+    BODY="{}"
+    if [[ -n "$MAX_AGE_HOURS" || -n "$TRACE_ROOT" ]]; then
+      BODY="{"
+      [[ -n "$MAX_AGE_HOURS" ]] && BODY="$BODY\"maxAgeHours\":$MAX_AGE_HOURS"
+      if [[ -n "$TRACE_ROOT" ]]; then
+        [[ -n "$MAX_AGE_HOURS" ]] && BODY="$BODY, "
+        BODY="$BODY\"traceRoot\":\"$TRACE_ROOT\""
+      fi
+      BODY="$BODY}"
+    fi
+    curl -sf -X POST "$API/telemetry/import" -H 'Content-Type: application/json' -d "$BODY" | python3 -m json.tool
     ;;
   goals)
     json "$API/goals"

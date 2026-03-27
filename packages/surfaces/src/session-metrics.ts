@@ -10,7 +10,9 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
-const FOREMAN_HOME = process.env.FOREMAN_HOME ?? join(homedir(), '.foreman')
+function getForemanHome(): string {
+  return process.env.FOREMAN_HOME ?? join(homedir(), '.foreman')
+}
 
 export interface ToolCallStats {
   name: string
@@ -231,6 +233,64 @@ export async function parsePiSessionMetrics(sessionPath: string, context: {
 }
 
 /**
+ * Scan recent Pi session files and extract metrics.
+ */
+export async function scanPiSessionMetrics(options?: {
+  maxAge?: number
+  homeDir?: string
+}): Promise<SessionMetrics[]> {
+  const { readdir: rd, stat: st } = await import('node:fs/promises')
+  const { join: j } = await import('node:path')
+
+  const sessionsDir = j(options?.homeDir ?? homedir(), '.pi', 'agent', 'sessions')
+  const maxAge = options?.maxAge ?? 7 * 24 * 3600 * 1000
+  const cutoff = Date.now() - maxAge
+  const results: SessionMetrics[] = []
+
+  let projectDirs: string[]
+  try {
+    projectDirs = await rd(sessionsDir)
+  } catch {
+    return []
+  }
+
+  for (const projectDir of projectDirs) {
+    const projectPath = j(sessionsDir, projectDir)
+    let projectStat
+    try {
+      projectStat = await st(projectPath)
+      if (!projectStat.isDirectory()) continue
+    } catch {
+      continue
+    }
+
+    let files: string[]
+    try {
+      files = (await rd(projectPath)).filter((file) => file.endsWith('.jsonl'))
+    } catch {
+      continue
+    }
+
+    for (const file of files) {
+      const sessionPath = j(projectPath, file)
+      let fileStat
+      try {
+        fileStat = await st(sessionPath)
+        if (fileStat.mtimeMs < cutoff) continue
+      } catch {
+        continue
+      }
+
+      const metrics = await parsePiSessionMetrics(sessionPath, { repo: projectDir })
+      metrics.timestamp = new Date(fileStat.mtimeMs).toISOString()
+      results.push(metrics)
+    }
+  }
+
+  return results.sort((left, right) => right.timestamp.localeCompare(left.timestamp))
+}
+
+/**
  * Extract metrics from an opencode session directory.
  * Opencode stores sessions at ~/.local/share/opencode/storage/
  * with per-message JSON files containing cost, tokens, timing.
@@ -300,13 +360,14 @@ export async function parseOpencodeSessionMetrics(sessionDir: string, context: {
  */
 export async function scanOpencodeSessionMetrics(options?: {
   maxAge?: number
+  homeDir?: string
 }): Promise<SessionMetrics[]> {
   const { readdir: rd, stat: st } = await import('node:fs/promises')
   const { join: j } = await import('node:path')
-  const { homedir: hd } = await import('node:os')
 
-  const messagesDir = j(hd(), '.local', 'share', 'opencode', 'storage', 'message')
-  const sessionsDir = j(hd(), '.local', 'share', 'opencode', 'storage', 'session', 'global')
+  const rootHome = options?.homeDir ?? homedir()
+  const messagesDir = j(rootHome, '.local', 'share', 'opencode', 'storage', 'message')
+  const sessionsDir = j(rootHome, '.local', 'share', 'opencode', 'storage', 'session', 'global')
   const maxAge = options?.maxAge ?? 7 * 24 * 3600 * 1000
   const cutoff = Date.now() - maxAge
 
@@ -513,7 +574,7 @@ export async function enrichMetrics(metrics: SessionMetrics, resultText?: string
 // ─── Persistence ────────────────────────────────────────────────────
 
 export async function persistSessionMetrics(metrics: SessionMetrics): Promise<string> {
-  const dir = join(FOREMAN_HOME, 'traces', 'sessions')
+  const dir = join(getForemanHome(), 'traces', 'sessions')
   await mkdir(dir, { recursive: true })
   const filename = `${metrics.timestamp.replace(/[:.]/g, '-')}-${metrics.harness}-${metrics.repo}.json`
   const path = join(dir, filename)
@@ -529,7 +590,7 @@ export async function loadSessionMetrics(options?: {
   harness?: string
   repo?: string
 }): Promise<SessionMetrics[]> {
-  const dir = join(FOREMAN_HOME, 'traces', 'sessions')
+  const dir = join(getForemanHome(), 'traces', 'sessions')
   const cutoff = options?.hoursBack
     ? new Date(Date.now() - options.hoursBack * 3600 * 1000).toISOString()
     : undefined
