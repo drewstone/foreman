@@ -398,15 +398,24 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
     if (path === '/api/replay/evaluate' && method === 'GET') {
       const policyName = parseQuery(url).get('policy') ?? 'identity'
+      const baselineName = parseQuery(url).get('baseline') ?? (policyName === 'identity' ? null : 'identity')
       const allowLive = parseQuery(url).get('allow_live') === 'true'
       const limit = parseInt(parseQuery(url).get('limit') ?? '50', 10)
       const project = parseQuery(url).get('project') ?? undefined
       const skill = parseQuery(url).get('skill') ?? undefined
+      const minExamples = parseInt(parseQuery(url).get('min_examples') ?? '', 10)
+      const minGoodExamples = parseInt(parseQuery(url).get('min_good_examples') ?? '', 10)
+      const minBadExamples = parseInt(parseQuery(url).get('min_bad_examples') ?? '', 10)
       const policy = getDispatchPolicyByName(policyName)
+      const baselinePolicy = baselineName ? getDispatchPolicyByName(baselineName) : null
 
       if (!policy) return error(res, `unknown policy: ${policyName}`, 404)
+      if (baselineName && !baselinePolicy) return error(res, `unknown baseline policy: ${baselineName}`, 404)
       if (policyRequiresLiveCalls(policyName) && !allowLive) {
         return error(res, `policy ${policyName} requires live model calls; pass allow_live=true to run it`, 400)
+      }
+      if (baselineName && policyRequiresLiveCalls(baselineName) && !allowLive) {
+        return error(res, `baseline policy ${baselineName} requires live model calls; pass allow_live=true to run it`, 400)
       }
 
       const examples = listReplayExamples(db, {
@@ -417,6 +426,18 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       return json(res, await evaluateReplayPolicy(examples, {
         policyName,
         decide: (ctx) => policy.decide(ctx),
+        baseline: baselineName && baselinePolicy
+          ? {
+              policyName: baselineName,
+              decide: (ctx) => baselinePolicy.decide(ctx),
+            }
+          : undefined,
+        telemetryDb: db,
+        promotionRule: {
+          minExamples: Number.isFinite(minExamples) ? minExamples : undefined,
+          minGoodExamples: Number.isFinite(minGoodExamples) ? minGoodExamples : undefined,
+          minBadExamples: Number.isFinite(minBadExamples) ? minBadExamples : undefined,
+        },
       }))
     }
 

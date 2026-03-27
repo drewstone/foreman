@@ -19,7 +19,7 @@ Commands:
   replay-policies  List replay-evaluable dispatch policies
   replay-summary   Show replay dataset summary (optional: --limit N --project foo --skill /evolve)
   replay-examples  Show replay examples (optional: --limit N --project foo --skill /evolve)
-  replay-evaluate  Evaluate a dispatch policy on replay data
+  replay-evaluate  Evaluate a dispatch policy on replay data against a baseline
   goals            List active goals
   goal <intent>    Create a new goal
   dispatch <task>  Dispatch a task (optional: --skill /evolve --workspace ~/code/foo)
@@ -93,13 +93,21 @@ case "${1:-help}" in
     PROJECT=""
     SKILL=""
     POLICY="identity"
+    BASELINE=""
     ALLOW_LIVE="false"
+    MIN_EXAMPLES=""
+    MIN_GOOD_EXAMPLES=""
+    MIN_BAD_EXAMPLES=""
     while [[ $# -gt 0 ]]; do
       case $1 in
         --limit) LIMIT="$2"; shift 2;;
         --project) PROJECT="$2"; shift 2;;
         --skill) SKILL="$2"; shift 2;;
         --policy) POLICY="$2"; shift 2;;
+        --baseline) BASELINE="$2"; shift 2;;
+        --min-examples) MIN_EXAMPLES="$2"; shift 2;;
+        --min-good) MIN_GOOD_EXAMPLES="$2"; shift 2;;
+        --min-bad) MIN_BAD_EXAMPLES="$2"; shift 2;;
         --allow-live) ALLOW_LIVE="true"; shift;;
         *) echo "Unknown option: $1"; exit 1;;
       esac
@@ -107,6 +115,10 @@ case "${1:-help}" in
     QUERY="limit=$LIMIT&policy=$POLICY&allow_live=$ALLOW_LIVE"
     [ -n "$PROJECT" ] && QUERY="$QUERY&project=$PROJECT"
     [ -n "$SKILL" ] && QUERY="$QUERY&skill=$SKILL"
+    [ -n "$BASELINE" ] && QUERY="$QUERY&baseline=$BASELINE"
+    [ -n "$MIN_EXAMPLES" ] && QUERY="$QUERY&min_examples=$MIN_EXAMPLES"
+    [ -n "$MIN_GOOD_EXAMPLES" ] && QUERY="$QUERY&min_good_examples=$MIN_GOOD_EXAMPLES"
+    [ -n "$MIN_BAD_EXAMPLES" ] && QUERY="$QUERY&min_bad_examples=$MIN_BAD_EXAMPLES"
     json "$API/replay/evaluate?$QUERY"
     ;;
   goals)

@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import type { DispatchContext, DispatchDecision } from './dispatch-policy.js'
+import { estimateTelemetryCost, type TelemetryCostEstimate } from './telemetry.js'
 
 export interface ReplayGroupRow {
   key: string
@@ -18,6 +19,8 @@ export interface ReplayObjectiveVector {
   scopeViolation: number | null
   testsPassed: number | null
 }
+
+export type ReplayOutcomeClass = 'good' | 'bad' | 'mixed'
 
 export interface ReplayExample {
   decisionId: number
@@ -58,6 +61,16 @@ export interface ReplayPolicyEvaluationExample {
   candidate: {
     policyName: string
     decision: DispatchDecision
+    predictedCostUsd: number | null
+    predictedCostSource: TelemetryCostEstimate['source'] | null
+    predictedCostSamples: number
+  }
+  baseline?: {
+    policyName: string
+    decision: DispatchDecision
+    predictedCostUsd: number | null
+    predictedCostSource: TelemetryCostEstimate['source'] | null
+    predictedCostSamples: number
   }
   surrogate: {
     exactSkillMatch: number
@@ -66,26 +79,104 @@ export interface ReplayPolicyEvaluationExample {
     divergedFromBadDecision: number | null
     repeatedBadDecision: number | null
     scalarScore: number | null
-    outcomeClass: 'good' | 'bad' | 'mixed'
+    outcomeClass: ReplayOutcomeClass
+  }
+  comparison?: {
+    changedFromBaseline: number
+    predictedCostDeltaUsd: number | null
+    safeGoodContinuationDelta: number | null
+    divergedFromBadDecisionDelta: number | null
+    repeatedBadDecisionDelta: number | null
+  }
+}
+
+export interface ReplayObjectiveVectorSummary {
+  constraints: {
+    safeGoodContinuationRate: number | null
+    repeatedBadDecisionRate: number | null
+  }
+  primary: {
+    divergedFromBadDecisionRate: number | null
+    avgPredictedCostUsd: number | null
+  }
+  diagnostics: {
+    preservedGoodDecisionRate: number | null
+    exactSkillMatchRate: number
+    contextSwitchRate: number
+    avgObservedCostUsd: number | null
+    predictedCostCoverage: number
+    predictedCostEvidenceSamples: number
+    predictedCostSources: Array<{ key: string, count: number }>
   }
 }
 
 export interface ReplayPolicyEvaluationSummary {
   policyName: string
   examples: number
+  coverage: {
+    goodExamples: number
+    badExamples: number
+    mixedExamples: number
+    predictedCostMeasured: number
+  }
   exactSkillMatchRate: number
   preservedGoodDecisionRate: number | null
   safeGoodContinuationRate: number | null
   divergedFromBadDecisionRate: number | null
   repeatedBadDecisionRate: number | null
   avgScalarScore: number | null
+  avgPredictedCostUsd: number | null
+  contextSwitchRate: number
+  objectiveVector: ReplayObjectiveVectorSummary
   byCandidateSkill: Array<{ key: string, count: number }>
   topTransitions: Array<{ fromSkill: string, toSkill: string, count: number }>
+}
+
+export interface ReplayPolicyComparison {
+  baselinePolicyName: string
+  delta: {
+    safeGoodContinuationRate: number | null
+    divergedFromBadDecisionRate: number | null
+    repeatedBadDecisionRate: number | null
+    avgPredictedCostUsd: number | null
+    preservedGoodDecisionRate: number | null
+    exactSkillMatchRate: number
+    contextSwitchRate: number
+  }
+}
+
+export interface ReplayPromotionRule {
+  minExamples: number
+  minGoodExamples: number
+  minBadExamples: number
+  maxSafeGoodRegression: number
+  maxRepeatedBadRegression: number
+  minBadDivergenceImprovement: number
+  minCostImprovementUsd: number
+}
+
+export interface ReplayPromotionCheck {
+  name: string
+  passed: boolean
+  actual: number | null
+  baseline: number | null
+  threshold: number | null
+  comparator: '>=' | '<=' | 'coverage'
+}
+
+export interface ReplayPromotionDecision {
+  status: 'promote' | 'hold' | 'reject'
+  reasons: string[]
+  checks: ReplayPromotionCheck[]
 }
 
 export interface ReplayPolicyEvaluation {
   generatedAt: string
   summary: ReplayPolicyEvaluationSummary
+  baselineSummary?: ReplayPolicyEvaluationSummary
+  comparison?: ReplayPolicyComparison
+  promotionRule?: ReplayPromotionRule
+  promotion?: ReplayPromotionDecision
   examples: ReplayPolicyEvaluationExample[]
 }
 
@@ -113,6 +204,16 @@ export interface ReplayDataset {
   generatedAt: string
   summary: ReplaySummary
   examples: ReplayExample[]
+}
+
+export const DEFAULT_REPLAY_PROMOTION_RULE: ReplayPromotionRule = {
+  minExamples: 8,
+  minGoodExamples: 2,
+  minBadExamples: 2,
+  maxSafeGoodRegression: 0.05,
+  maxRepeatedBadRegression: 0,
+  minBadDivergenceImprovement: 0.05,
+  minCostImprovementUsd: 0.1,
 }
 
 interface ReplayRow {
@@ -243,12 +344,57 @@ export async function evaluateReplayPolicy(
   input: {
     policyName: string
     decide: (ctx: DispatchContext) => Promise<DispatchDecision>
+    baseline?: {
+      policyName: string
+      decide: (ctx: DispatchContext) => Promise<DispatchDecision>
+    }
+    telemetryDb?: Database.Database
+    promotionRule?: Partial<ReplayPromotionRule>
   },
 ): Promise<ReplayPolicyEvaluation> {
+  const candidateRuns = await runReplayPolicy(examples, input.policyName, input.decide, input.telemetryDb)
+  const candidateSummary = summarizeReplayPolicyEvaluation(input.policyName, candidateRuns)
+
+  if (!input.baseline) {
+    return {
+      generatedAt: new Date().toISOString(),
+      summary: candidateSummary,
+      examples: candidateRuns,
+    }
+  }
+
+  const baselineRuns = await runReplayPolicy(examples, input.baseline.policyName, input.baseline.decide, input.telemetryDb)
+  const baselineSummary = summarizeReplayPolicyEvaluation(input.baseline.policyName, baselineRuns)
+  const comparedExamples = buildComparedExamples(candidateRuns, baselineRuns)
+  const promotionRule = {
+    ...DEFAULT_REPLAY_PROMOTION_RULE,
+    ...input.promotionRule,
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    summary: candidateSummary,
+    baselineSummary,
+    comparison: compareReplaySummaries(candidateSummary, baselineSummary),
+    promotionRule,
+    promotion: decideReplayPromotion(candidateSummary, baselineSummary, promotionRule),
+    examples: comparedExamples,
+  }
+}
+
+async function runReplayPolicy(
+  examples: ReplayExample[],
+  policyName: string,
+  decide: (ctx: DispatchContext) => Promise<DispatchDecision>,
+  telemetryDb?: Database.Database,
+): Promise<ReplayPolicyEvaluationExample[]> {
   const evaluated: ReplayPolicyEvaluationExample[] = []
 
   for (const example of examples) {
-    const decision = await input.decide(example.context.policyContext)
+    const decision = await decide(example.context.policyContext)
+    const costEstimate = telemetryDb
+      ? estimateReplayCostFromTelemetry(telemetryDb, example, decision.skill)
+      : null
     const outcomeClass = classifyObservedOutcome(example)
     const exactSkillMatch = decision.skill === example.context.skill ? 1 : 0
     const safeGoodContinuation = outcomeClass === 'good'
@@ -272,8 +418,11 @@ export async function evaluateReplayPolicy(
     evaluated.push({
       observed: example,
       candidate: {
-        policyName: input.policyName,
+        policyName,
         decision,
+        predictedCostUsd: costEstimate?.costUsd ?? null,
+        predictedCostSource: costEstimate?.source ?? null,
+        predictedCostSamples: costEstimate?.sampleSize ?? 0,
       },
       surrogate: {
         exactSkillMatch,
@@ -287,11 +436,39 @@ export async function evaluateReplayPolicy(
     })
   }
 
-  return {
-    generatedAt: new Date().toISOString(),
-    summary: summarizeReplayPolicyEvaluation(input.policyName, evaluated),
-    examples: evaluated,
-  }
+  return evaluated
+}
+
+function buildComparedExamples(
+  candidateRuns: ReplayPolicyEvaluationExample[],
+  baselineRuns: ReplayPolicyEvaluationExample[],
+): ReplayPolicyEvaluationExample[] {
+  const baselineByDecisionId = new Map(
+    baselineRuns.map(example => [example.observed.decisionId, example]),
+  )
+
+  return candidateRuns.map((example) => {
+    const baseline = baselineByDecisionId.get(example.observed.decisionId)
+    if (!baseline) return example
+
+    return {
+      ...example,
+      baseline: {
+        policyName: baseline.candidate.policyName,
+        decision: baseline.candidate.decision,
+        predictedCostUsd: baseline.candidate.predictedCostUsd,
+        predictedCostSource: baseline.candidate.predictedCostSource,
+        predictedCostSamples: baseline.candidate.predictedCostSamples,
+      },
+      comparison: {
+        changedFromBaseline: example.candidate.decision.skill !== baseline.candidate.decision.skill ? 1 : 0,
+        predictedCostDeltaUsd: subtractOrNull(example.candidate.predictedCostUsd, baseline.candidate.predictedCostUsd),
+        safeGoodContinuationDelta: subtractOrNull(example.surrogate.safeGoodContinuation, baseline.surrogate.safeGoodContinuation),
+        divergedFromBadDecisionDelta: subtractOrNull(example.surrogate.divergedFromBadDecision, baseline.surrogate.divergedFromBadDecision),
+        repeatedBadDecisionDelta: subtractOrNull(example.surrogate.repeatedBadDecision, baseline.surrogate.repeatedBadDecision),
+      },
+    }
+  })
 }
 
 function toReplayExample(db: Database.Database, row: ReplayRow): ReplayExample {
@@ -521,6 +698,40 @@ function averageOrNull(values: number[]): number | null {
   return values.reduce((sum, value) => sum + value, 0) / values.length
 }
 
+function subtractOrNull(left: number | null, right: number | null): number | null {
+  if (left == null || right == null) return null
+  return left - right
+}
+
+function compareWithTolerance(
+  candidate: number | null,
+  baseline: number | null,
+  tolerance: number,
+): boolean {
+  if (candidate == null || baseline == null) return true
+  return candidate >= baseline + tolerance
+}
+
+function compareLessOrEqualWithTolerance(
+  candidate: number | null,
+  baseline: number | null,
+  tolerance: number,
+): boolean {
+  if (candidate == null || baseline == null) return true
+  return candidate <= baseline + tolerance
+}
+
+function estimateReplayCostFromTelemetry(
+  db: Database.Database,
+  example: ReplayExample,
+  skill: string,
+): TelemetryCostEstimate | null {
+  return estimateTelemetryCost(db, {
+    repo: example.context.project,
+    skill,
+  })
+}
+
 function summarizeReplayPolicyEvaluation(
   policyName: string,
   examples: ReplayPolicyEvaluationExample[],
@@ -528,39 +739,86 @@ function summarizeReplayPolicyEvaluation(
   const scalarValues = examples.map(ex => ex.surrogate.scalarScore).filter((n): n is number => n != null)
   const goodExamples = examples.filter(ex => ex.surrogate.outcomeClass === 'good')
   const badExamples = examples.filter(ex => ex.surrogate.outcomeClass === 'bad')
+  const mixedExamples = examples.filter(ex => ex.surrogate.outcomeClass === 'mixed')
+  const predictedCosts = examples.map(ex => ex.candidate.predictedCostUsd).filter((n): n is number => n != null)
+  const predictedCostSamples = examples.reduce((sum, ex) => sum + ex.candidate.predictedCostSamples, 0)
+  const predictedCostSources = summarizeCounts(
+    examples
+      .map(ex => ex.candidate.predictedCostSource)
+      .filter((value): value is TelemetryCostEstimate['source'] => value != null),
+  )
+  const observedCosts = examples.map(ex => ex.observed.objectives.costUsd).filter((n): n is number => n != null)
   const byCandidateSkill = summarizeCounts(examples.map(ex => ex.candidate.decision.skill))
   const topTransitions = summarizeTransitions(examples)
+  const exactSkillMatchRate = rate(
+    examples.filter(ex => ex.surrogate.exactSkillMatch === 1).length,
+    examples.length,
+  )
+  const preservedGoodDecisionRate = rateOrNull(
+    goodExamples.filter(ex => ex.surrogate.preservedGoodDecision === 1).length,
+    goodExamples.length,
+  )
+  const safeGoodContinuationRate = rateOrNull(
+    goodExamples.filter(ex => ex.surrogate.safeGoodContinuation === 1).length,
+    goodExamples.length,
+  )
+  const divergedFromBadDecisionRate = rateOrNull(
+    badExamples.filter(ex => ex.surrogate.divergedFromBadDecision === 1).length,
+    badExamples.length,
+  )
+  const repeatedBadDecisionRate = rateOrNull(
+    badExamples.filter(ex => ex.surrogate.repeatedBadDecision === 1).length,
+    badExamples.length,
+  )
+  const contextSwitchRate = rate(
+    examples.filter(ex => ex.candidate.decision.skill !== ex.observed.context.skill).length,
+    examples.length,
+  )
+  const avgPredictedCostUsd = averageOrNull(predictedCosts)
+  const avgObservedCostUsd = averageOrNull(observedCosts)
 
   return {
     policyName,
     examples: examples.length,
-    exactSkillMatchRate: rate(
-      examples.filter(ex => ex.surrogate.exactSkillMatch === 1).length,
-      examples.length,
-    ),
-    preservedGoodDecisionRate: rateOrNull(
-      goodExamples.filter(ex => ex.surrogate.preservedGoodDecision === 1).length,
-      goodExamples.length,
-    ),
-    safeGoodContinuationRate: rateOrNull(
-      goodExamples.filter(ex => ex.surrogate.safeGoodContinuation === 1).length,
-      goodExamples.length,
-    ),
-    divergedFromBadDecisionRate: rateOrNull(
-      badExamples.filter(ex => ex.surrogate.divergedFromBadDecision === 1).length,
-      badExamples.length,
-    ),
-    repeatedBadDecisionRate: rateOrNull(
-      badExamples.filter(ex => ex.surrogate.repeatedBadDecision === 1).length,
-      badExamples.length,
-    ),
+    coverage: {
+      goodExamples: goodExamples.length,
+      badExamples: badExamples.length,
+      mixedExamples: mixedExamples.length,
+      predictedCostMeasured: predictedCosts.length,
+    },
+    exactSkillMatchRate,
+    preservedGoodDecisionRate,
+    safeGoodContinuationRate,
+    divergedFromBadDecisionRate,
+    repeatedBadDecisionRate,
     avgScalarScore: averageOrNull(scalarValues),
+    avgPredictedCostUsd,
+    contextSwitchRate,
+    objectiveVector: {
+      constraints: {
+        safeGoodContinuationRate,
+        repeatedBadDecisionRate,
+      },
+      primary: {
+        divergedFromBadDecisionRate,
+        avgPredictedCostUsd,
+      },
+      diagnostics: {
+        preservedGoodDecisionRate,
+        exactSkillMatchRate,
+        contextSwitchRate,
+        avgObservedCostUsd,
+        predictedCostCoverage: predictedCosts.length,
+        predictedCostEvidenceSamples: predictedCostSamples,
+        predictedCostSources,
+      },
+    },
     byCandidateSkill,
     topTransitions,
   }
 }
 
-function classifyObservedOutcome(example: ReplayExample): 'good' | 'bad' | 'mixed' {
+function classifyObservedOutcome(example: ReplayExample): ReplayOutcomeClass {
   const badSignals = [
     example.objectives.dispatchSucceeded === 0,
     example.objectives.deliverablePassed === 0,
@@ -582,6 +840,108 @@ function classifyObservedOutcome(example: ReplayExample): 'good' | 'bad' | 'mixe
   if (badSignals > goodSignals) return 'bad'
   if (goodSignals > badSignals) return 'good'
   return 'mixed'
+}
+
+function compareReplaySummaries(
+  candidate: ReplayPolicyEvaluationSummary,
+  baseline: ReplayPolicyEvaluationSummary,
+): ReplayPolicyComparison {
+  return {
+    baselinePolicyName: baseline.policyName,
+    delta: {
+      safeGoodContinuationRate: subtractOrNull(candidate.safeGoodContinuationRate, baseline.safeGoodContinuationRate),
+      divergedFromBadDecisionRate: subtractOrNull(candidate.divergedFromBadDecisionRate, baseline.divergedFromBadDecisionRate),
+      repeatedBadDecisionRate: subtractOrNull(candidate.repeatedBadDecisionRate, baseline.repeatedBadDecisionRate),
+      avgPredictedCostUsd: subtractOrNull(candidate.avgPredictedCostUsd, baseline.avgPredictedCostUsd),
+      preservedGoodDecisionRate: subtractOrNull(candidate.preservedGoodDecisionRate, baseline.preservedGoodDecisionRate),
+      exactSkillMatchRate: candidate.exactSkillMatchRate - baseline.exactSkillMatchRate,
+      contextSwitchRate: candidate.contextSwitchRate - baseline.contextSwitchRate,
+    },
+  }
+}
+
+function decideReplayPromotion(
+  candidate: ReplayPolicyEvaluationSummary,
+  baseline: ReplayPolicyEvaluationSummary,
+  rule: ReplayPromotionRule,
+): ReplayPromotionDecision {
+  const checks: ReplayPromotionCheck[] = [
+    {
+      name: 'min_examples',
+      passed: candidate.examples >= rule.minExamples,
+      actual: candidate.examples,
+      baseline: baseline.examples,
+      threshold: rule.minExamples,
+      comparator: 'coverage',
+    },
+    {
+      name: 'min_good_examples',
+      passed: candidate.coverage.goodExamples >= rule.minGoodExamples,
+      actual: candidate.coverage.goodExamples,
+      baseline: baseline.coverage.goodExamples,
+      threshold: rule.minGoodExamples,
+      comparator: 'coverage',
+    },
+    {
+      name: 'min_bad_examples',
+      passed: candidate.coverage.badExamples >= rule.minBadExamples,
+      actual: candidate.coverage.badExamples,
+      baseline: baseline.coverage.badExamples,
+      threshold: rule.minBadExamples,
+      comparator: 'coverage',
+    },
+    {
+      name: 'safe_good_non_regression',
+      passed: compareWithTolerance(candidate.safeGoodContinuationRate, baseline.safeGoodContinuationRate, -rule.maxSafeGoodRegression),
+      actual: candidate.safeGoodContinuationRate,
+      baseline: baseline.safeGoodContinuationRate,
+      threshold: baseline.safeGoodContinuationRate == null ? null : baseline.safeGoodContinuationRate - rule.maxSafeGoodRegression,
+      comparator: '>=',
+    },
+    {
+      name: 'repeated_bad_non_regression',
+      passed: compareLessOrEqualWithTolerance(candidate.repeatedBadDecisionRate, baseline.repeatedBadDecisionRate, rule.maxRepeatedBadRegression),
+      actual: candidate.repeatedBadDecisionRate,
+      baseline: baseline.repeatedBadDecisionRate,
+      threshold: baseline.repeatedBadDecisionRate == null ? null : baseline.repeatedBadDecisionRate + rule.maxRepeatedBadRegression,
+      comparator: '<=',
+    },
+  ]
+
+  const coverageFailed = checks.some(check => check.comparator === 'coverage' && !check.passed)
+  const safetyFailed = checks.some(check => check.comparator !== 'coverage' && !check.passed)
+  const divergenceDelta = subtractOrNull(candidate.divergedFromBadDecisionRate, baseline.divergedFromBadDecisionRate)
+  const costDelta = subtractOrNull(candidate.avgPredictedCostUsd, baseline.avgPredictedCostUsd)
+  const reasons: string[] = []
+
+  if (coverageFailed) {
+    reasons.push('Not enough replay coverage to promote this policy yet.')
+  }
+  if (safetyFailed) {
+    reasons.push('Candidate regresses a constraint metric relative to the baseline.')
+  }
+
+  const improvedBadDiversion = divergenceDelta != null && divergenceDelta >= rule.minBadDivergenceImprovement
+  const cheaperWithoutSafetyRegression = !safetyFailed
+    && costDelta != null
+    && costDelta <= -rule.minCostImprovementUsd
+    && (candidate.safeGoodContinuationRate == null || baseline.safeGoodContinuationRate == null || candidate.safeGoodContinuationRate >= baseline.safeGoodContinuationRate)
+    && (candidate.repeatedBadDecisionRate == null || baseline.repeatedBadDecisionRate == null || candidate.repeatedBadDecisionRate <= baseline.repeatedBadDecisionRate)
+
+  if (!coverageFailed && !safetyFailed && improvedBadDiversion) {
+    reasons.push('Candidate improves divergence from historically bad decisions without violating constraints.')
+    return { status: 'promote', reasons, checks }
+  }
+  if (!coverageFailed && !safetyFailed && cheaperWithoutSafetyRegression) {
+    reasons.push('Candidate is meaningfully cheaper on predicted cost while preserving safety-oriented constraints.')
+    return { status: 'promote', reasons, checks }
+  }
+  if (safetyFailed) {
+    return { status: 'reject', reasons, checks }
+  }
+
+  reasons.push('Candidate is viable but does not yet clear the promotion improvement thresholds.')
+  return { status: 'hold', reasons, checks }
 }
 
 function summarizeCounts(items: string[]): Array<{ key: string, count: number }> {
