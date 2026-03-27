@@ -50,6 +50,9 @@ The installer is consent-first. It explains each capability, asks before enablin
 | `/api/analyze` | POST | Trigger deep LLM analysis |
 | `/api/context` | GET | Read project context |
 | `/api/events` | GET | SSE event stream |
+| `/api/replay/summary` | GET | Aggregate historical replay metrics from decisions/outcomes |
+| `/api/replay/examples` | GET | List normalized replay examples with objective vectors |
+| `/api/replay/export` | GET | Export replay summary + examples as one dataset |
 
 ## Pi Extension Tools
 
