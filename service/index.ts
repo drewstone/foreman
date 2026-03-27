@@ -53,10 +53,21 @@ import { reviewSession } from './lib/session-reviewer.js'
 import { maybeAutoDispatch } from './lib/auto-dispatch.js'
 import { runPromptLabCycle, pullSamples, getActiveExperiment, getDefaultSurfaces } from './lib/prompt-lab.js'
 import telemetry from './lib/telemetry.js'
-const { ensureTelemetrySchema, recordTelemetryRun, summarizeTelemetry, listTelemetryRuns, getDailyTelemetryCost } = telemetry
+const { ensureTelemetrySchema, recordTelemetryRun, summarizeTelemetry, listTelemetryRuns, getDailyTelemetryCost, summarizeTelemetryCoverage } = telemetry
 import replay from './lib/replay.js'
 
 const { listReplayExamples, summarizeReplayExamples, exportReplayDataset, evaluateReplayPolicy } = replay
+import policyControl from './lib/policy-control.js'
+import replayGovernor from './lib/replay-governor.js'
+
+const {
+  ensurePolicyControlSchema,
+  getDispatchPolicyControl,
+  setDispatchPolicyControl,
+  getLatestReplayPolicyEvaluation,
+  listReplayPolicyEvaluations,
+} = policyControl
+const { promoteReplayPolicy, getReplayGovernanceSnapshot } = replayGovernor
 
 // ─── Database ────────────────────────────────────────────────────────
 
@@ -184,6 +195,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status);
 `)
 ensureTelemetrySchema(db)
+ensurePolicyControlSchema(db)
 
 // Migrations for existing databases
 try { db.exec(`ALTER TABLE decisions ADD COLUMN origin TEXT NOT NULL DEFAULT 'operator'`) } catch {}
@@ -324,6 +336,8 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const sessions = stmts.activeSessions.all() as Array<{ name: string, status: string }>
       const recentDecisions = stmts.listDecisions.all(20)
       const events = stmts.recentEvents.all(10)
+      const activePolicy = getDispatchPolicyControl(db)
+      const latestReplayEvaluation = getLatestReplayPolicyEvaluation(db)
 
       // Enrich sessions with live tmux data
       const enriched = sessions.map(s => ({
@@ -333,7 +347,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         lastOutput: captureTmux(s.name, 1).trim().split('\n').pop() ?? '',
       }))
 
-      return json(res, { goals, sessions: enriched, recentDecisions, events })
+      return json(res, { goals, sessions: enriched, recentDecisions, events, activePolicy, latestReplayEvaluation })
     }
 
     // ── Goals ─────────────────────────────────────────────────
@@ -396,6 +410,17 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       return json(res, listDispatchPolicies())
     }
 
+    if (path === '/api/replay/latest' && method === 'GET') {
+      return json(res, getReplayGovernanceSnapshot(db))
+    }
+
+    if (path === '/api/replay/history' && method === 'GET') {
+      const limit = parseInt(parseQuery(url).get('limit') ?? '10', 10)
+      return json(res, listReplayPolicyEvaluations(db, {
+        limit: Number.isFinite(limit) ? limit : 10,
+      }))
+    }
+
     if (path === '/api/replay/evaluate' && method === 'GET') {
       const policyName = parseQuery(url).get('policy') ?? 'identity'
       const baselineName = parseQuery(url).get('baseline') ?? (policyName === 'identity' ? null : 'identity')
@@ -438,6 +463,52 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           minGoodExamples: Number.isFinite(minGoodExamples) ? minGoodExamples : undefined,
           minBadExamples: Number.isFinite(minBadExamples) ? minBadExamples : undefined,
         },
+      }))
+    }
+
+    if (path === '/api/replay/promote' && method === 'POST') {
+      const body = await readBody(req)
+      const policyName = String(body.policy ?? body.policyName ?? '')
+      if (!policyName) return error(res, 'policy required')
+      try {
+        return json(res, await promoteReplayPolicy(db, {
+          policyName,
+          baselineName: body.baseline != null ? String(body.baseline) : undefined,
+          project: body.project ? String(body.project) : undefined,
+          skill: body.skill ? String(body.skill) : undefined,
+          limit: body.limit != null ? Number(body.limit) : undefined,
+          apply: body.apply === true,
+          force: body.force === true,
+          allowLive: body.allowLive === true,
+          promotionRule: {
+            minExamples: body.minExamples != null ? Number(body.minExamples) : undefined,
+            minGoodExamples: body.minGoodExamples != null ? Number(body.minGoodExamples) : undefined,
+            minBadExamples: body.minBadExamples != null ? Number(body.minBadExamples) : undefined,
+          },
+        }))
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e)
+        return error(res, message, message.startsWith('unknown') ? 404 : 400)
+      }
+    }
+
+    if (path === '/api/policy/dispatch' && method === 'GET') {
+      return json(res, {
+        active: getDispatchPolicyControl(db),
+        policies: listDispatchPolicies(),
+        latestReplayEvaluation: getLatestReplayPolicyEvaluation(db),
+      })
+    }
+
+    if (path === '/api/policy/dispatch' && method === 'POST') {
+      const body = await readBody(req)
+      const policyName = String(body.policy ?? body.policyName ?? '')
+      const source = String(body.source ?? 'manual_override')
+      if (!policyName || !getDispatchPolicyByName(policyName)) return error(res, `unknown policy: ${policyName}`, 404)
+      return json(res, setDispatchPolicyControl(db, {
+        policyName,
+        source,
+        baselinePolicyName: body.baselinePolicyName ? String(body.baselinePolicyName) : null,
       }))
     }
 
@@ -932,7 +1003,10 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     if (path === '/api/stats' && method === 'GET') {
       const telemetry24h = summarizeTelemetry(db, 24)
       const telemetryAll = summarizeTelemetry(db, 24 * 365 * 20)
+      const telemetryCoverage = summarizeTelemetryCoverage(db)
       const todayCost = getDailyTelemetryCost(db)
+      const activePolicy = getDispatchPolicyControl(db)
+      const latestReplayEvaluation = getLatestReplayPolicyEvaluation(db)
       const sessionCount = (stmts.operatorSessionCount.get() as { count: number }).count
       const decisionCount = (db.prepare(`SELECT COUNT(*) as c FROM decisions`).get() as { c: number }).c
       const learningCount = (db.prepare(`SELECT COUNT(*) as c FROM learnings`).get() as { c: number }).c
@@ -966,11 +1040,16 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           budgetBlocked: todayCost >= MAX_DAILY_COST_USD,
           runs24h: telemetry24h.runs,
           tokens24h: telemetry24h.totalTokens,
+          coverage: telemetryCoverage,
           byHarness: telemetry24h.byHarness,
           byProvider: telemetry24h.byProvider,
           byModel: telemetry24h.byModel,
           byRepo: telemetry24h.byRepo,
           bySkill: costBySkill,
+        },
+        policy: {
+          active: activePolicy,
+          latestReplayEvaluation,
         },
       })
     }
@@ -981,6 +1060,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const todayCost = getDailyTelemetryCost(db)
       return json(res, {
         ...summary,
+        coverage: summarizeTelemetryCoverage(db),
         budget: {
           dailyUsd: MAX_DAILY_COST_USD,
           todayCostUsd: todayCost,

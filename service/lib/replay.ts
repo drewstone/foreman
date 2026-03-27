@@ -21,6 +21,7 @@ export interface ReplayObjectiveVector {
 }
 
 export type ReplayOutcomeClass = 'good' | 'bad' | 'mixed'
+export type ReplayTrajectoryLabel = 'validated' | 'recovered' | 'degraded' | 'stalled' | 'terminal'
 
 export interface ReplayExample {
   decisionId: number
@@ -52,6 +53,9 @@ export interface ReplayExample {
     metricsRaw: Record<string, unknown> | null
     scopeStatus: string | null
     testsPassed: boolean | null
+    trajectory: ReplayTrajectoryLabel
+    futureDecisionCount: number
+    nextDecisionStatus: string | null
   }
   objectives: ReplayObjectiveVector
 }
@@ -198,6 +202,7 @@ export interface ReplaySummary {
   byProject: ReplayGroupRow[]
   byStatus: ReplayGroupRow[]
   byDeliverableStatus: ReplayGroupRow[]
+  byTrajectory: ReplayGroupRow[]
 }
 
 export interface ReplayDataset {
@@ -293,6 +298,7 @@ export function summarizeReplayExamples(examples: ReplayExample[]): ReplaySummar
   const byProject = summarizeGroups(examples, ex => ex.context.project ?? 'unknown')
   const byStatus = summarizeGroups(examples, ex => ex.observed.status)
   const byDeliverableStatus = summarizeGroups(examples, ex => ex.observed.deliverableStatus)
+  const byTrajectory = summarizeGroups(examples, ex => ex.observed.trajectory)
 
   const successCount = examples.filter(ex => ex.objectives.dispatchSucceeded === 1).length
   const deliverableMeasured = examples.filter(ex => ex.objectives.deliverablePassed != null)
@@ -324,6 +330,7 @@ export function summarizeReplayExamples(examples: ReplayExample[]): ReplaySummar
     byProject,
     byStatus,
     byDeliverableStatus,
+    byTrajectory,
   }
 }
 
@@ -513,6 +520,8 @@ function toReplayExample(db: Database.Database, row: ReplayRow): ReplayExample {
   const learnedFlows = listHistoricalLearnings(db, 'flow', row.created_at, 10)
   const skillPreferences = listHistoricalLearnings(db, 'skill_preference', row.created_at, 10)
   const goalIntent = row.goal_intent ?? row.task.slice(0, 200)
+  const futureDecisions = listFutureDecisions(db, row.id, row.goal_id, row.project_path, 5)
+  const trajectory = classifyTrajectory(row, futureDecisions)
 
   return {
     decisionId: row.id,
@@ -551,6 +560,9 @@ function toReplayExample(db: Database.Database, row: ReplayRow): ReplayExample {
       metricsRaw,
       scopeStatus,
       testsPassed,
+      trajectory,
+      futureDecisionCount: futureDecisions.length,
+      nextDecisionStatus: futureDecisions[0]?.status ?? null,
     },
     objectives: {
       dispatchSucceeded: row.status === 'success' ? 1 : 0,
@@ -622,6 +634,36 @@ function listPreviousDecisions(
         ORDER BY created_at DESC, id DESC
         LIMIT ?
       `).all(decisionId, `%${projectPath}%`, limit) as DispatchContext['recentDecisions']
+    }
+  } catch {}
+  return []
+}
+
+function listFutureDecisions(
+  db: Database.Database,
+  decisionId: number,
+  goalId: number | null,
+  projectPath: string | null,
+  limit: number,
+): Array<{ skill: string, status: string, outcome: string | null, deliverable_status?: string | null, taste_signal?: string | null }> {
+  try {
+    if (goalId != null) {
+      return db.prepare(`
+        SELECT skill, status, outcome, deliverable_status, taste_signal
+        FROM decisions
+        WHERE id > ? AND goal_id = ?
+        ORDER BY created_at ASC, id ASC
+        LIMIT ?
+      `).all(decisionId, goalId, limit) as Array<{ skill: string, status: string, outcome: string | null, deliverable_status?: string | null, taste_signal?: string | null }>
+    }
+    if (projectPath) {
+      return db.prepare(`
+        SELECT skill, status, outcome, deliverable_status, taste_signal
+        FROM decisions
+        WHERE id > ? AND worktree_path LIKE ?
+        ORDER BY created_at ASC, id ASC
+        LIMIT ?
+      `).all(decisionId, `%${projectPath}%`, limit) as Array<{ skill: string, status: string, outcome: string | null, deliverable_status?: string | null, taste_signal?: string | null }>
     }
   } catch {}
   return []
@@ -840,6 +882,35 @@ function classifyObservedOutcome(example: ReplayExample): ReplayOutcomeClass {
   if (badSignals > goodSignals) return 'bad'
   if (goodSignals > badSignals) return 'good'
   return 'mixed'
+}
+
+function classifyTrajectory(
+  row: ReplayRow,
+  futureDecisions: Array<{ status: string, deliverable_status?: string | null, taste_signal?: string | null }>,
+): ReplayTrajectoryLabel {
+  if (futureDecisions.length === 0) return 'terminal'
+
+  const currentGood = row.status === 'success'
+    || row.deliverable_status === 'pass'
+    || row.taste_signal === 'approved'
+  const currentBad = row.status === 'failure'
+    || row.deliverable_status === 'fail'
+    || row.taste_signal === 'rejected'
+  const nextGood = futureDecisions.some(decision =>
+    decision.status === 'success'
+    || decision.deliverable_status === 'pass'
+    || decision.taste_signal === 'approved',
+  )
+  const nextBad = futureDecisions.some(decision =>
+    decision.status === 'failure'
+    || decision.deliverable_status === 'fail'
+    || decision.taste_signal === 'rejected',
+  )
+
+  if (currentGood && nextGood) return 'validated'
+  if (currentBad && nextGood) return 'recovered'
+  if (currentGood && nextBad) return 'degraded'
+  return 'stalled'
 }
 
 function compareReplaySummaries(

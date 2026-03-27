@@ -48,6 +48,14 @@ export interface TelemetryCostEstimate {
   source: 'repo_skill' | 'skill' | 'repo' | 'global'
 }
 
+export interface TelemetryCoverageSummary {
+  completedDecisions: number
+  decisionsWithTelemetry: number
+  decisionsWithoutTelemetry: number
+  coverageRate: number
+  orphanTelemetryRuns: number
+}
+
 export function ensureTelemetrySchema(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS telemetry_runs (
@@ -216,6 +224,41 @@ export function getDailyTelemetryCost(db: Database.Database): number {
   return row.total
 }
 
+export function summarizeTelemetryCoverage(db: Database.Database): TelemetryCoverageSummary {
+  const completed = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM decisions
+    WHERE status IN ('success', 'failure')
+  `).get() as { count: number }
+
+  const withTelemetry = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM (
+      SELECT d.id
+      FROM decisions d
+      WHERE d.status IN ('success', 'failure')
+        AND EXISTS (SELECT 1 FROM telemetry_runs t WHERE t.decision_id = d.id)
+    )
+  `).get() as { count: number }
+
+  const orphan = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM telemetry_runs t
+    LEFT JOIN decisions d ON d.id = t.decision_id
+    WHERE t.decision_id IS NULL OR d.id IS NULL
+  `).get() as { count: number }
+
+  const completedDecisions = completed.count
+  const decisionsWithTelemetry = withTelemetry.count
+  return {
+    completedDecisions,
+    decisionsWithTelemetry,
+    decisionsWithoutTelemetry: Math.max(0, completedDecisions - decisionsWithTelemetry),
+    coverageRate: completedDecisions > 0 ? decisionsWithTelemetry / completedDecisions : 1,
+    orphanTelemetryRuns: orphan.count,
+  }
+}
+
 export function estimateTelemetryCost(
   db: Database.Database,
   input: { repo?: string | null, skill?: string | null },
@@ -279,4 +322,5 @@ export default {
   listTelemetryRuns,
   getDailyTelemetryCost,
   estimateTelemetryCost,
+  summarizeTelemetryCoverage,
 }

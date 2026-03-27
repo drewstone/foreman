@@ -55,6 +55,10 @@ The installer is consent-first. It explains each capability, asks before enablin
 | `/api/replay/export` | GET | Export replay summary + examples as one dataset |
 | `/api/replay/policies` | GET | List available replay-evaluable dispatch policies |
 | `/api/replay/evaluate` | GET | Evaluate a named dispatch policy against a replay baseline with telemetry-backed promotion checks |
+| `/api/replay/latest` | GET | Latest replay governance snapshot |
+| `/api/replay/history` | GET | Recent replay policy evaluations |
+| `/api/replay/promote` | POST | Evaluate and optionally apply a replay-promoted dispatch policy |
+| `/api/policy/dispatch` | GET/POST | Read or override the active dispatch policy |
 
 ## Pi Extension Tools
 
