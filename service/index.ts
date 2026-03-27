@@ -59,6 +59,7 @@ import replay from './lib/replay.js'
 const { listReplayExamples, summarizeReplayExamples, exportReplayDataset, evaluateReplayPolicy } = replay
 import policyControl from './lib/policy-control.js'
 import replayGovernor from './lib/replay-governor.js'
+import telemetryImport from './lib/telemetry-import.js'
 
 const {
   ensurePolicyControlSchema,
@@ -68,6 +69,7 @@ const {
   listReplayPolicyEvaluations,
 } = policyControl
 const { promoteReplayPolicy, getReplayGovernanceSnapshot } = replayGovernor
+const { importTelemetryArtifacts } = telemetryImport
 
 // ─── Database ────────────────────────────────────────────────────────
 
@@ -1109,6 +1111,17 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       return json(res, { ok: true }, 201)
     }
 
+    if (path === '/api/telemetry/import' && method === 'POST') {
+      const body = await readBody(req)
+      const hours = body.maxAgeHours != null ? Number(body.maxAgeHours) : undefined
+      const traceRoot = body.traceRoot ? String(body.traceRoot) : undefined
+      const result = await importTelemetryArtifacts(db, {
+        maxAgeHours: Number.isFinite(hours) ? hours : undefined,
+        traceRoot,
+      })
+      return json(res, result, 200)
+    }
+
     // ── MCP servers ─────────────────────────────────────────
     if (path === '/api/mcp' && method === 'GET') {
       return json(res, stmts.listMcp.all())
@@ -1514,6 +1527,28 @@ server.listen(PORT, '0.0.0.0', () => {
     const reaped = await reapZombieSessions()
     if (reaped > 0) log(`Reaped ${reaped} zombie sessions`)
   }, 5 * 60 * 1000)
+
+  // Run initial learning loop (fast pattern extraction), then every hour
+  setTimeout(async () => {
+    try {
+      const result = await importTelemetryArtifacts(db)
+      if (result.imported > 0 || result.skipped > 0) {
+        log(`Telemetry import: imported ${result.imported}, skipped ${result.skipped}, scanned ${result.scanned}`)
+      }
+    } catch (e) {
+      log(`Initial telemetry import failed: ${e}`)
+    }
+  }, 10_000)
+  setInterval(async () => {
+    try {
+      const result = await importTelemetryArtifacts(db)
+      if (result.imported > 0) {
+        log(`Telemetry import: imported ${result.imported}, skipped ${result.skipped}, scanned ${result.scanned}`)
+      }
+    } catch (e) {
+      log(`Telemetry import failed: ${e}`)
+    }
+  }, 15 * 60 * 1000)
 
   // Run initial learning loop (fast pattern extraction), then every hour
   setTimeout(() => {

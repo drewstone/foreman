@@ -8,6 +8,7 @@ import { createTraceStore } from '@drew/foreman-tracing';
 import { loadOperatorRuntimeContext, scoreOperatorPreference } from './operator-adaptation.js';
 import { runProviderSessionSurface, type ProviderSessionSurfaceOptions } from './provider-session.js';
 import { runSessionRegistry } from './session-registry.js';
+import { emitSessionRunTelemetry } from './telemetry-client.js';
 
 type SessionProviderName = 'codex' | 'claude' | 'browser' | 'opencode' | 'openclaw';
 
@@ -186,6 +187,8 @@ export async function runSessionSurface(
     await writeFile(markdownPath, renderSessionRunMarkdown(sessionRunResult), 'utf8');
     sessionRunResult.markdownPath = markdownPath;
   }
+
+  await emitSessionRunTelemetry(sessionRunResult, options);
 
   return sessionRunResult;
 }
