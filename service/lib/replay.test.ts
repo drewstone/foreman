@@ -2,8 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import replay from './replay.js'
+import type { DispatchContext, DispatchDecision } from './dispatch-policy.js'
 
-const { listReplayExamples, summarizeReplayExamples, exportReplayDataset } = replay
+const { listReplayExamples, summarizeReplayExamples, exportReplayDataset, evaluateReplayPolicy } = replay
 
 function makeDb(): Database.Database {
   const db = new Database(':memory:')
@@ -32,6 +33,13 @@ function makeDb(): Database.Database {
       cost_usd REAL,
       prompt_sections TEXT,
       deliverable_status TEXT DEFAULT 'unchecked',
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE learnings (
+      id INTEGER PRIMARY KEY,
+      type TEXT NOT NULL,
+      content TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
   `)
@@ -76,6 +84,9 @@ test('listReplayExamples derives context history and objective vectors', () => {
   assert.equal(latest.context.previousProjectDecisions, 1)
   assert.equal(latest.context.previousProjectSkillDecisions, 1)
   assert.equal(latest.context.previousGoalDecisions, 1)
+  assert.equal(latest.context.policyContext.goalIntent, 'Ship replay harness')
+  assert.equal(latest.context.policyContext.projectName, 'foreman')
+  assert.equal(latest.context.policyContext.recentDecisions.length, 1)
   assert.equal(latest.objectives.dispatchSucceeded, 1)
   assert.equal(latest.objectives.deliverablePassed, 1)
   assert.equal(latest.objectives.approvalSignal, 1)
@@ -139,4 +150,60 @@ test('exportReplayDataset includes summary and filtered examples', () => {
   assert.equal(dataset.examples[0]?.context.project, 'bar')
   assert.equal(dataset.summary.examples, 1)
   assert.ok(typeof dataset.generatedAt === 'string')
+})
+
+test('evaluateReplayPolicy scores safe continuation and bad-decision divergence', async () => {
+  const db = makeDb()
+  db.prepare(`INSERT INTO goals (id, intent, workspace_path) VALUES (1, 'Improve project', '/tmp/proj')`).run()
+  db.prepare(`INSERT INTO learnings (id, type, content, created_at) VALUES (1, 'flow', 'Use verify after success', '2026-03-24T00:00:00Z')`).run()
+  db.prepare(`INSERT INTO learnings (id, type, content, created_at) VALUES (2, 'skill_preference', 'Prefer /diagnose after failure', '2026-03-24T00:00:00Z')`).run()
+
+  db.prepare(`
+    INSERT INTO decisions (
+      id, goal_id, skill, task, reasoning, status, origin, metrics, taste_signal,
+      worktree_path, cost_usd, deliverable_status, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    0, 1, '/research', 'Seed context', '', 'success', 'operator',
+    JSON.stringify({ scopeStatus: 'clean', testsPassed: true }),
+    'approved', '/tmp/proj', 0.25, 'pass', '2026-03-23T00:00:00Z',
+  )
+  db.prepare(`
+    INSERT INTO decisions (
+      id, goal_id, skill, task, reasoning, status, origin, metrics, taste_signal,
+      worktree_path, cost_usd, deliverable_status, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    1, 1, '/evolve', 'Task A', '', 'success', 'operator',
+    JSON.stringify({ scopeStatus: 'clean', testsPassed: true }),
+    'approved', '/tmp/proj', 1.0, 'pass', '2026-03-24T00:00:00Z',
+  )
+  db.prepare(`
+    INSERT INTO decisions (
+      id, goal_id, skill, task, reasoning, status, origin, metrics, taste_signal,
+      worktree_path, cost_usd, deliverable_status, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    2, 1, '/evolve', 'Task B', '', 'failure', 'operator',
+    JSON.stringify({ scopeStatus: 'violation', testsPassed: false }),
+    'rejected', '/tmp/proj', 2.0, 'fail', '2026-03-25T00:00:00Z',
+  )
+
+  const examples = listReplayExamples(db, { limit: 10 })
+    .filter(example => example.decisionId !== 0)
+    .reverse()
+  const decide = async (ctx: DispatchContext): Promise<DispatchDecision> => {
+    const last = ctx.recentDecisions[0]
+    if (last?.status === 'success') {
+      return { skill: '/verify', task: 'Verify success', reasoning: 'test policy' }
+    }
+    return { skill: '/diagnose', task: 'Diagnose failure', reasoning: 'test policy' }
+  }
+
+  const evaluation = await evaluateReplayPolicy(examples, { policyName: 'test-policy', decide })
+  assert.equal(evaluation.summary.examples, 2)
+  assert.equal(evaluation.summary.safeGoodContinuationRate, 1)
+  assert.equal(evaluation.summary.divergedFromBadDecisionRate, 1)
+  assert.equal(evaluation.summary.avgScalarScore, 1)
+  assert.equal(evaluation.examples[0]?.candidate.policyName, 'test-policy')
 })

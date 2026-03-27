@@ -16,8 +16,10 @@ Usage: foreman <command> [args]
 Commands:
   status           Show portfolio status (goals, sessions, recent decisions)
   setup            Re-run the Foreman onboarding wizard
+  replay-policies  List replay-evaluable dispatch policies
   replay-summary   Show replay dataset summary (optional: --limit N --project foo --skill /evolve)
   replay-examples  Show replay examples (optional: --limit N --project foo --skill /evolve)
+  replay-evaluate  Evaluate a dispatch policy on replay data
   goals            List active goals
   goal <intent>    Create a new goal
   dispatch <task>  Dispatch a task (optional: --skill /evolve --workspace ~/code/foo)
@@ -45,6 +47,10 @@ case "${1:-help}" in
     shift
     REPO="${FOREMAN_HOME:-$HOME/.foreman}/repo"
     bash "$REPO/install.sh" --configure "$@"
+    ;;
+  replay-policies)
+    json "$API/replay/policies"
+    ;;
   replay-summary)
     shift
     LIMIT="250"
@@ -80,6 +86,28 @@ case "${1:-help}" in
     [ -n "$PROJECT" ] && QUERY="$QUERY&project=$PROJECT"
     [ -n "$SKILL" ] && QUERY="$QUERY&skill=$SKILL"
     json "$API/replay/examples?$QUERY"
+    ;;
+  replay-evaluate)
+    shift
+    LIMIT="50"
+    PROJECT=""
+    SKILL=""
+    POLICY="identity"
+    ALLOW_LIVE="false"
+    while [[ $# -gt 0 ]]; do
+      case $1 in
+        --limit) LIMIT="$2"; shift 2;;
+        --project) PROJECT="$2"; shift 2;;
+        --skill) SKILL="$2"; shift 2;;
+        --policy) POLICY="$2"; shift 2;;
+        --allow-live) ALLOW_LIVE="true"; shift;;
+        *) echo "Unknown option: $1"; exit 1;;
+      esac
+    done
+    QUERY="limit=$LIMIT&policy=$POLICY&allow_live=$ALLOW_LIVE"
+    [ -n "$PROJECT" ] && QUERY="$QUERY&project=$PROJECT"
+    [ -n "$SKILL" ] && QUERY="$QUERY&skill=$SKILL"
+    json "$API/replay/evaluate?$QUERY"
     ;;
   goals)
     json "$API/goals"

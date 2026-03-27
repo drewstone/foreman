@@ -53,6 +53,8 @@ The installer is consent-first. It explains each capability, asks before enablin
 | `/api/replay/summary` | GET | Aggregate historical replay metrics from decisions/outcomes |
 | `/api/replay/examples` | GET | List normalized replay examples with objective vectors |
 | `/api/replay/export` | GET | Export replay summary + examples as one dataset |
+| `/api/replay/policies` | GET | List available replay-evaluable dispatch policies |
+| `/api/replay/evaluate` | GET | Evaluate a named dispatch policy on replay data |
 
 ## Pi Extension Tools
 

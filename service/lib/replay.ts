@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import type { DispatchContext, DispatchDecision } from './dispatch-policy.js'
 
 export interface ReplayGroupRow {
   key: string
@@ -34,6 +35,7 @@ export interface ReplayExample {
     previousProjectDecisions: number
     previousProjectSkillDecisions: number
     previousGoalDecisions: number
+    policyContext: DispatchContext
   }
   observed: {
     status: string
@@ -49,6 +51,42 @@ export interface ReplayExample {
     testsPassed: boolean | null
   }
   objectives: ReplayObjectiveVector
+}
+
+export interface ReplayPolicyEvaluationExample {
+  observed: ReplayExample
+  candidate: {
+    policyName: string
+    decision: DispatchDecision
+  }
+  surrogate: {
+    exactSkillMatch: number
+    preservedGoodDecision: number | null
+    safeGoodContinuation: number | null
+    divergedFromBadDecision: number | null
+    repeatedBadDecision: number | null
+    scalarScore: number | null
+    outcomeClass: 'good' | 'bad' | 'mixed'
+  }
+}
+
+export interface ReplayPolicyEvaluationSummary {
+  policyName: string
+  examples: number
+  exactSkillMatchRate: number
+  preservedGoodDecisionRate: number | null
+  safeGoodContinuationRate: number | null
+  divergedFromBadDecisionRate: number | null
+  repeatedBadDecisionRate: number | null
+  avgScalarScore: number | null
+  byCandidateSkill: Array<{ key: string, count: number }>
+  topTransitions: Array<{ fromSkill: string, toSkill: string, count: number }>
+}
+
+export interface ReplayPolicyEvaluation {
+  generatedAt: string
+  summary: ReplayPolicyEvaluationSummary
+  examples: ReplayPolicyEvaluationExample[]
 }
 
 export interface ReplaySummary {
@@ -200,6 +238,62 @@ export function exportReplayDataset(
   }
 }
 
+export async function evaluateReplayPolicy(
+  examples: ReplayExample[],
+  input: {
+    policyName: string
+    decide: (ctx: DispatchContext) => Promise<DispatchDecision>
+  },
+): Promise<ReplayPolicyEvaluation> {
+  const evaluated: ReplayPolicyEvaluationExample[] = []
+
+  for (const example of examples) {
+    const decision = await input.decide(example.context.policyContext)
+    const outcomeClass = classifyObservedOutcome(example)
+    const exactSkillMatch = decision.skill === example.context.skill ? 1 : 0
+    const safeGoodContinuation = outcomeClass === 'good'
+      ? (decision.skill === example.context.skill || decision.skill === '/verify' ? 1 : 0)
+      : null
+    const preservedGoodDecision = outcomeClass === 'good'
+      ? exactSkillMatch
+      : null
+    const divergedFromBadDecision = outcomeClass === 'bad'
+      ? (decision.skill !== example.context.skill ? 1 : 0)
+      : null
+    const repeatedBadDecision = outcomeClass === 'bad'
+      ? (decision.skill === example.context.skill ? 1 : 0)
+      : null
+    const scalarScore = outcomeClass === 'good'
+      ? safeGoodContinuation
+      : outcomeClass === 'bad'
+        ? divergedFromBadDecision
+        : null
+
+    evaluated.push({
+      observed: example,
+      candidate: {
+        policyName: input.policyName,
+        decision,
+      },
+      surrogate: {
+        exactSkillMatch,
+        preservedGoodDecision,
+        safeGoodContinuation,
+        divergedFromBadDecision,
+        repeatedBadDecision,
+        scalarScore,
+        outcomeClass,
+      },
+    })
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    summary: summarizeReplayPolicyEvaluation(input.policyName, evaluated),
+    examples: evaluated,
+  }
+}
+
 function toReplayExample(db: Database.Database, row: ReplayRow): ReplayExample {
   const metricsRaw = parseJsonRecord(row.metrics)
   const promptSections = parseJsonArray(row.prompt_sections)
@@ -232,6 +326,16 @@ function toReplayExample(db: Database.Database, row: ReplayRow): ReplayExample {
     [row.id, row.goal_id],
     row.goal_id != null,
   )
+  const recentDecisions = listPreviousDecisions(
+    db,
+    row.id,
+    row.goal_id,
+    row.project_path,
+    5,
+  )
+  const learnedFlows = listHistoricalLearnings(db, 'flow', row.created_at, 10)
+  const skillPreferences = listHistoricalLearnings(db, 'skill_preference', row.created_at, 10)
+  const goalIntent = row.goal_intent ?? row.task.slice(0, 200)
 
   return {
     decisionId: row.id,
@@ -249,6 +353,14 @@ function toReplayExample(db: Database.Database, row: ReplayRow): ReplayExample {
       previousProjectDecisions,
       previousProjectSkillDecisions,
       previousGoalDecisions,
+      policyContext: {
+        goalIntent,
+        projectName: project ?? 'unknown',
+        recentDecisions,
+        learnedFlows,
+        skillPreferences,
+        confidenceLevel: 'dry-run',
+      },
     },
     observed: {
       status: row.status,
@@ -308,6 +420,56 @@ function countPrevious(db: Database.Database, query: string, args: unknown[], en
   return row.count
 }
 
+function listPreviousDecisions(
+  db: Database.Database,
+  decisionId: number,
+  goalId: number | null,
+  projectPath: string | null,
+  limit: number,
+): DispatchContext['recentDecisions'] {
+  try {
+    if (goalId != null) {
+      return db.prepare(`
+        SELECT skill, status, outcome
+        FROM decisions
+        WHERE id < ? AND goal_id = ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?
+      `).all(decisionId, goalId, limit) as DispatchContext['recentDecisions']
+    }
+    if (projectPath) {
+      return db.prepare(`
+        SELECT skill, status, outcome
+        FROM decisions
+        WHERE id < ? AND worktree_path LIKE ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?
+      `).all(decisionId, `%${projectPath}%`, limit) as DispatchContext['recentDecisions']
+    }
+  } catch {}
+  return []
+}
+
+function listHistoricalLearnings(
+  db: Database.Database,
+  type: string,
+  createdAt: string,
+  limit: number,
+): string[] {
+  try {
+    const rows = db.prepare(`
+      SELECT content
+      FROM learnings
+      WHERE type = ? AND created_at <= ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(type, createdAt, limit) as Array<{ content: string }>
+    return rows.map(row => row.content)
+  } catch {
+    return []
+  }
+}
+
 function parseJsonRecord(value: string | null): Record<string, unknown> | null {
   if (!value) return null
   try {
@@ -359,8 +521,97 @@ function averageOrNull(values: number[]): number | null {
   return values.reduce((sum, value) => sum + value, 0) / values.length
 }
 
+function summarizeReplayPolicyEvaluation(
+  policyName: string,
+  examples: ReplayPolicyEvaluationExample[],
+): ReplayPolicyEvaluationSummary {
+  const scalarValues = examples.map(ex => ex.surrogate.scalarScore).filter((n): n is number => n != null)
+  const goodExamples = examples.filter(ex => ex.surrogate.outcomeClass === 'good')
+  const badExamples = examples.filter(ex => ex.surrogate.outcomeClass === 'bad')
+  const byCandidateSkill = summarizeCounts(examples.map(ex => ex.candidate.decision.skill))
+  const topTransitions = summarizeTransitions(examples)
+
+  return {
+    policyName,
+    examples: examples.length,
+    exactSkillMatchRate: rate(
+      examples.filter(ex => ex.surrogate.exactSkillMatch === 1).length,
+      examples.length,
+    ),
+    preservedGoodDecisionRate: rateOrNull(
+      goodExamples.filter(ex => ex.surrogate.preservedGoodDecision === 1).length,
+      goodExamples.length,
+    ),
+    safeGoodContinuationRate: rateOrNull(
+      goodExamples.filter(ex => ex.surrogate.safeGoodContinuation === 1).length,
+      goodExamples.length,
+    ),
+    divergedFromBadDecisionRate: rateOrNull(
+      badExamples.filter(ex => ex.surrogate.divergedFromBadDecision === 1).length,
+      badExamples.length,
+    ),
+    repeatedBadDecisionRate: rateOrNull(
+      badExamples.filter(ex => ex.surrogate.repeatedBadDecision === 1).length,
+      badExamples.length,
+    ),
+    avgScalarScore: averageOrNull(scalarValues),
+    byCandidateSkill,
+    topTransitions,
+  }
+}
+
+function classifyObservedOutcome(example: ReplayExample): 'good' | 'bad' | 'mixed' {
+  const badSignals = [
+    example.objectives.dispatchSucceeded === 0,
+    example.objectives.deliverablePassed === 0,
+    example.objectives.rejectionSignal === 1,
+    example.objectives.scopeViolation === 1,
+    example.objectives.testsPassed === 0,
+  ].filter(Boolean).length
+
+  const goodSignals = [
+    example.objectives.dispatchSucceeded === 1,
+    example.objectives.deliverablePassed === 1,
+    example.objectives.approvalSignal === 1,
+    example.objectives.scopeViolation === 0,
+    example.objectives.testsPassed === 1,
+  ].filter(Boolean).length
+
+  if (badSignals > 0 && goodSignals === 0) return 'bad'
+  if (goodSignals > 0 && badSignals === 0) return 'good'
+  if (badSignals > goodSignals) return 'bad'
+  if (goodSignals > badSignals) return 'good'
+  return 'mixed'
+}
+
+function summarizeCounts(items: string[]): Array<{ key: string, count: number }> {
+  const counts = new Map<string, number>()
+  for (const item of items) {
+    counts.set(item, (counts.get(item) ?? 0) + 1)
+  }
+  return [...counts.entries()]
+    .map(([key, count]) => ({ key, count }))
+    .sort((left, right) => right.count - left.count || left.key.localeCompare(right.key))
+}
+
+function summarizeTransitions(examples: ReplayPolicyEvaluationExample[]): Array<{ fromSkill: string, toSkill: string, count: number }> {
+  const counts = new Map<string, number>()
+  for (const example of examples) {
+    const key = `${example.observed.context.skill}=>${example.candidate.decision.skill}`
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  return [...counts.entries()]
+    .map(([key, count]) => {
+      const [fromSkill, toSkill] = key.split('=>')
+      return { fromSkill, toSkill, count }
+    })
+    .sort((left, right) => right.count - left.count || left.fromSkill.localeCompare(right.fromSkill))
+    .slice(0, 20)
+}
+
 export default {
   listReplayExamples,
   summarizeReplayExamples,
   exportReplayDataset,
+  evaluateReplayPolicy,
 }
