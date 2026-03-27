@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import telemetry from './telemetry.js'
 
-const { ensureTelemetrySchema, recordTelemetryRun, summarizeTelemetry, getDailyTelemetryCost } = telemetry
+const { ensureTelemetrySchema, recordTelemetryRun, summarizeTelemetry, getDailyTelemetryCost, estimateTelemetryCost } = telemetry
 
 function makeDb(): Database.Database {
   const db = new Database(':memory:')
@@ -96,4 +96,49 @@ test('getDailyTelemetryCost sums only today rows', () => {
   })
 
   assert.equal(getDailyTelemetryCost(db), 3)
+})
+
+test('estimateTelemetryCost falls back from repo+skill to broader telemetry priors', () => {
+  const db = makeDb()
+
+  recordTelemetryRun(db, {
+    eventKey: 'repo-skill',
+    harness: 'claude',
+    repo: 'foreman',
+    skill: '/verify',
+    costUsd: 0.4,
+    finishedAt: '2099-01-01T00:00:00Z',
+  })
+  recordTelemetryRun(db, {
+    eventKey: 'skill-only',
+    harness: 'claude',
+    repo: 'another-repo',
+    skill: '/diagnose',
+    costUsd: 0.8,
+    finishedAt: '2099-01-01T00:00:00Z',
+  })
+  recordTelemetryRun(db, {
+    eventKey: 'repo-only',
+    harness: 'claude',
+    repo: 'foreman',
+    skill: '/evolve',
+    costUsd: 1.2,
+    finishedAt: '2099-01-01T00:00:00Z',
+  })
+
+  const repoSkill = estimateTelemetryCost(db, { repo: 'foreman', skill: '/verify' })
+  assert.equal(repoSkill?.costUsd, 0.4)
+  assert.equal(repoSkill?.source, 'repo_skill')
+
+  const skillOnly = estimateTelemetryCost(db, { repo: 'unknown', skill: '/diagnose' })
+  assert.equal(skillOnly?.costUsd, 0.8)
+  assert.equal(skillOnly?.source, 'skill')
+
+  const repoOnly = estimateTelemetryCost(db, { repo: 'foreman', skill: '/plan' })
+  assert.ok(Math.abs((repoOnly?.costUsd ?? 0) - 0.8) < 1e-9)
+  assert.equal(repoOnly?.source, 'repo')
+
+  const global = estimateTelemetryCost(db, { repo: 'missing', skill: '/missing' })
+  assert.ok(Math.abs((global?.costUsd ?? 0) - 0.8) < 1e-9)
+  assert.equal(global?.source, 'global')
 })

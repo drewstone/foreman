@@ -2,9 +2,11 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import replay from './replay.js'
+import telemetry from './telemetry.js'
 import type { DispatchContext, DispatchDecision } from './dispatch-policy.js'
 
 const { listReplayExamples, summarizeReplayExamples, exportReplayDataset, evaluateReplayPolicy } = replay
+const { ensureTelemetrySchema, recordTelemetryRun } = telemetry
 
 function makeDb(): Database.Database {
   const db = new Database(':memory:')
@@ -43,7 +45,43 @@ function makeDb(): Database.Database {
       created_at TEXT NOT NULL
     );
   `)
+  ensureTelemetrySchema(db)
   return db
+}
+
+function seedTelemetry(db: Database.Database, repo = 'proj'): void {
+  recordTelemetryRun(db, {
+    eventKey: `${repo}:verify`,
+    harness: 'claude',
+    repo,
+    skill: '/verify',
+    costUsd: 0.3,
+    finishedAt: '2099-01-01T00:00:00Z',
+  })
+  recordTelemetryRun(db, {
+    eventKey: `${repo}:diagnose`,
+    harness: 'claude',
+    repo,
+    skill: '/diagnose',
+    costUsd: 0.5,
+    finishedAt: '2099-01-01T00:00:00Z',
+  })
+  recordTelemetryRun(db, {
+    eventKey: `${repo}:evolve`,
+    harness: 'claude',
+    repo,
+    skill: '/evolve',
+    costUsd: 1.5,
+    finishedAt: '2099-01-01T00:00:00Z',
+  })
+  recordTelemetryRun(db, {
+    eventKey: `${repo}:research`,
+    harness: 'claude',
+    repo,
+    skill: '/research',
+    costUsd: 0.2,
+    finishedAt: '2099-01-01T00:00:00Z',
+  })
 }
 
 test('listReplayExamples derives context history and objective vectors', () => {
@@ -154,6 +192,7 @@ test('exportReplayDataset includes summary and filtered examples', () => {
 
 test('evaluateReplayPolicy scores safe continuation and bad-decision divergence', async () => {
   const db = makeDb()
+  seedTelemetry(db)
   db.prepare(`INSERT INTO goals (id, intent, workspace_path) VALUES (1, 'Improve project', '/tmp/proj')`).run()
   db.prepare(`INSERT INTO learnings (id, type, content, created_at) VALUES (1, 'flow', 'Use verify after success', '2026-03-24T00:00:00Z')`).run()
   db.prepare(`INSERT INTO learnings (id, type, content, created_at) VALUES (2, 'skill_preference', 'Prefer /diagnose after failure', '2026-03-24T00:00:00Z')`).run()
@@ -200,10 +239,96 @@ test('evaluateReplayPolicy scores safe continuation and bad-decision divergence'
     return { skill: '/diagnose', task: 'Diagnose failure', reasoning: 'test policy' }
   }
 
-  const evaluation = await evaluateReplayPolicy(examples, { policyName: 'test-policy', decide })
+  const evaluation = await evaluateReplayPolicy(examples, {
+    policyName: 'test-policy',
+    decide,
+    telemetryDb: db,
+  })
   assert.equal(evaluation.summary.examples, 2)
+  assert.equal(evaluation.summary.coverage.goodExamples, 1)
+  assert.equal(evaluation.summary.coverage.badExamples, 1)
+  assert.equal(evaluation.summary.avgPredictedCostUsd, 0.3)
   assert.equal(evaluation.summary.safeGoodContinuationRate, 1)
   assert.equal(evaluation.summary.divergedFromBadDecisionRate, 1)
   assert.equal(evaluation.summary.avgScalarScore, 1)
+  assert.equal(evaluation.summary.objectiveVector.constraints.safeGoodContinuationRate, 1)
+  assert.equal(evaluation.summary.objectiveVector.diagnostics.predictedCostSources[0]?.key, 'repo_skill')
+  assert.equal(evaluation.examples[0]?.candidate.predictedCostSource, 'repo_skill')
   assert.equal(evaluation.examples[0]?.candidate.policyName, 'test-policy')
+})
+
+test('evaluateReplayPolicy compares against a baseline and emits a promotion decision', async () => {
+  const db = makeDb()
+  seedTelemetry(db)
+  db.prepare(`INSERT INTO goals (id, intent, workspace_path) VALUES (1, 'Improve project', '/tmp/proj')`).run()
+  db.prepare(`INSERT INTO learnings (id, type, content, created_at) VALUES (1, 'flow', 'Use verify after success', '2026-03-24T00:00:00Z')`).run()
+  db.prepare(`INSERT INTO decisions (
+    id, goal_id, skill, task, reasoning, status, origin, metrics, taste_signal,
+    worktree_path, cost_usd, deliverable_status, created_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    0, 1, '/research', 'Seed context', '', 'success', 'operator',
+    JSON.stringify({ scopeStatus: 'clean', testsPassed: true }),
+    'approved', '/tmp/proj', 0.25, 'pass', '2026-03-23T00:00:00Z',
+  )
+  db.prepare(`INSERT INTO decisions (
+    id, goal_id, skill, task, reasoning, status, origin, metrics, taste_signal,
+    worktree_path, cost_usd, deliverable_status, created_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    1, 1, '/evolve', 'Task A', '', 'success', 'operator',
+    JSON.stringify({ scopeStatus: 'clean', testsPassed: true }),
+    'approved', '/tmp/proj', 1.0, 'pass', '2026-03-24T00:00:00Z',
+  )
+  db.prepare(`INSERT INTO decisions (
+    id, goal_id, skill, task, reasoning, status, origin, metrics, taste_signal,
+    worktree_path, cost_usd, deliverable_status, created_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    2, 1, '/evolve', 'Task B', '', 'failure', 'operator',
+    JSON.stringify({ scopeStatus: 'violation', testsPassed: false }),
+    'rejected', '/tmp/proj', 2.0, 'fail', '2026-03-25T00:00:00Z',
+  )
+
+  const examples = listReplayExamples(db, { limit: 10 })
+    .filter(example => example.decisionId !== 0)
+    .reverse()
+
+  const candidate = await evaluateReplayPolicy(examples, {
+    policyName: 'candidate',
+    decide: async (ctx: DispatchContext): Promise<DispatchDecision> => {
+      const last = ctx.recentDecisions[0]
+      if (last?.status === 'success') {
+        return { skill: '/verify', task: 'Verify success', reasoning: 'candidate policy' }
+      }
+      return { skill: '/diagnose', task: 'Diagnose failure', reasoning: 'candidate policy' }
+    },
+    baseline: {
+      policyName: 'identity-ish',
+      decide: async (ctx: DispatchContext): Promise<DispatchDecision> => {
+        const last = ctx.recentDecisions[0]
+        return {
+          skill: last?.skill ?? '/evolve',
+          task: 'Repeat the prior move',
+          reasoning: 'baseline policy',
+        }
+      },
+    },
+    promotionRule: {
+      minExamples: 2,
+      minGoodExamples: 1,
+      minBadExamples: 1,
+      minBadDivergenceImprovement: 0.25,
+    },
+    telemetryDb: db,
+  })
+
+  assert.equal(candidate.baselineSummary?.policyName, 'identity-ish')
+  assert.equal(candidate.summary.avgPredictedCostUsd, 0.3)
+  assert.equal(candidate.baselineSummary?.avgPredictedCostUsd, 0.85)
+  assert.equal(candidate.comparison?.delta.safeGoodContinuationRate, 1)
+  assert.equal(candidate.comparison?.delta.divergedFromBadDecisionRate, 1)
+  assert.ok(Math.abs((candidate.comparison?.delta.avgPredictedCostUsd ?? 0) + 0.55) < 1e-9)
+  assert.equal(candidate.comparison?.delta.repeatedBadDecisionRate, -1)
+  assert.equal(candidate.promotion?.status, 'promote')
+  assert.equal(candidate.examples[0]?.baseline?.predictedCostSource, 'repo_skill')
+  assert.equal(candidate.examples[0]?.baseline?.policyName, 'identity-ish')
+  assert.equal(candidate.examples[0]?.comparison?.changedFromBaseline, 1)
 })

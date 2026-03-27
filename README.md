@@ -54,7 +54,7 @@ The installer is consent-first. It explains each capability, asks before enablin
 | `/api/replay/examples` | GET | List normalized replay examples with objective vectors |
 | `/api/replay/export` | GET | Export replay summary + examples as one dataset |
 | `/api/replay/policies` | GET | List available replay-evaluable dispatch policies |
-| `/api/replay/evaluate` | GET | Evaluate a named dispatch policy on replay data |
+| `/api/replay/evaluate` | GET | Evaluate a named dispatch policy against a replay baseline with telemetry-backed promotion checks |
 
 ## Pi Extension Tools
 

@@ -42,6 +42,12 @@ export interface TelemetrySummary {
   bySkill: TelemetryGroupRow[]
 }
 
+export interface TelemetryCostEstimate {
+  costUsd: number
+  sampleSize: number
+  source: 'repo_skill' | 'skill' | 'repo' | 'global'
+}
+
 export function ensureTelemetrySchema(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS telemetry_runs (
@@ -210,10 +216,67 @@ export function getDailyTelemetryCost(db: Database.Database): number {
   return row.total
 }
 
+export function estimateTelemetryCost(
+  db: Database.Database,
+  input: { repo?: string | null, skill?: string | null },
+): TelemetryCostEstimate | null {
+  const scopes: Array<{
+    source: TelemetryCostEstimate['source']
+    where: string
+    args: unknown[]
+  }> = []
+
+  if (input.repo && input.skill) {
+    scopes.push({
+      source: 'repo_skill',
+      where: `WHERE repo = ? AND skill = ? AND cost_usd IS NOT NULL`,
+      args: [input.repo, input.skill],
+    })
+  }
+  if (input.skill) {
+    scopes.push({
+      source: 'skill',
+      where: `WHERE skill = ? AND cost_usd IS NOT NULL`,
+      args: [input.skill],
+    })
+  }
+  if (input.repo) {
+    scopes.push({
+      source: 'repo',
+      where: `WHERE repo = ? AND cost_usd IS NOT NULL`,
+      args: [input.repo],
+    })
+  }
+  scopes.push({
+    source: 'global',
+    where: `WHERE cost_usd IS NOT NULL`,
+    args: [],
+  })
+
+  for (const scope of scopes) {
+    const row = db.prepare(`
+      SELECT COUNT(*) as runs, AVG(cost_usd) as avgCostUsd
+      FROM telemetry_runs
+      ${scope.where}
+    `).get(...scope.args) as { runs: number, avgCostUsd: number | null }
+
+    if (row.runs > 0 && row.avgCostUsd != null) {
+      return {
+        costUsd: row.avgCostUsd,
+        sampleSize: row.runs,
+        source: scope.source,
+      }
+    }
+  }
+
+  return null
+}
+
 export default {
   ensureTelemetrySchema,
   recordTelemetryRun,
   summarizeTelemetry,
   listTelemetryRuns,
   getDailyTelemetryCost,
+  estimateTelemetryCost,
 }
