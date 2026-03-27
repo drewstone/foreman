@@ -20,6 +20,8 @@ Commands:
   replay-summary   Show replay dataset summary (optional: --limit N --project foo --skill /evolve)
   replay-examples  Show replay examples (optional: --limit N --project foo --skill /evolve)
   replay-evaluate  Evaluate a dispatch policy on replay data against a baseline
+  replay-promote   Evaluate a policy and optionally apply it when promotion passes
+  policy           Show or set the active dispatch policy
   goals            List active goals
   goal <intent>    Create a new goal
   dispatch <task>  Dispatch a task (optional: --skill /evolve --workspace ~/code/foo)
@@ -120,6 +122,56 @@ case "${1:-help}" in
     [ -n "$MIN_GOOD_EXAMPLES" ] && QUERY="$QUERY&min_good_examples=$MIN_GOOD_EXAMPLES"
     [ -n "$MIN_BAD_EXAMPLES" ] && QUERY="$QUERY&min_bad_examples=$MIN_BAD_EXAMPLES"
     json "$API/replay/evaluate?$QUERY"
+    ;;
+  replay-promote)
+    shift
+    POLICY=""
+    BASELINE=""
+    PROJECT=""
+    SKILL=""
+    LIMIT="50"
+    APPLY="false"
+    FORCE="false"
+    ALLOW_LIVE="false"
+    MIN_EXAMPLES=""
+    MIN_GOOD_EXAMPLES=""
+    MIN_BAD_EXAMPLES=""
+    while [[ $# -gt 0 ]]; do
+      case $1 in
+        --policy) POLICY="$2"; shift 2;;
+        --baseline) BASELINE="$2"; shift 2;;
+        --project) PROJECT="$2"; shift 2;;
+        --skill) SKILL="$2"; shift 2;;
+        --limit) LIMIT="$2"; shift 2;;
+        --apply) APPLY="true"; shift;;
+        --force) FORCE="true"; shift;;
+        --allow-live) ALLOW_LIVE="true"; shift;;
+        --min-examples) MIN_EXAMPLES="$2"; shift 2;;
+        --min-good) MIN_GOOD_EXAMPLES="$2"; shift 2;;
+        --min-bad) MIN_BAD_EXAMPLES="$2"; shift 2;;
+        *) echo "Unknown option: $1"; exit 1;;
+      esac
+    done
+    [ -z "$POLICY" ] && { echo "--policy is required"; exit 1; }
+    BODY="{\"policy\":\"$POLICY\",\"limit\":$LIMIT,\"apply\":$APPLY,\"force\":$FORCE,\"allowLive\":$ALLOW_LIVE"
+    [ -n "$BASELINE" ] && BODY="$BODY, \"baseline\":\"$BASELINE\""
+    [ -n "$PROJECT" ] && BODY="$BODY, \"project\":\"$PROJECT\""
+    [ -n "$SKILL" ] && BODY="$BODY, \"skill\":\"$SKILL\""
+    [ -n "$MIN_EXAMPLES" ] && BODY="$BODY, \"minExamples\":$MIN_EXAMPLES"
+    [ -n "$MIN_GOOD_EXAMPLES" ] && BODY="$BODY, \"minGoodExamples\":$MIN_GOOD_EXAMPLES"
+    [ -n "$MIN_BAD_EXAMPLES" ] && BODY="$BODY, \"minBadExamples\":$MIN_BAD_EXAMPLES"
+    BODY="$BODY}"
+    curl -sf -X POST "$API/replay/promote" -H 'Content-Type: application/json' -d "$BODY" | python3 -m json.tool
+    ;;
+  policy)
+    shift
+    if [[ $# -eq 0 ]]; then
+      json "$API/policy/dispatch"
+      exit 0
+    fi
+    POLICY_NAME="$1"
+    BODY="{\"policy\":\"$POLICY_NAME\",\"source\":\"manual_override\"}"
+    curl -sf -X POST "$API/policy/dispatch" -H 'Content-Type: application/json' -d "$BODY" | python3 -m json.tool
     ;;
   goals)
     json "$API/goals"

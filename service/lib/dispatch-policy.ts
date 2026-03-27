@@ -10,6 +10,8 @@
  */
 
 import { callClaudeForJSON } from './claude-runner.js'
+import { getDb } from './state.js'
+import { getDispatchPolicyControl } from './policy-control.js'
 
 export interface DispatchDecision {
   skill: string
@@ -269,8 +271,9 @@ const policies: Record<string, DispatchPolicy> = {
 }
 
 export function getDispatchPolicy(): DispatchPolicy {
-  if (DISPATCH_POLICY === 'gepa' && gepaPolicy) return gepaPolicy
-  return policies[DISPATCH_POLICY] ?? llmPolicy
+  const selected = getSelectedDispatchPolicyName()
+  if (selected === 'gepa' && gepaPolicy) return gepaPolicy
+  return policies[selected] ?? llmPolicy
 }
 
 export function getDispatchPolicyByName(name: string): DispatchPolicy | null {
@@ -278,12 +281,21 @@ export function getDispatchPolicyByName(name: string): DispatchPolicy | null {
   return policies[name] ?? null
 }
 
-export function listDispatchPolicies(): Array<{ name: string, live: boolean, available: boolean }> {
+export function getSelectedDispatchPolicyName(): string {
+  try {
+    const override = getDispatchPolicyControl(getDb())
+    if (override?.policyName) return override.policyName
+  } catch {}
+  return DISPATCH_POLICY
+}
+
+export function listDispatchPolicies(): Array<{ name: string, live: boolean, available: boolean, active: boolean }> {
+  const active = getSelectedDispatchPolicyName()
   return [
-    { name: 'identity', live: false, available: true },
-    { name: 'heuristic', live: false, available: true },
-    { name: 'llm', live: true, available: true },
-    { name: 'gepa', live: true, available: gepaPolicy != null },
+    { name: 'identity', live: false, available: true, active: active === 'identity' },
+    { name: 'heuristic', live: false, available: true, active: active === 'heuristic' },
+    { name: 'llm', live: true, available: true, active: active === 'llm' },
+    { name: 'gepa', live: true, available: gepaPolicy != null, active: active === 'gepa' },
   ]
 }
 

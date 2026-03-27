@@ -90,6 +90,13 @@
       <div id="telemetry"><div class="empty">Loading...</div></div>
     </div>
   </div>
+
+  <div class="grid">
+    <div class="card full-width">
+      <h2>Replay Governance</h2>
+      <div id="replay-governance"><div class="empty">Loading...</div></div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -98,7 +105,7 @@ const API = ''
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML }
 
 function badge(status) {
-  const map = { success: 'green', failure: 'red', dispatched: 'blue', running: 'yellow', idle: 'yellow', starting: 'blue', dead: 'red' }
+  const map = { success: 'green', failure: 'red', dispatched: 'blue', running: 'yellow', idle: 'yellow', starting: 'blue', dead: 'red', promote: 'green', hold: 'yellow', reject: 'red' }
   return `<span class="badge badge-${map[status] || 'blue'}">${esc(status)}</span>`
 }
 
@@ -127,6 +134,7 @@ async function loadStats() {
   const s = await fetchJSON('/api/stats')
   if (!s) return
   const blocked = s.cost?.budgetBlocked ? ' 🔴' : ''
+  const activePolicy = s.policy?.active?.policyName || 'env-default'
   document.getElementById('stats').innerHTML = `
     <div class="stat-row"><span class="stat-label">Decisions</span><span class="stat-value">${s.decisions}</span></div>
     <div class="stat-row"><span class="stat-label">Success Rate</span><span class="stat-value">${s.successRate}%</span></div>
@@ -136,6 +144,8 @@ async function loadStats() {
     <div class="stat-row"><span class="stat-label">Cost (total)</span><span class="stat-value">$${(s.cost?.total ?? 0).toFixed(2)}</span></div>
     <div class="stat-row"><span class="stat-label">Telemetry Runs (24h)</span><span class="stat-value">${s.cost?.runs24h ?? 0}</span></div>
     <div class="stat-row"><span class="stat-label">Tokens (24h)</span><span class="stat-value">${(s.cost?.tokens24h ?? 0).toLocaleString()}</span></div>
+    <div class="stat-row"><span class="stat-label">Telemetry Coverage</span><span class="stat-value">${Math.round((s.cost?.coverage?.coverageRate ?? 0) * 100)}%</span></div>
+    <div class="stat-row"><span class="stat-label">Active Policy</span><span class="stat-value">${esc(activePolicy)}</span></div>
     <div class="stat-row"><span class="stat-label">Operator Sessions</span><span class="stat-value">${s.operatorSessions}</span></div>
   `
 }
@@ -149,6 +159,8 @@ async function loadTelemetry() {
     <div class="stat-row"><span class="stat-label">24h Cost / Budget</span><span class="stat-value">$${(t.budget?.todayCostUsd ?? 0).toFixed(2)} / $${(t.budget?.dailyUsd ?? 0).toFixed(2)}</span></div>
     <div class="stat-row"><span class="stat-label">24h Runs</span><span class="stat-value">${t.runs ?? 0}</span></div>
     <div class="stat-row"><span class="stat-label">24h Tokens</span><span class="stat-value">${(t.totalTokens ?? 0).toLocaleString()}</span></div>
+    <div class="stat-row"><span class="stat-label">Completed Decisions Covered</span><span class="stat-value">${t.coverage?.decisionsWithTelemetry ?? 0} / ${t.coverage?.completedDecisions ?? 0}</span></div>
+    <div class="stat-row"><span class="stat-label">Orphan Telemetry Runs</span><span class="stat-value">${t.coverage?.orphanTelemetryRuns ?? 0}</span></div>
     <br>
     <table>
       <tr><th>Harness</th><th>Runs</th><th>Cost</th><th>Tokens</th></tr>
@@ -158,6 +170,36 @@ async function loadTelemetry() {
     <table>
       <tr><th>Model</th><th>Runs</th><th>Cost</th></tr>
       ${topModels.map(m => `<tr><td>${esc(m.key)}</td><td>${m.runs}</td><td>$${Number(m.costUsd || 0).toFixed(2)}</td></tr>`).join('')}
+    </table>
+  `
+}
+
+async function loadReplayGovernance() {
+  const r = await fetchJSON('/api/replay/latest')
+  if (!r?.latest) {
+    document.getElementById('replay-governance').innerHTML = '<div class="empty">No replay evaluations recorded yet</div>'
+    return
+  }
+
+  const active = r.activePolicy?.policyName || 'env-default'
+  const latest = r.latest
+  const promotion = latest.promotion?.status || latest.promotionStatus || 'unknown'
+  const delta = latest.comparison?.delta || {}
+  const evidence = latest.summary?.objectiveVector?.diagnostics || {}
+
+  document.getElementById('replay-governance').innerHTML = `
+    <div class="stat-row"><span class="stat-label">Active Dispatch Policy</span><span class="stat-value">${esc(active)}</span></div>
+    <div class="stat-row"><span class="stat-label">Latest Candidate / Baseline</span><span class="stat-value">${esc(latest.candidatePolicyName)} / ${esc(latest.baselinePolicyName || 'none')}</span></div>
+    <div class="stat-row"><span class="stat-label">Promotion Decision</span><span class="stat-value">${badge(promotion)}</span></div>
+    <div class="stat-row"><span class="stat-label">Replay Scope</span><span class="stat-value">${esc(latest.scopeProject || 'all-projects')} · ${esc(latest.scopeSkill || 'all-skills')}</span></div>
+    <div class="stat-row"><span class="stat-label">Examples</span><span class="stat-value">${latest.examples}</span></div>
+    <div class="stat-row"><span class="stat-label">Safe Good Delta</span><span class="stat-value">${delta.safeGoodContinuationRate == null ? 'n/a' : (delta.safeGoodContinuationRate * 100).toFixed(1) + '%'}</span></div>
+    <div class="stat-row"><span class="stat-label">Bad Divergence Delta</span><span class="stat-value">${delta.divergedFromBadDecisionRate == null ? 'n/a' : (delta.divergedFromBadDecisionRate * 100).toFixed(1) + '%'}</span></div>
+    <div class="stat-row"><span class="stat-label">Predicted Cost Delta</span><span class="stat-value">${delta.avgPredictedCostUsd == null ? 'n/a' : '$' + Number(delta.avgPredictedCostUsd).toFixed(2)}</span></div>
+    <div class="stat-row"><span class="stat-label">Telemetry Evidence Samples</span><span class="stat-value">${evidence.predictedCostEvidenceSamples ?? 0}</span></div>
+    <table>
+      <tr><th>Cost Evidence Source</th><th>Count</th></tr>
+      ${((evidence.predictedCostSources || []).slice(0, 5)).map(src => `<tr><td>${esc(src.key)}</td><td>${src.count}</td></tr>`).join('') || '<tr><td colspan="2" class="empty">No cost evidence</td></tr>'}
     </table>
   `
 }
@@ -242,7 +284,7 @@ async function loadHealth() {
 }
 
 async function refresh() {
-  await Promise.all([loadStats(), loadStatus(), loadConfidence(), loadHealth(), loadTelemetry()])
+  await Promise.all([loadStats(), loadStatus(), loadConfidence(), loadHealth(), loadTelemetry(), loadReplayGovernance()])
 }
 
 // SSE for live updates

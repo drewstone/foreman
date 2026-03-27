@@ -131,6 +131,7 @@ test('listReplayExamples derives context history and objective vectors', () => {
   assert.equal(latest.objectives.rejectionSignal, 0)
   assert.equal(latest.objectives.scopeViolation, 0)
   assert.equal(latest.objectives.testsPassed, 1)
+  assert.equal(latest.observed.trajectory, 'terminal')
 })
 
 test('summarizeReplayExamples reports objective coverage and group rates', () => {
@@ -176,6 +177,7 @@ test('summarizeReplayExamples reports objective coverage and group rates', () =>
   assert.equal(summary.avgCostUsd, 1.5)
   assert.equal(summary.bySkill[0]?.key, '/evolve')
   assert.equal(summary.byProject[0]?.key, 'repo')
+  assert.deepEqual(summary.byTrajectory.map(row => row.key).sort(), ['degraded', 'stalled', 'terminal'])
 })
 
 test('exportReplayDataset includes summary and filtered examples', () => {
@@ -188,6 +190,33 @@ test('exportReplayDataset includes summary and filtered examples', () => {
   assert.equal(dataset.examples[0]?.context.project, 'bar')
   assert.equal(dataset.summary.examples, 1)
   assert.ok(typeof dataset.generatedAt === 'string')
+})
+
+test('listReplayExamples derives downstream trajectory labels from later decisions', () => {
+  const db = makeDb()
+  db.prepare(`INSERT INTO goals (id, intent, workspace_path) VALUES (1, 'Recover failure', '/tmp/proj')`).run()
+  db.prepare(`INSERT INTO decisions (
+    id, goal_id, skill, task, reasoning, status, origin, metrics, taste_signal,
+    worktree_path, cost_usd, deliverable_status, created_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    1, 1, '/evolve', 'Bad step', '', 'failure', 'operator',
+    JSON.stringify({ scopeStatus: 'violation', testsPassed: false }),
+    'rejected', '/tmp/proj', 1.5, 'fail', '2026-03-24T00:00:00Z',
+  )
+  db.prepare(`INSERT INTO decisions (
+    id, goal_id, skill, task, reasoning, status, origin, metrics, taste_signal,
+    worktree_path, cost_usd, deliverable_status, created_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    2, 1, '/diagnose', 'Recover', '', 'success', 'operator',
+    JSON.stringify({ scopeStatus: 'clean', testsPassed: true }),
+    'approved', '/tmp/proj', 0.5, 'pass', '2026-03-25T00:00:00Z',
+  )
+
+  const examples = listReplayExamples(db, { limit: 10 })
+  assert.equal(examples[1]?.decisionId, 1)
+  assert.equal(examples[1]?.observed.trajectory, 'recovered')
+  assert.equal(examples[1]?.observed.futureDecisionCount, 1)
+  assert.equal(examples[1]?.observed.nextDecisionStatus, 'success')
 })
 
 test('evaluateReplayPolicy scores safe continuation and bad-decision divergence', async () => {

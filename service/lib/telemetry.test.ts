@@ -3,13 +3,13 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import telemetry from './telemetry.js'
 
-const { ensureTelemetrySchema, recordTelemetryRun, summarizeTelemetry, getDailyTelemetryCost, estimateTelemetryCost } = telemetry
+const { ensureTelemetrySchema, recordTelemetryRun, summarizeTelemetry, getDailyTelemetryCost, estimateTelemetryCost, summarizeTelemetryCoverage } = telemetry
 
 function makeDb(): Database.Database {
   const db = new Database(':memory:')
   db.exec(`
     CREATE TABLE goals (id INTEGER PRIMARY KEY);
-    CREATE TABLE decisions (id INTEGER PRIMARY KEY);
+    CREATE TABLE decisions (id INTEGER PRIMARY KEY, status TEXT);
   `)
   ensureTelemetrySchema(db)
   return db
@@ -141,4 +141,30 @@ test('estimateTelemetryCost falls back from repo+skill to broader telemetry prio
   const global = estimateTelemetryCost(db, { repo: 'missing', skill: '/missing' })
   assert.ok(Math.abs((global?.costUsd ?? 0) - 0.8) < 1e-9)
   assert.equal(global?.source, 'global')
+})
+
+test('summarizeTelemetryCoverage reports completed-decision coverage and orphans', () => {
+  const db = makeDb()
+  db.prepare(`INSERT INTO decisions (id, status) VALUES (1, 'success'), (2, 'failure'), (3, 'dispatched')`).run()
+
+  recordTelemetryRun(db, {
+    eventKey: 'covered',
+    decisionId: 1,
+    harness: 'claude',
+    costUsd: 1,
+    finishedAt: '2099-01-01T00:00:00Z',
+  })
+  recordTelemetryRun(db, {
+    eventKey: 'orphan',
+    harness: 'claude',
+    costUsd: 2,
+    finishedAt: '2099-01-01T00:00:00Z',
+  })
+
+  const coverage = summarizeTelemetryCoverage(db)
+  assert.equal(coverage.completedDecisions, 2)
+  assert.equal(coverage.decisionsWithTelemetry, 1)
+  assert.equal(coverage.decisionsWithoutTelemetry, 1)
+  assert.equal(coverage.coverageRate, 0.5)
+  assert.equal(coverage.orphanTelemetryRuns, 1)
 })
