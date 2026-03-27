@@ -30,6 +30,116 @@ export interface TelemetryImportSummary {
   }
 }
 
+export interface TelemetryImportRunRow {
+  id: number
+  status: string
+  traceRoot: string | null
+  maxAgeHours: number | null
+  scanned: number
+  imported: number
+  skipped: number
+  summary: TelemetryImportSummary | null
+  error: string | null
+  startedAt: string
+  finishedAt: string | null
+}
+
+export function ensureTelemetryImportSchema(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS telemetry_import_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      status TEXT NOT NULL,
+      trace_root TEXT,
+      max_age_hours INTEGER,
+      scanned INTEGER NOT NULL DEFAULT 0,
+      imported INTEGER NOT NULL DEFAULT 0,
+      skipped INTEGER NOT NULL DEFAULT 0,
+      summary_json TEXT,
+      error TEXT,
+      started_at TEXT NOT NULL DEFAULT (datetime('now')),
+      finished_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_telemetry_import_runs_started_at
+      ON telemetry_import_runs(started_at DESC);
+  `)
+}
+
+export async function runTelemetryImport(
+  db: Database.Database,
+  options?: {
+    traceRoot?: string
+    maxAgeHours?: number
+    homeDir?: string
+  },
+): Promise<TelemetryImportSummary> {
+  const startedAt = new Date().toISOString()
+  const start = db.prepare(`
+    INSERT INTO telemetry_import_runs (status, trace_root, max_age_hours, started_at)
+    VALUES ('running', ?, ?, ?)
+  `).run(options?.traceRoot ?? null, options?.maxAgeHours ?? null, startedAt)
+  const runId = Number(start.lastInsertRowid)
+
+  try {
+    const summary = await importTelemetryArtifacts(db, options)
+    db.prepare(`
+      UPDATE telemetry_import_runs
+      SET status = 'success',
+          scanned = ?,
+          imported = ?,
+          skipped = ?,
+          summary_json = ?,
+          finished_at = ?
+      WHERE id = ?
+    `).run(
+      summary.scanned,
+      summary.imported,
+      summary.skipped,
+      JSON.stringify(summary),
+      new Date().toISOString(),
+      runId,
+    )
+    return summary
+  } catch (error) {
+    db.prepare(`
+      UPDATE telemetry_import_runs
+      SET status = 'failure',
+          error = ?,
+          finished_at = ?
+      WHERE id = ?
+    `).run(
+      error instanceof Error ? error.message : String(error),
+      new Date().toISOString(),
+      runId,
+    )
+    throw error
+  }
+}
+
+export function getLatestTelemetryImportRun(db: Database.Database): TelemetryImportRunRow | null {
+  const row = db.prepare(`
+    SELECT *
+    FROM telemetry_import_runs
+    ORDER BY datetime(started_at) DESC, id DESC
+    LIMIT 1
+  `).get() as Record<string, unknown> | undefined
+  return row ? hydrateTelemetryImportRun(row) : null
+}
+
+export function listTelemetryImportRuns(
+  db: Database.Database,
+  options?: { limit?: number },
+): TelemetryImportRunRow[] {
+  const limit = options?.limit ?? 10
+  const rows = db.prepare(`
+    SELECT *
+    FROM telemetry_import_runs
+    ORDER BY datetime(started_at) DESC, id DESC
+    LIMIT ?
+  `).all(limit) as Array<Record<string, unknown>>
+  return rows.map(hydrateTelemetryImportRun)
+}
+
 export async function importTelemetryArtifacts(
   db: Database.Database,
   options?: {
@@ -293,5 +403,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export default {
+  ensureTelemetryImportSchema,
   importTelemetryArtifacts,
+  runTelemetryImport,
+  getLatestTelemetryImportRun,
+  listTelemetryImportRuns,
+}
+
+function hydrateTelemetryImportRun(row: Record<string, unknown>): TelemetryImportRunRow {
+  return {
+    id: Number(row.id),
+    status: String(row.status),
+    traceRoot: typeof row.trace_root === 'string' ? row.trace_root : null,
+    maxAgeHours: typeof row.max_age_hours === 'number' ? row.max_age_hours : row.max_age_hours == null ? null : Number(row.max_age_hours),
+    scanned: Number(row.scanned ?? 0),
+    imported: Number(row.imported ?? 0),
+    skipped: Number(row.skipped ?? 0),
+    summary: typeof row.summary_json === 'string' && row.summary_json
+      ? JSON.parse(row.summary_json) as TelemetryImportSummary
+      : null,
+    error: typeof row.error === 'string' ? row.error : null,
+    startedAt: String(row.started_at),
+    finishedAt: typeof row.finished_at === 'string' ? row.finished_at : null,
+  }
 }

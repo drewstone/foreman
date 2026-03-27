@@ -53,7 +53,16 @@ import { reviewSession } from './lib/session-reviewer.js'
 import { maybeAutoDispatch } from './lib/auto-dispatch.js'
 import { runPromptLabCycle, pullSamples, getActiveExperiment, getDefaultSurfaces } from './lib/prompt-lab.js'
 import telemetry from './lib/telemetry.js'
-const { ensureTelemetrySchema, recordTelemetryRun, summarizeTelemetry, listTelemetryRuns, getDailyTelemetryCost, summarizeTelemetryCoverage } = telemetry
+const {
+  ensureTelemetrySchema,
+  recordTelemetryRun,
+  summarizeTelemetry,
+  listTelemetryRuns,
+  getDailyTelemetryCost,
+  summarizeTelemetryCoverage,
+  summarizeTelemetrySources,
+  summarizeTelemetryHarnessHealth,
+} = telemetry
 import replay from './lib/replay.js'
 
 const { listReplayExamples, summarizeReplayExamples, exportReplayDataset, evaluateReplayPolicy } = replay
@@ -69,7 +78,12 @@ const {
   listReplayPolicyEvaluations,
 } = policyControl
 const { promoteReplayPolicy, getReplayGovernanceSnapshot } = replayGovernor
-const { importTelemetryArtifacts } = telemetryImport
+const {
+  ensureTelemetryImportSchema,
+  runTelemetryImport,
+  getLatestTelemetryImportRun,
+  listTelemetryImportRuns,
+} = telemetryImport
 
 // ─── Database ────────────────────────────────────────────────────────
 
@@ -197,6 +211,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status);
 `)
 ensureTelemetrySchema(db)
+ensureTelemetryImportSchema(db)
 ensurePolicyControlSchema(db)
 
 // Migrations for existing databases
@@ -1006,6 +1021,9 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const telemetry24h = summarizeTelemetry(db, 24)
       const telemetryAll = summarizeTelemetry(db, 24 * 365 * 20)
       const telemetryCoverage = summarizeTelemetryCoverage(db)
+      const telemetrySources = summarizeTelemetrySources(db, 24 * 7)
+      const telemetryHarnessHealth = summarizeTelemetryHarnessHealth(db, 24 * 7)
+      const latestTelemetryImport = getLatestTelemetryImportRun(db)
       const todayCost = getDailyTelemetryCost(db)
       const activePolicy = getDispatchPolicyControl(db)
       const latestReplayEvaluation = getLatestReplayPolicyEvaluation(db)
@@ -1047,6 +1065,9 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           byProvider: telemetry24h.byProvider,
           byModel: telemetry24h.byModel,
           byRepo: telemetry24h.byRepo,
+          bySource: telemetrySources,
+          harnessHealth: telemetryHarnessHealth,
+          latestImport: latestTelemetryImport,
           bySkill: costBySkill,
         },
         policy: {
@@ -1060,9 +1081,14 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const hours = parseInt(parseQuery(url).get('hours') ?? '24', 10)
       const summary = summarizeTelemetry(db, Number.isFinite(hours) ? hours : 24)
       const todayCost = getDailyTelemetryCost(db)
+      const recentHours = Number.isFinite(hours) ? hours : 24
       return json(res, {
         ...summary,
         coverage: summarizeTelemetryCoverage(db),
+        sources: summarizeTelemetrySources(db, recentHours),
+        harnessHealth: summarizeTelemetryHarnessHealth(db, Math.max(24, recentHours * 7)),
+        latestImport: getLatestTelemetryImportRun(db),
+        recentImports: listTelemetryImportRuns(db, { limit: 5 }),
         budget: {
           dailyUsd: MAX_DAILY_COST_USD,
           todayCostUsd: todayCost,
@@ -1115,7 +1141,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const body = await readBody(req)
       const hours = body.maxAgeHours != null ? Number(body.maxAgeHours) : undefined
       const traceRoot = body.traceRoot ? String(body.traceRoot) : undefined
-      const result = await importTelemetryArtifacts(db, {
+      const result = await runTelemetryImport(db, {
         maxAgeHours: Number.isFinite(hours) ? hours : undefined,
         traceRoot,
       })
@@ -1531,7 +1557,7 @@ server.listen(PORT, '0.0.0.0', () => {
   // Run initial learning loop (fast pattern extraction), then every hour
   setTimeout(async () => {
     try {
-      const result = await importTelemetryArtifacts(db)
+      const result = await runTelemetryImport(db)
       if (result.imported > 0 || result.skipped > 0) {
         log(`Telemetry import: imported ${result.imported}, skipped ${result.skipped}, scanned ${result.scanned}`)
       }
@@ -1541,7 +1567,7 @@ server.listen(PORT, '0.0.0.0', () => {
   }, 10_000)
   setInterval(async () => {
     try {
-      const result = await importTelemetryArtifacts(db)
+      const result = await runTelemetryImport(db)
       if (result.imported > 0) {
         log(`Telemetry import: imported ${result.imported}, skipped ${result.skipped}, scanned ${result.scanned}`)
       }

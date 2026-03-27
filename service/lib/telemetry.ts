@@ -56,6 +56,23 @@ export interface TelemetryCoverageSummary {
   orphanTelemetryRuns: number
 }
 
+export interface TelemetrySourceRow {
+  key: string
+  runs: number
+  costUsd: number
+  totalTokens: number
+  lastSeenAt: string | null
+}
+
+export interface TelemetryHarnessHealthRow {
+  harness: string
+  runs: number
+  costUsd: number
+  totalTokens: number
+  lastSeenAt: string | null
+  sources: Array<{ key: string, count: number }>
+}
+
 export function ensureTelemetrySchema(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS telemetry_runs (
@@ -259,6 +276,89 @@ export function summarizeTelemetryCoverage(db: Database.Database): TelemetryCove
   }
 }
 
+export function summarizeTelemetrySources(
+  db: Database.Database,
+  hoursBack = 24,
+  limit = 20,
+): TelemetrySourceRow[] {
+  const period = periodClause(hoursBack)
+  return db.prepare(`
+    SELECT
+      COALESCE(source, 'unknown') as key,
+      COUNT(*) as runs,
+      COALESCE(SUM(cost_usd), 0) as costUsd,
+      COALESCE(SUM(total_tokens), 0) as totalTokens,
+      MAX(COALESCE(finished_at, created_at)) as lastSeenAt
+    FROM telemetry_runs
+    ${period.where}
+    GROUP BY COALESCE(source, 'unknown')
+    ORDER BY runs DESC, costUsd DESC
+    LIMIT ?
+  `).all(...period.args, limit) as TelemetrySourceRow[]
+}
+
+export function summarizeTelemetryHarnessHealth(
+  db: Database.Database,
+  hoursBack = 24 * 7,
+  limit = 12,
+): TelemetryHarnessHealthRow[] {
+  const period = periodClause(hoursBack)
+  const rows = db.prepare(`
+    SELECT
+      COALESCE(harness, 'unknown') as harness,
+      COALESCE(source, 'unknown') as source,
+      COUNT(*) as runs,
+      COALESCE(SUM(cost_usd), 0) as costUsd,
+      COALESCE(SUM(total_tokens), 0) as totalTokens,
+      MAX(COALESCE(finished_at, created_at)) as lastSeenAt
+    FROM telemetry_runs
+    ${period.where}
+    GROUP BY COALESCE(harness, 'unknown'), COALESCE(source, 'unknown')
+    ORDER BY harness ASC, runs DESC
+  `).all(...period.args) as Array<{
+    harness: string
+    source: string
+    runs: number
+    costUsd: number
+    totalTokens: number
+    lastSeenAt: string | null
+  }>
+
+  const byHarness = new Map<string, TelemetryHarnessHealthRow>()
+  for (const row of rows) {
+    const current = byHarness.get(row.harness) ?? {
+      harness: row.harness,
+      runs: 0,
+      costUsd: 0,
+      totalTokens: 0,
+      lastSeenAt: null,
+      sources: [],
+    }
+    current.runs += row.runs
+    current.costUsd += row.costUsd
+    current.totalTokens += row.totalTokens
+    current.lastSeenAt = maxIso(current.lastSeenAt, row.lastSeenAt)
+    current.sources.push({ key: row.source, count: row.runs })
+    byHarness.set(row.harness, current)
+  }
+
+  return [...byHarness.values()]
+    .map((row) => ({
+      ...row,
+      sources: row.sources
+        .sort((left, right) => right.count - left.count || left.key.localeCompare(right.key))
+        .slice(0, 4),
+    }))
+    .sort((left, right) => right.runs - left.runs || left.harness.localeCompare(right.harness))
+    .slice(0, limit)
+}
+
+function maxIso(left: string | null, right: string | null): string | null {
+  if (!left) return right
+  if (!right) return left
+  return left >= right ? left : right
+}
+
 export function estimateTelemetryCost(
   db: Database.Database,
   input: { repo?: string | null, skill?: string | null },
@@ -323,4 +423,6 @@ export default {
   getDailyTelemetryCost,
   estimateTelemetryCost,
   summarizeTelemetryCoverage,
+  summarizeTelemetrySources,
+  summarizeTelemetryHarnessHealth,
 }

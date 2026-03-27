@@ -6,7 +6,12 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
 import telemetry from './telemetry.js'
-import { importTelemetryArtifacts } from './telemetry-import.js'
+import {
+  ensureTelemetryImportSchema,
+  getLatestTelemetryImportRun,
+  importTelemetryArtifacts,
+  runTelemetryImport,
+} from './telemetry-import.js'
 
 const { ensureTelemetrySchema } = telemetry
 
@@ -17,6 +22,7 @@ function makeDb(): Database.Database {
     CREATE TABLE decisions (id INTEGER PRIMARY KEY, status TEXT);
   `)
   ensureTelemetrySchema(db)
+  ensureTelemetryImportSchema(db)
   return db
 }
 
@@ -108,6 +114,44 @@ test('importTelemetryArtifacts imports trace bundles, session metrics, and raw P
     assert.equal(byHarness.get('claude')?.provider, 'anthropic')
     assert.equal(byHarness.get('codex')?.provider, 'openai')
     assert.equal(byHarness.get('pi')?.costUsd, 0.33)
+  } finally {
+    if (previousForemanHome == null) delete process.env.FOREMAN_HOME
+    else process.env.FOREMAN_HOME = previousForemanHome
+  }
+})
+
+test('runTelemetryImport persists import-run history', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'foreman-telemetry-run-'))
+  const previousForemanHome = process.env.FOREMAN_HOME
+  process.env.FOREMAN_HOME = root
+
+  try {
+    const traceRoot = join(root, 'traces')
+    const sessionMetricsDir = join(traceRoot, 'sessions')
+    await mkdir(sessionMetricsDir, { recursive: true })
+    await writeFile(join(sessionMetricsDir, 'claude.json'), `${JSON.stringify({
+      sessionId: 'claude-ses-2',
+      harness: 'claude',
+      repo: 'foreman',
+      goal: 'Track telemetry',
+      timestamp: '2026-03-27T03:00:00.000Z',
+      exitCode: 0,
+      success: true,
+      durationMs: 15_000,
+      totalTokens: 99,
+    }, null, 2)}\n`, 'utf8')
+
+    const db = makeDb()
+    const summary = await runTelemetryImport(db, { traceRoot, maxAgeHours: 24 * 365, homeDir: root })
+    assert.equal(summary.imported, 1)
+
+    const latest = getLatestTelemetryImportRun(db)
+    assert.ok(latest)
+    assert.equal(latest?.status, 'success')
+    assert.equal(latest?.imported, 1)
+    assert.equal(latest?.scanned, 1)
+    assert.equal(latest?.summary?.imported, 1)
+    assert.ok(latest?.finishedAt)
   } finally {
     if (previousForemanHome == null) delete process.env.FOREMAN_HOME
     else process.env.FOREMAN_HOME = previousForemanHome

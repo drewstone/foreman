@@ -3,7 +3,16 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import telemetry from './telemetry.js'
 
-const { ensureTelemetrySchema, recordTelemetryRun, summarizeTelemetry, getDailyTelemetryCost, estimateTelemetryCost, summarizeTelemetryCoverage } = telemetry
+const {
+  ensureTelemetrySchema,
+  recordTelemetryRun,
+  summarizeTelemetry,
+  getDailyTelemetryCost,
+  estimateTelemetryCost,
+  summarizeTelemetryCoverage,
+  summarizeTelemetrySources,
+  summarizeTelemetryHarnessHealth,
+} = telemetry
 
 function makeDb(): Database.Database {
   const db = new Database(':memory:')
@@ -167,4 +176,50 @@ test('summarizeTelemetryCoverage reports completed-decision coverage and orphans
   assert.equal(coverage.decisionsWithoutTelemetry, 1)
   assert.equal(coverage.coverageRate, 0.5)
   assert.equal(coverage.orphanTelemetryRuns, 1)
+})
+
+test('summarizeTelemetrySources and summarizeTelemetryHarnessHealth expose source mix and freshness', () => {
+  const db = makeDb()
+
+  recordTelemetryRun(db, {
+    eventKey: 'run-1',
+    harness: 'claude',
+    source: 'session-run',
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-6',
+    costUsd: 1,
+    totalTokens: 100,
+    finishedAt: '2099-01-01T00:00:00Z',
+  })
+  recordTelemetryRun(db, {
+    eventKey: 'run-2',
+    harness: 'claude',
+    source: 'session_trace_import',
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-6',
+    costUsd: 0.5,
+    totalTokens: 80,
+    finishedAt: '2099-01-01T01:00:00Z',
+  })
+  recordTelemetryRun(db, {
+    eventKey: 'run-3',
+    harness: 'codex',
+    source: 'session-run',
+    provider: 'openai',
+    model: 'gpt-5-codex',
+    costUsd: 0.75,
+    totalTokens: 60,
+    finishedAt: '2099-01-01T02:00:00Z',
+  })
+
+  const sources = summarizeTelemetrySources(db, 24 * 365 * 200)
+  const sourceMap = new Map(sources.map((row) => [row.key, row]))
+  assert.equal(sourceMap.get('session-run')?.runs, 2)
+  assert.equal(sourceMap.get('session_trace_import')?.runs, 1)
+
+  const harnesses = summarizeTelemetryHarnessHealth(db, 24 * 365 * 200)
+  assert.equal(harnesses[0]?.harness, 'claude')
+  assert.equal(harnesses[0]?.runs, 2)
+  assert.deepEqual(harnesses[0]?.sources.map((row) => row.key).sort(), ['session-run', 'session_trace_import'])
+  assert.equal(harnesses[0]?.lastSeenAt, '2099-01-01T01:00:00Z')
 })

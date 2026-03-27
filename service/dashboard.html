@@ -125,6 +125,15 @@ function timeAgo(ts) {
   return `${Math.floor(s/86400)}d ago`
 }
 
+function fmtPct(value) {
+  return value == null ? 'n/a' : `${(value * 100).toFixed(1)}%`
+}
+
+function fmtSourceMix(sources) {
+  if (!sources || sources.length === 0) return 'none'
+  return sources.map(src => `${esc(src.key)} (${src.count})`).join(', ')
+}
+
 async function fetchJSON(path) {
   try { const r = await fetch(API + path); return r.ok ? await r.json() : null }
   catch { return null }
@@ -155,12 +164,18 @@ async function loadTelemetry() {
   if (!t) return
   const topHarnesses = t.byHarness?.slice(0, 6) ?? []
   const topModels = t.byModel?.slice(0, 6) ?? []
+  const topSources = t.sources?.slice(0, 6) ?? []
+  const harnessHealth = t.harnessHealth?.slice(0, 6) ?? []
+  const latestImport = t.latestImport
+  const recentImports = t.recentImports?.slice(0, 5) ?? []
   document.getElementById('telemetry').innerHTML = `
     <div class="stat-row"><span class="stat-label">24h Cost / Budget</span><span class="stat-value">$${(t.budget?.todayCostUsd ?? 0).toFixed(2)} / $${(t.budget?.dailyUsd ?? 0).toFixed(2)}</span></div>
     <div class="stat-row"><span class="stat-label">24h Runs</span><span class="stat-value">${t.runs ?? 0}</span></div>
     <div class="stat-row"><span class="stat-label">24h Tokens</span><span class="stat-value">${(t.totalTokens ?? 0).toLocaleString()}</span></div>
     <div class="stat-row"><span class="stat-label">Completed Decisions Covered</span><span class="stat-value">${t.coverage?.decisionsWithTelemetry ?? 0} / ${t.coverage?.completedDecisions ?? 0}</span></div>
     <div class="stat-row"><span class="stat-label">Orphan Telemetry Runs</span><span class="stat-value">${t.coverage?.orphanTelemetryRuns ?? 0}</span></div>
+    <div class="stat-row"><span class="stat-label">Latest Import</span><span class="stat-value">${latestImport ? `${badge(latestImport.status)} ${timeAgo(latestImport.finishedAt || latestImport.startedAt)}` : 'none'}</span></div>
+    <div class="stat-row"><span class="stat-label">Latest Import Result</span><span class="stat-value">${latestImport ? `${latestImport.imported}/${latestImport.scanned} imported` : 'n/a'}</span></div>
     <br>
     <table>
       <tr><th>Harness</th><th>Runs</th><th>Cost</th><th>Tokens</th></tr>
@@ -168,8 +183,23 @@ async function loadTelemetry() {
     </table>
     <br>
     <table>
+      <tr><th>Source</th><th>Runs</th><th>Cost</th><th>Last Seen</th></tr>
+      ${topSources.map(src => `<tr><td>${esc(src.key)}</td><td>${src.runs}</td><td>$${Number(src.costUsd || 0).toFixed(2)}</td><td>${src.lastSeenAt ? esc(timeAgo(src.lastSeenAt)) : 'n/a'}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">No telemetry sources</td></tr>'}
+    </table>
+    <br>
+    <table>
       <tr><th>Model</th><th>Runs</th><th>Cost</th></tr>
       ${topModels.map(m => `<tr><td>${esc(m.key)}</td><td>${m.runs}</td><td>$${Number(m.costUsd || 0).toFixed(2)}</td></tr>`).join('')}
+    </table>
+    <br>
+    <table>
+      <tr><th>Harness</th><th>Runs</th><th>Last Seen</th><th>Sources</th></tr>
+      ${harnessHealth.map(h => `<tr><td>${esc(h.harness)}</td><td>${h.runs}</td><td>${h.lastSeenAt ? esc(timeAgo(h.lastSeenAt)) : 'n/a'}</td><td>${fmtSourceMix(h.sources)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">No harness telemetry</td></tr>'}
+    </table>
+    <br>
+    <table>
+      <tr><th>Import Status</th><th>When</th><th>Imported</th><th>Skipped</th></tr>
+      ${recentImports.map(run => `<tr><td>${badge(run.status)}</td><td>${esc(timeAgo(run.finishedAt || run.startedAt))}</td><td>${run.imported}/${run.scanned}</td><td>${run.skipped}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">No import runs yet</td></tr>'}
     </table>
   `
 }
