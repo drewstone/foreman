@@ -1,149 +1,276 @@
 # Foreman Roadmap v1
 
-Date: 2026-03-24 (updated 2026-03-24 Gen 11)
-Generation: 11 (current)
-Decisions: 97 | Deliverable-verified: 19 (11 pass, 8 fail) | Goals: 4
+Date: 2026-03-26
+Status: refreshed after module split, `.evolve` migration, telemetry design, and installer/onboarding work
 
-## Where We Are
+This roadmap replaces the older "tests: 0 / cost tracking missing" framing. That was useful during the first build sprint, but it is now stale and misleading.
 
-Built in 4 days across 10 generations. 97 dispatches, 5K lines of TypeScript, 9 modules. The system dispatches agent sessions, harvests outcomes, verifies deliverables, enforces scope via git hooks, and tracks confidence per (skill, project).
+The correct next question is no longer "can Foreman do anything real?"
+It is:
 
-Key metrics:
-- Focused task deliverable rate: 85% (11/13 with specs)
-- Self-improvement deliverable rate: 1/24 (4%) — first scope-respecting edit in Gen 10
-- SWE-bench: 0% pass, 59% partial (right files, wrong fix)
-- Session success vs actual deliverable: 91.5% vs ~56% (35pp gap closed by Gen 9 verification)
-- Tests: 0
+1. Can Foreman measure itself honestly?
+2. Can it improve itself safely?
+3. Can someone other than Drew install and trust it?
 
-## Competitive Position
+The rest of the roadmap follows from those three questions.
 
-| Capability | Hyperagents | Hermes (10.3K stars) | Foreman |
-|---|---|---|---|
-| Portfolio orchestration | None | None | **Unique** |
-| Honest deliverable measurement | Published benchmarks | Community benchmarks | **Novel** (3-tier metric) |
-| Scope enforcement | Diff validation | None | **Novel** (git hooks) |
-| Operator session mining | None | Honcho profiles | **Unique** (3000+ sessions) |
-| Single-task coding | Strong | Strong (200+ models) | Weak (0% SWE-bench) |
-| Tests | Research rigor | 3,000 | **0** |
-| Execution backends | Unknown | 6 (Docker, SSH, Modal...) | 1 (tmux) |
-| Model support | Multiple | 200+ (OpenRouter) | Claude only |
-| Community | Meta/FAIR | Active contributors | 1 user |
+## Where Foreman Is Strong
 
-Foreman's moat: portfolio orchestration + honest measurement + scope enforcement + operator learning. Nobody else does all four. But the foundation (tests, backends, multi-model) is far behind production-grade competitors.
+- Portfolio orchestration across goals, repos, and skills
+- Honest deliverable verification and scope enforcement
+- Session mining and operator-learning as a product differentiator
+- Clear service architecture with a split `service/lib` surface
+- Early web dashboard, plans, confidence, and taste primitives
 
-## Tier 1: Foundation (must-haves before anyone else can use this)
+## Where Foreman Is Still Weak
 
-### 1.1 Test Suite
-- **Why**: 0 tests. Can't self-improve (no regression gate), can't ship, can't CI. Everything else depends on this.
-- **What**: Unit tests for verify-deliverable.ts, scope-enforcer.ts, dispatch-policy.ts, confidence.ts. Integration tests for the harvest pipeline. E2E test for dispatch → harvest → verify flow.
-- **Effort**: 2-3 sessions
-- **Blocks**: Self-improvement, CI, contributor onboarding
+- Direct service integration coverage is still thin
+- Runtime substrate is still too tmux-centric
+- Cost/telemetry wiring is not yet producer-complete across all harnesses
+- External-user onboarding is only now becoming product-grade
+- Self-improvement is conceptually promising but still under-instrumented
 
-### 1.2 Service Module Split -- DONE (Gen 11)
-- **Result**: 3,580 -> 1,141 lines in index.ts. 10 extracted modules: state.ts, session-manager.ts, watcher.ts, harvester.ts, post-completion.ts, prompt-optimizer.ts, auto-dispatch.ts, prompt-composer.ts, maintenance.ts, learning-loop.ts.
-- 160 tests passing, clean TypeScript compilation.
+## Strategic Position
 
-### 1.3 Web Dashboard -- STARTED (Gen 11 MVP)
-- **Result**: Single HTML file at http://localhost:7374/. Stats, goals, live sessions, decisions, confidence matrix, events. SSE for live updates. Dark theme, zero build step.
-- **Remaining**: Plan board, session detail view with full output, dispatch form, taste/feedback UI.
+Foreman should not chase other systems wholesale.
 
-### 1.4 E2E Installer Test
-- **Why**: `curl install.sh` has never been tested on a clean machine.
-- **What**: Docker-based test: fresh Ubuntu, run installer, verify service starts, dispatch a task, verify deliverable.
-- **Effort**: 1 session
-- **Blocks**: Distribution, onboarding
+It should combine:
 
-## Tier 2: Competitive Differentiators (double down on what's unique)
+- Hermes for product UX and operational ergonomics
+- autoresearch for narrow, measurable optimization loops
+- Hyperagents for long-term self-improvement architecture
 
-### 2.1 Deliverable Spec Auto-Inference
-- **Why**: Currently manual — operator must specify `deliverable.path` in dispatch. LLM should infer it from task description.
-- **What**: Before dispatch, a fast LLM call (Haiku) analyzes the task and generates a DeliverableSpec. "Write results to foo.md" → `{path: "foo.md", minLines: 10}`.
-- **Effort**: 1-2 sessions
+See [`009-agent-landscape-hermes-hyperagents-autoresearch.md`](./research/decisions/009-agent-landscape-hermes-hyperagents-autoresearch.md) for the detailed comparison.
 
-### 2.2 Scope Enforcement UX
-- **Why**: Git hooks reject commits but the agent doesn't always recover gracefully. Need clear retry guidance.
-- **What**: Improve hook error messages. Add prompt instruction: "If your commit is rejected by a scope hook, unstage the out-of-scope files with `git reset HEAD <file>` and commit only the allowed files." Test with 5 scoped dispatches.
-- **Effort**: 1 session
+## Phase 1: Make The System Measurable
 
-### 2.3 Operator Feedback Loop
-- **Why**: `agree/disagree` confidence signals are defined but never called. The operator has no way to approve/reject dispatches.
-- **What**: Wire up taste API. Add `foreman approve <id>` / `foreman reject <id>` CLI commands. Dashboard buttons. Confidence updates on feedback.
-- **Effort**: 1 session
+### 1. Replay Harness For Policy Evaluation
 
-### 2.4 Confidence Recalibration
-- **Why**: 19 deliverable-verified decisions — first real data for calibration. Can compute ECE.
-- **What**: Analyze deliverable_status vs confidence at dispatch time. Plot calibration curve. Adjust signal weights if miscalibrated. Target ECE < 0.15.
-- **Effort**: 1 session
+Build an offline replay harness over historical decisions and verified outcomes.
 
-### 2.5 Cost Tracking
-- **Why**: Still $0 across all decisions. Can't optimize what you can't measure.
-- **What**: Parse Claude Code session cost from pipe-pane logs or `claude --usage` API. Store per-decision. Add to dashboard and CLI.
-- **Effort**: 1 session
+Why:
 
-## Tier 3: Expansion (reach new users and use cases)
+- This is the missing substrate for safe self-improvement.
+- Policy changes should be tested against old work before they touch live repos.
 
-### 3.1 Docker Execution Backend
-- **Why**: tmux-only means local-only. Docker enables cloud deployment, better isolation, multi-user, CI integration.
-- **What**: New backend in ExecutionBackend interface. `docker run` with mounted worktree, Claude Code installed. Session monitoring via `docker logs`.
-- **Effort**: 2-3 sessions
+Deliverables:
 
-### 3.2 Multi-Model Support (OpenRouter)
-- **Why**: Claude-only limits cost optimization and capability matching. Haiku for simple tasks, Opus for complex.
-- **What**: Model router in dispatch. selectModel() returns model + provider. Support OpenRouter endpoint for 200+ models.
-- **Effort**: 1-2 sessions
+- archived decision bundles
+- replay evaluator
+- scorecards for skill selection, intervention rate, cost, and deliverable outcome
 
-### 3.3 Slack/Discord Gateway
-- **Why**: Mobile access. Review PRs, approve dispatches, check status from phone.
-- **What**: Slack bot (slash commands + event subscriptions). Existing gateway/slack.ts is scaffolded but untested.
-- **Effort**: 1-2 sessions
+Priority: P0
+Confidence: 85-92%
 
-### 3.4 Agent SDK Migration
-- **Why**: tmux + pipe-pane is brittle. Claude Agent SDK provides proper tool tracking, cost reporting, streaming, structured output.
-- **What**: Replace tmux backend with Agent SDK. Each dispatch becomes an SDK agent run. Output captured structurally, not via terminal scraping.
-- **Effort**: Big refactor (3-5 sessions)
+### 2. Producer-Complete Telemetry
 
-## Tier 4: Research (validate the thesis)
+Foreman needs one normalized telemetry sink across:
 
-### 4.1 AxGEPA Dispatch Policy Training
-- **Why**: 97 decisions — enough data to start training the learned dispatch policy.
-- **What**: Set FOREMAN_DISPATCH_POLICY=gepa. Train on (context, decision, outcome) triples. Compare to LLM policy on held-out goals.
-- **Effort**: 2-3 sessions
+- Claude Code
+- Codex
+- Pi
+- Opencode
+- future direct API providers
 
-### 4.2 SWE-bench with Slim Prompts
-- **Why**: Bare outperformed full (78% vs 50% partial). Test whether Gen 9's slim tier improves pass rate from 0%.
-- **What**: Rerun 10 SWE-bench tasks with slim prompts. Compare to existing bare/full results.
-- **Effort**: 1 session (30-60 min compute)
+Why:
 
-### 4.3 Cross-Repo Deployment
-- **Why**: First external user is the real product validation.
-- **What**: Find a willing beta tester. Install on their machine. Set up a goal. Observe what breaks.
-- **Effort**: Variable
+- Cost controls, routing, and dashboard views are only as good as the completeness of their inputs.
 
-### 4.4 Paper Finalization
-- **Why**: Draft exists (279 lines). SWE-bench + Gen 9/10 results need to be added.
-- **What**: Update results sections with deliverable verification data, scope enforcement findings, context rot ablation. Submit to workshop or arxiv.
-- **Effort**: 1-2 sessions
+Deliverables:
 
-## Critical Path
+- normalized run schema
+- ingestion for every producer path
+- budget views by harness, model, repo, and goal
 
-```
-Tests ──→ Module split ──→ Web dashboard ──→ Docker backend ──→ First external user
-  │                                                                    │
-  └── self-improvement becomes viable ─────────────────────────────────┘
-```
+Priority: P0
+Confidence: 88-95%
 
-## Session History (for context)
+### 3. CI For The Real Critical Path
 
-| Session | Date | Key Outputs |
-|---|---|---|
-| 1 | Mar 22 | Scaffold → service + Pi extension. Gen 0-2. |
-| 2 | Mar 22-23 | Gen 3-4. Confidence, overnight run (26 dispatches, 85%). |
-| 3 | Mar 23 | Gen 5-7. Self-improvement (0/18), planning layer, SWE-bench harness. |
-| 4 | Mar 24 | Gen 8-10. Evidence pursuit, paper, deliverable verification, scope enforcement. 3 critical bugs fixed. Exp 5/6 honest self-assessment. |
-| 5 | Mar 24 | Gen 11. Module split (3580->1141 lines, 10 modules). Skill chaining. Web dashboard MVP. |
+Current tests are useful, but the most important product path is still under-tested.
 
-## Next Session Priorities
+Add CI for:
 
-1. **Test suite** for service/lib modules (verify-deliverable, scope-enforcer, dispatch-policy, confidence)
-2. **Module split** of service/index.ts into 8 focused modules
-3. **Web dashboard** MVP (status page + session viewer + decision log)
+- `npm test`
+- service API smoke tests
+- dispatch -> harvest -> verify -> telemetry integration
+- installer smoke test on clean machine
+
+Priority: P0
+Confidence: 90-95%
+
+## Phase 2: Make The Runtime Reliable
+
+### 4. Backend-First Execution Model
+
+Foreman should stop behaving like a tmux product that happens to have abstractions.
+It should behave like a backend-oriented system where tmux is just one backend.
+
+Target backends:
+
+- local tmux
+- Docker
+- remote sandbox
+- structured provider runtime later
+
+Why:
+
+- This is the bridge from "works on Drew's machine" to "works as a product."
+
+Priority: P1
+Confidence: 80-90%
+
+### 5. Normalize Session Lifecycle Across Backends
+
+Every backend should share the same lifecycle shape:
+
+- spawn
+- inspect
+- idle detection
+- kill
+- transcript/artifact capture
+- telemetry emission
+
+Priority: P1
+Confidence: 80-88%
+
+## Phase 3: Constrain Self-Improvement
+
+### 6. Optimize One Bounded Subsystem At A Time
+
+Foreman should not start self-improvement by mutating the whole service.
+
+Start with bounded subsystems:
+
+1. dispatch-policy prompts
+2. prompt-composer sections
+3. verifier prompts/rubrics
+4. plan ranking policy
+
+These are not restricted to one file.
+They may span multiple modules, as long as the optimization target is one coherent capability with one evaluation objective.
+
+Each optimization loop should have:
+
+- fixed eval set
+- fixed budget
+- explicit promotion threshold
+- automatic rollback on regression
+
+Priority: P1
+Confidence: 90-95%
+
+### 7. Cross-Project Transfer Checks
+
+Borrow the key Hyperagents insight without copying the risky parts:
+
+- improvements should be tested for transfer across projects
+- meta-level wins matter more than one-off local wins
+
+Priority: P1
+Confidence: 75-85%
+
+### 8. Avoid Full Repo Self-Modification For Now
+
+Do not prioritize open-ended service self-modification yet.
+
+Reasons:
+
+- weak replay substrate
+- incomplete backend hardening
+- insufficient promotion/rollback machinery
+- research value does not yet outweigh operational risk
+
+Priority: explicitly deferred
+Confidence: 85-95%
+
+## Phase 4: Make It Trustable For External Users
+
+### 9. Installer, Setup, Doctor, and Documentation
+
+The goal is not just "install succeeds."
+The goal is:
+
+- capability-by-capability explanation
+- explicit consent before enabling surfaces
+- diagnosis when something is broken
+- repeatable reconfiguration
+
+Priority: P1
+Confidence: 90-95%
+
+### 10. First External Beta
+
+Install Foreman for a real non-Drew user and observe:
+
+- where onboarding is confusing
+- what assumptions break
+- what features are noise vs necessary
+
+Priority: P2
+Confidence: 80-90%
+
+## Phase 5: Expand Product Surface Carefully
+
+### 11. Multi-Model Routing
+
+Multi-model support should follow telemetry and replay, not precede them.
+
+Why:
+
+- without comparable cost/outcome data, routing is mostly vibes
+
+Priority: P2
+Confidence: 75-85%
+
+### 12. Messaging Gateways
+
+Telegram/Slack/Discord matter, but they are not the core blocker now.
+They should be treated as optional extensions on top of a reliable core.
+
+Priority: P2
+Confidence: 70-80%
+
+## Untested Or Under-Tested Surfaces
+
+These are the main gaps that still deserve explicit attention:
+
+- [`service/lib/harvester.ts`](./service/lib/harvester.ts)
+- [`service/lib/session-manager.ts`](./service/lib/session-manager.ts)
+- [`service/lib/watcher.ts`](./service/lib/watcher.ts)
+- [`service/lib/learning-loop.ts`](./service/lib/learning-loop.ts)
+- [`service/lib/prompt-composer.ts`](./service/lib/prompt-composer.ts)
+- [`gateway/telegram.ts`](./gateway/telegram.ts)
+- [`gateway/slack.ts`](./gateway/slack.ts)
+- real systemd installer path
+- real remote backend paths
+
+## Immediate Next 5
+
+1. Build replay harness for historical decisions and outcomes
+2. Finish telemetry wiring across all producers
+3. Add API/integration CI for the real dispatch pipeline
+4. Ship Docker backend as the next serious runtime
+5. Run narrow self-improvement loops on policy and verifier subsystems
+
+## Avoid List
+
+Do not spend the next cycle on:
+
+- whole-repo self-modification
+- broad gateway expansion before runtime hardening
+- provider sprawl before telemetry completeness
+- memory/skills surface growth without measurement
+- benchmark theater without operator-value evaluation
+
+## Success Criteria For The Next Milestone
+
+Foreman should be able to say, credibly:
+
+- every dispatched run has normalized telemetry
+- policy changes can be replay-tested offline
+- a clean install is CI-validated
+- at least one non-tmux backend is production-usable
+- one bounded self-improvement loop improves without regressions
+
+That is the shortest path to a product that is also a real research platform.
