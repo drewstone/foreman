@@ -175,6 +175,90 @@ function fallbackReview(
 }
 
 /**
+ * Pairwise tournament ranking for multiple session outcomes.
+ *
+ * When Foreman has N completed sessions targeting the same goal (e.g., parallel
+ * meta-harness proposers, or /evolve dispatches), rank them by pairwise comparison
+ * instead of taking the last one or the highest single-shot score.
+ *
+ * Inspired by LLM-as-a-Verifier (llm-as-a-verifier/llm-as-a-verifier):
+ * pairwise comparison is more calibrated than absolute rating.
+ */
+export async function rankSessionOutcomes(outcomes: Array<{
+  sessionId: string
+  summary: string
+  qualityScore: number
+  stepsCompleted: string[]
+}>): Promise<Array<{ sessionId: string; tournamentScore: number; wins: number }>> {
+  if (outcomes.length <= 1) {
+    return outcomes.map(o => ({ sessionId: o.sessionId, tournamentScore: o.qualityScore * 10, wins: 0 }))
+  }
+
+  const criteria = [
+    'completeness — which session accomplished more of the goal',
+    'quality — which session produced cleaner, more correct output',
+    'efficiency — which session wasted fewer steps on dead ends',
+  ]
+
+  const wins = new Map<string, number>()
+  for (const o of outcomes) wins.set(o.sessionId, 0)
+
+  // All pairs
+  const pairs: [number, number][] = []
+  for (let i = 0; i < outcomes.length; i++) {
+    for (let j = i + 1; j < outcomes.length; j++) {
+      pairs.push([i, j])
+    }
+  }
+
+  // Run pairwise comparisons in parallel
+  const comparisons = pairs.flatMap(([i, j]) =>
+    criteria.map(crit => ({ i, j, crit }))
+  )
+
+  const results = await Promise.allSettled(comparisons.map(async ({ i, j, crit }) => {
+    const flip = Math.random() > 0.5
+    const [aIdx, bIdx] = flip ? [j, i] : [i, j]
+    const a = outcomes[aIdx!]!
+    const b = outcomes[bIdx!]!
+
+    const prompt = `Compare two session outcomes on: "${crit}". Reply JSON only: {"winner": "A" or "B", "confidence": 0.0-1.0}
+
+Session A (${a.sessionId}):
+${a.summary}
+Steps: ${a.stepsCompleted.join(', ')}
+Score: ${a.qualityScore}/10
+
+Session B (${b.sessionId}):
+${b.summary}
+Steps: ${b.stepsCompleted.join(', ')}
+Score: ${b.qualityScore}/10`
+
+    const result = await callClaudeForJSON(prompt, 'haiku')
+    if (!result || !result.winner) return null
+
+    const winnerIdx = result.winner === 'A' ? aIdx! : bIdx!
+    const confidence = typeof result.confidence === 'number' ? result.confidence : 0.5
+    return { winner: outcomes[winnerIdx]!.sessionId, confidence }
+  }))
+
+  for (const r of results) {
+    if (r.status === 'fulfilled' && r.value) {
+      wins.set(r.value.winner, (wins.get(r.value.winner) ?? 0) + r.value.confidence)
+    }
+  }
+
+  const maxWins = Math.max(...wins.values(), 1)
+  return outcomes
+    .map(o => ({
+      sessionId: o.sessionId,
+      tournamentScore: ((wins.get(o.sessionId) ?? 0) / maxWins) * 100,
+      wins: wins.get(o.sessionId) ?? 0,
+    }))
+    .sort((a, b) => b.tournamentScore - a.tournamentScore)
+}
+
+/**
  * Summarize tool calls into a readable format for the reviewer.
  */
 function summarizeToolCalls(transcript: SessionSummary): string {
