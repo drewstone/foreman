@@ -28,7 +28,7 @@ export interface CodeSurfaceConfig {
   harnessPath: string
   /** Dimensions to track on the Pareto frontier */
   dimensions: string[]
-  /** Root directory for .meta-harness state (frontier, evolution, variants) */
+  /** Root directory for .evolve/meta-harness state (frontier, evolution, variants) */
   stateDir: string
   /** AxGEPA signature (for compatibility with prompt lab) */
   gepaSignature?: string

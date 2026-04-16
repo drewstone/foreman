@@ -95,7 +95,7 @@ export function buildCodeEvolutionLoop(
     description: `Code evolution of ${config.harnessRelPath}`,
     harnessPath: join(config.repoPath, config.harnessRelPath),
     dimensions: config.dimensions,
-    stateDir: join(config.repoPath, '.meta-harness'),
+    stateDir: join(config.repoPath, '.evolve/meta-harness'),
   }
   const surface = new CodeSurface(surfaceConfig)
 
@@ -274,7 +274,7 @@ async function dispatchViaTangle(
   }
 
   // Read pending_eval.json from the sandbox (via session artifacts or workdir)
-  const pendingPath = join(cfg.repoPath, '.meta-harness', 'pending_eval.json')
+  const pendingPath = join(cfg.repoPath, '.evolve/meta-harness', 'pending_eval.json')
   if (existsSync(pendingPath)) {
     const proposal = readFileSync(pendingPath, 'utf8')
     return { trackId, status: 'completed', summary: `tangle proposer ${idx}`, output: proposal, evidence: [{ kind: 'artifact', label: 'pending_eval', value: proposal }] }
@@ -303,8 +303,8 @@ async function dispatchViaTmuxOrPipe(
 
   try {
     // Copy meta-harness state into worktree
-    const metaSrc = join(cfg.repoPath, '.meta-harness')
-    const metaDst = join(wt.path, '.meta-harness')
+    const metaSrc = join(cfg.repoPath, '.evolve/meta-harness')
+    const metaDst = join(wt.path, '.evolve/meta-harness')
     if (existsSync(metaSrc)) cpSync(metaSrc, metaDst, { recursive: true })
 
     // Use callClaude pipe mode — simpler, returns when done
@@ -316,16 +316,16 @@ async function dispatchViaTmuxOrPipe(
       cwd: wt.path,
     })
 
-    const pendingPath = join(wt.path, '.meta-harness', 'pending_eval.json')
+    const pendingPath = join(wt.path, '.evolve/meta-harness', 'pending_eval.json')
     if (!existsSync(pendingPath)) {
       return { trackId, status: 'failed', summary: `proposer ${idx}: no pending_eval.json`, output: result.output, evidence: [{ kind: 'log', label: 'cc-output', value: result.output.slice(0, 2000) }] }
     }
 
     const proposal = readFileSync(pendingPath, 'utf8')
 
-    // Copy any variant files from worktree back to main repo's .meta-harness/variants/
-    const wtVariants = join(wt.path, '.meta-harness', 'variants')
-    const mainVariants = join(cfg.repoPath, '.meta-harness', 'variants')
+    // Copy any variant files from worktree back to main repo's .evolve/meta-harness/variants/
+    const wtVariants = join(wt.path, '.evolve/meta-harness', 'variants')
+    const mainVariants = join(cfg.repoPath, '.evolve/meta-harness', 'variants')
     if (existsSync(wtVariants)) {
       mkdirSync(mainVariants, { recursive: true })
       cpSync(wtVariants, mainVariants, { recursive: true })
@@ -438,14 +438,14 @@ function buildProposerPrompt(skill: string, index: number, config: CodeEvolution
   return [
     skill,
     '',
-    `You are proposer #${index}. Read .meta-harness/frontier.json, .meta-harness/evolution.jsonl, and .meta-harness/variants/ to understand what has been tried.`,
+    `You are proposer #${index}. Read .evolve/meta-harness/frontier.json, .evolve/meta-harness/evolution.jsonl, and .evolve/meta-harness/variants/ to understand what has been tried.`,
     '',
     `The harness being evolved is: ${config.harnessRelPath}`,
     `Eval command: ${config.evalCommand}`,
     `Dimensions: ${config.dimensions.join(', ')}`,
     '',
-    'Write your proposed variant to .meta-harness/variants/<name>.ts (or matching extension)',
-    'Write your pending_eval.json to .meta-harness/pending_eval.json',
+    'Write your proposed variant to .evolve/meta-harness/variants/<name>.ts (or matching extension)',
+    'Write your pending_eval.json to .evolve/meta-harness/pending_eval.json',
   ].join('\n')
 }
 
@@ -482,7 +482,7 @@ function readVariantFromProposal(tr: TrackResult<string>, hyp: ReturnType<typeof
   for (const ev of tr.evidence) {
     if (ev.kind === 'artifact' && ev.label !== 'pending_eval' && ev.value.length > 50) return ev.value
   }
-  const variantPath = join(config.repoPath, '.meta-harness', 'variants', `${hyp.name}.${ext}`)
+  const variantPath = join(config.repoPath, '.evolve/meta-harness', 'variants', `${hyp.name}.${ext}`)
   if (existsSync(variantPath)) return readFileSync(variantPath, 'utf8')
   return null
 }

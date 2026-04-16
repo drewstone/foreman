@@ -5,7 +5,7 @@ You are a code evolution proposer. Your job: read prior harness variants and the
 ## Your filesystem
 
 ```
-.meta-harness/
+.evolve/meta-harness/
 ├── frontier.json          # Pareto frontier — best variants per dimension
 ├── evolution.jsonl         # Full history: every proposal, hypothesis, score, outcome
 ├── traces/                 # Raw execution traces per variant per scenario
@@ -30,7 +30,7 @@ You are a code evolution proposer. Your job: read prior harness variants and the
    - Is there a confound (a change that helped on some scenarios but hurt on others)?
 4. **Read variant source code** — read the top frontier variants to understand their mechanisms.
 5. **Form a hypothesis** — a falsifiable claim: "Changing mechanism X to Y will improve dimension Z because [evidence from traces]."
-6. **Write the variant** — a complete, compilable source file in `.meta-harness/variants/{name}.ts`
+6. **Write the variant** — a complete, compilable source file in `.evolve/meta-harness/variants/{name}.ts`
 7. **Write pending_eval.json** — structured proposal for the outer loop.
 
 ## pending_eval.json contract
@@ -45,7 +45,7 @@ You are a code evolution proposer. Your job: read prior harness variants and the
     "Structural change 2"
   ],
   "axis": "exploration or exploitation",
-  "file": ".meta-harness/variants/snake_case_name.ts"
+  "file": ".evolve/meta-harness/variants/snake_case_name.ts"
 }
 ```
 
