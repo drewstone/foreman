@@ -314,6 +314,7 @@ export function selectModel(skill: string, _task: string): string | undefined {
     case '/pursue': return undefined
     case '/evolve': return undefined
     case '/critical-audit': return undefined
+    case 'meta-harness-propose': return 'opus'
     default: return undefined
   }
 }

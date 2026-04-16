@@ -9,7 +9,7 @@
  */
 
 import http from 'node:http'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { mkdirSync, existsSync, readFileSync, statSync, readdirSync } from 'node:fs'
 import { execFileSync, execFile } from 'node:child_process'
@@ -70,6 +70,9 @@ const {
 } = policyControl
 const { promoteReplayPolicy, getReplayGovernanceSnapshot } = replayGovernor
 const { importTelemetryArtifacts } = telemetryImport
+import { buildCodeEvolutionLoop, type CodeEvolutionConfig } from './lib/code-evolution.js'
+import { runTaskLoop } from '@drew/foreman-core'
+import { writeFileSync as writeFileAtomic } from 'node:fs'
 
 // ─── Database ────────────────────────────────────────────────────────
 
@@ -642,6 +645,76 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const confidenceScore = confidence.getConfidence(skill || 'direct', dispatchProject)
 
       return json(res, { decision, session: sName, backend: backendName, model: effectiveModel, worktree: worktreePath, branch: worktreeBranch, baseBranch, confidenceLevel, confidenceScore, promptLength: composed.text.length, promptTier: composed.tier, promptSections: composed.sections, promptPreview: composed.text.slice(0, 300) }, 201)
+    }
+
+    // ── Code Evolution (meta-harness) ─────────────────────────
+    if (path === '/api/evolve-code' && method === 'POST') {
+      const body = await readBody(req)
+      const repo = String(body.repo ?? '')
+      const harness = String(body.harness ?? '')
+      const evalCmd = String(body.eval ?? 'pnpm test:eval')
+      const validateCmd = String(body.validate ?? 'npx tsc --noEmit')
+      const dimensions = Array.isArray(body.dimensions) ? body.dimensions : (body.dimensions ?? 'accuracy,efficiency').split(',')
+      const parallelism = Number(body.parallelism ?? 2)
+      const maxRounds = Number(body.iterations ?? 10)
+      const model = String(body.model ?? 'opus')
+      const backend = String(body.backend ?? 'tmux') as 'tmux' | 'tangle'
+
+      if (!repo || !harness) return error(res, 'repo and harness required')
+      if (!existsSync(join(repo, harness))) return error(res, `harness not found: ${join(repo, harness)}`)
+
+      // Create goal
+      const goalResult = stmts.insertGoal.run(
+        `evolve ${harness} [meta-harness]`,
+        repo,
+        'repo',
+        JSON.stringify({ harness, evalCmd, dimensions, parallelism, maxRounds, model }),
+        0,
+      )
+      const goalId = Number(goalResult.lastInsertRowid)
+
+      // Build artifacts store
+      const artifactRoot = join(FOREMAN_HOME, 'artifacts', `evolve-${goalId}`)
+      mkdirSync(artifactRoot, { recursive: true })
+      const artifacts = {
+        root: artifactRoot,
+        async writeJson(path: string, payload: unknown) {
+          const full = join(artifactRoot, path)
+          mkdirSync(dirname(full), { recursive: true })
+          writeFileAtomic(full, JSON.stringify(payload, null, 2))
+          return full
+        },
+        async writeText(path: string, text: string) {
+          const full = join(artifactRoot, path)
+          mkdirSync(dirname(full), { recursive: true })
+          writeFileAtomic(full, text)
+          return full
+        },
+      }
+
+      const config: CodeEvolutionConfig = {
+        repoPath: repo,
+        harnessRelPath: harness,
+        evalCommand: evalCmd,
+        validateCommand: validateCmd,
+        dimensions,
+        parallelism,
+        maxRounds,
+        model,
+        backend,
+      }
+
+      // Run async — don't block the HTTP response
+      const loopOpts = buildCodeEvolutionLoop(config, artifacts)
+      runTaskLoop(loopOpts).then(result => {
+        stmts.updateGoal.run('completed', goalId)
+        log(`Code evolution goal ${goalId} completed: ${result.state.rounds.length} rounds`)
+      }).catch(e => {
+        stmts.updateGoal.run('failed', goalId)
+        log(`Code evolution goal ${goalId} failed: ${e instanceof Error ? e.message : String(e)}`)
+      })
+
+      return json(res, { goalId, status: 'started', config: { repo, harness, evalCmd, dimensions, parallelism, maxRounds, model } }, 202)
     }
 
     // ── Sessions ──────────────────────────────────────────────

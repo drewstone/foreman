@@ -1,20 +1,24 @@
 /**
- * CodeSurface — optimize source code files, not just prompts.
+ * CodeSurface — optimize source code files via meta-harness evolution.
  *
- * Extends OptimizationSurface for code-level evolution. The "configuration"
- * is the source code of a harness file. The proposer (CC) reads raw traces
- * and prior variants, then writes a structurally different version.
+ * Implements OptimizationSurface so it participates in Foreman's existing
+ * optimization cycle. Extends with Pareto frontier for multi-dimensional
+ * tracking. Uses TraceStore for trace access (no custom injector).
  *
- * This is the bridge between Foreman's optimization infrastructure and
- * the meta-harness pattern from the Stanford paper.
+ * The "configuration" being optimized is the source code of a harness file.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import type { ParetoFrontier, ParetoEntry } from './pareto.js'
-import { createFrontier, addToFrontier, serializeFrontier, deserializeFrontier } from './pareto.js'
+import { createFrontier, addToFrontier, serializeFrontier, deserializeFrontier, frontierSummary } from './pareto.js'
 import type { Hypothesis } from './hypothesis.js'
 
+/**
+ * Implements the same shape as OptimizationSurface from
+ * service/lib/optimization-surface.ts but adds Pareto frontier.
+ * Registered via registerSurface() in the service.
+ */
 export interface CodeSurfaceConfig {
   /** Unique name for this surface */
   name: string
@@ -22,30 +26,23 @@ export interface CodeSurfaceConfig {
   description: string
   /** Path to the harness file being evolved */
   harnessPath: string
-  /** Directory where variants are written */
-  variantsDir: string
-  /** Directory where raw traces live (CC reads these directly) */
-  tracesDir: string
-  /** Path to frontier.json */
-  frontierPath: string
-  /** Path to evolution.jsonl */
-  evolutionPath: string
-  /** Command to validate a variant compiles (e.g., "tsc --noEmit") */
-  validateCommand: string
-  /** Command to benchmark a variant (e.g., "pnpm test:eval") */
-  benchmarkCommand: string
   /** Dimensions to track on the Pareto frontier */
   dimensions: string[]
-  /** CWD for validate/benchmark commands */
-  cwd: string
+  /** Root directory for .meta-harness state (frontier, evolution, variants) */
+  stateDir: string
+  /** AxGEPA signature (for compatibility with prompt lab) */
+  gepaSignature?: string
 }
 
 export interface EvolutionEntry {
   iteration: number
-  hypothesis: Hypothesis
+  name: string
+  hypothesis: string
+  baseSystem: string
+  changes: string[]
   scores: Record<string, number> | null
   delta: Record<string, number> | null
-  outcome: 'frontier' | 'dominated' | 'failed_validation' | 'failed_benchmark'
+  outcome: 'frontier' | 'dominated' | 'rejected' | 'failed'
   timestamp: string
 }
 
@@ -55,47 +52,81 @@ export class CodeSurface {
 
   constructor(config: CodeSurfaceConfig) {
     this.config = config
-    mkdirSync(config.variantsDir, { recursive: true })
-    mkdirSync(config.tracesDir, { recursive: true })
-    mkdirSync(dirname(config.frontierPath), { recursive: true })
-    mkdirSync(dirname(config.evolutionPath), { recursive: true })
+    mkdirSync(join(config.stateDir, 'variants'), { recursive: true })
+    mkdirSync(dirname(this.frontierPath), { recursive: true })
     this.frontier = this.loadFrontier()
   }
 
-  /** Read the current harness code */
+  // ─── OptimizationSurface interface ──────────────────────────────────
+
+  get name(): string { return this.config.name }
+  get description(): string { return this.config.description }
+  get gepaSignature(): string { return this.config.gepaSignature ?? `traces -> harness:code "${this.config.description}"` }
+
+  /** Current harness source code */
   getCurrent(): string {
     return readFileSync(this.config.harnessPath, 'utf8')
   }
 
-  /** Apply a variant as the current harness */
+  /** Apply a variant as the active harness */
   apply(code: string): void {
     writeFileSync(this.config.harnessPath, code)
   }
 
-  /** Load the Pareto frontier from disk */
+  /**
+   * Pull labeled samples — returns evolution entries as the "samples"
+   * the optimization cycle scores. For code surfaces, the real signal
+   * is in the Pareto frontier, not binary promote/abandon.
+   */
+  pullSamples(limit: number): EvolutionEntry[] {
+    return this.readEvolution().slice(-limit)
+  }
+
+  /** Score an evolution entry for compatibility with the surface registry */
+  score(sample: EvolutionEntry): Record<string, number> {
+    if (!sample.scores) return { success: 0 }
+    return { success: sample.outcome === 'frontier' ? 1 : 0, ...sample.scores }
+  }
+
+  // ─── Pareto frontier ────────────────────────────────────────────────
+
+  private get frontierPath(): string {
+    return join(this.config.stateDir, 'frontier.json')
+  }
+
+  private get evolutionPath(): string {
+    return join(this.config.stateDir, 'evolution.jsonl')
+  }
+
+  get variantsDir(): string {
+    return join(this.config.stateDir, 'variants')
+  }
+
   private loadFrontier(): ParetoFrontier<string> {
-    if (existsSync(this.config.frontierPath)) {
-      return deserializeFrontier(readFileSync(this.config.frontierPath, 'utf8'))
+    if (existsSync(this.frontierPath)) {
+      try {
+        return deserializeFrontier(readFileSync(this.frontierPath, 'utf8'))
+      } catch {}
     }
     return createFrontier(this.config.dimensions)
   }
 
-  /** Persist the frontier to disk */
   saveFrontier(): void {
-    writeFileSync(this.config.frontierPath, serializeFrontier(this.frontier))
+    writeFileSync(this.frontierPath, serializeFrontier(this.frontier))
   }
 
-  /** Get the frontier (read-only) */
   getFrontier(): ParetoFrontier<string> {
     return this.frontier
   }
 
-  /** Register a baseline (the current harness) with its scores */
+  getFrontierSummary(): string {
+    return frontierSummary(this.frontier)
+  }
+
   seedBaseline(scores: Record<string, number>): void {
-    const code = this.getCurrent()
     const entry: ParetoEntry<string> = {
       id: 'baseline',
-      config: code,
+      config: this.getCurrent(),
       scores,
       hypothesis: 'baseline — current production harness',
       iteration: 0,
@@ -105,37 +136,13 @@ export class CodeSurface {
     this.saveFrontier()
   }
 
-  /** Write a variant to the variants directory */
-  writeVariant(name: string, code: string): string {
-    const ext = this.config.harnessPath.split('.').pop() ?? 'ts'
-    const path = join(this.config.variantsDir, `${name}.${ext}`)
-    writeFileSync(path, code)
-    return path
-  }
-
-  /** Read a variant from the variants directory */
-  readVariant(name: string): string | null {
-    const ext = this.config.harnessPath.split('.').pop() ?? 'ts'
-    const path = join(this.config.variantsDir, `${name}.${ext}`)
-    if (!existsSync(path)) return null
-    return readFileSync(path, 'utf8')
-  }
-
-  /** Record an evolution entry (append to evolution.jsonl) */
-  recordEvolution(entry: EvolutionEntry): void {
-    const line = JSON.stringify(entry) + '\n'
-    const { appendFileSync } = require('node:fs')
-    appendFileSync(this.config.evolutionPath, line)
-  }
-
-  /** Try to add scored variant to frontier. Returns true if non-dominated. */
-  addToFrontier(hypothesis: Hypothesis, code: string, scores: Record<string, number>): boolean {
+  tryAddToFrontier(hyp: Hypothesis, code: string, scores: Record<string, number>): boolean {
     const entry: ParetoEntry<string> = {
-      id: hypothesis.name,
+      id: hyp.name,
       config: code,
       scores,
-      hypothesis: hypothesis.hypothesis,
-      iteration: hypothesis.iteration,
+      hypothesis: hyp.hypothesis,
+      iteration: hyp.iteration,
       timestamp: new Date().toISOString(),
     }
     const added = addToFrontier(this.frontier, entry)
@@ -143,20 +150,38 @@ export class CodeSurface {
     return added
   }
 
-  /** Get the state files a CC proposer needs to read */
-  getProposerContext(): {
-    frontierPath: string
-    evolutionPath: string
-    tracesDir: string
-    variantsDir: string
-    harnessPath: string
-  } {
-    return {
-      frontierPath: this.config.frontierPath,
-      evolutionPath: this.config.evolutionPath,
-      tracesDir: this.config.tracesDir,
-      variantsDir: this.config.variantsDir,
-      harnessPath: this.config.harnessPath,
-    }
+  // ─── Variants ───────────────────────────────────────────────────────
+
+  writeVariant(name: string, code: string): string {
+    const ext = this.config.harnessPath.split('.').pop() ?? 'ts'
+    const path = join(this.variantsDir, `${name}.${ext}`)
+    writeFileSync(path, code)
+    return path
+  }
+
+  readVariant(name: string): string | null {
+    const ext = this.config.harnessPath.split('.').pop() ?? 'ts'
+    const path = join(this.variantsDir, `${name}.${ext}`)
+    if (!existsSync(path)) return null
+    return readFileSync(path, 'utf8')
+  }
+
+  // ─── Evolution log ──────────────────────────────────────────────────
+
+  recordEvolution(entry: EvolutionEntry): void {
+    appendFileSync(this.evolutionPath, JSON.stringify(entry) + '\n')
+  }
+
+  readEvolution(): EvolutionEntry[] {
+    if (!existsSync(this.evolutionPath)) return []
+    return readFileSync(this.evolutionPath, 'utf8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map(line => {
+        try { return JSON.parse(line) }
+        catch { return null }
+      })
+      .filter((e): e is EvolutionEntry => e !== null)
   }
 }
