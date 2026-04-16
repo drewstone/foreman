@@ -177,12 +177,16 @@ function fallbackReview(
 /**
  * Pairwise tournament ranking for multiple session outcomes.
  *
- * When Foreman has N completed sessions targeting the same goal (e.g., parallel
- * meta-harness proposers, or /evolve dispatches), rank them by pairwise comparison
- * instead of taking the last one or the highest single-shot score.
+ * Based on LLM-as-a-Verifier (github.com/llm-as-a-verifier/llm-as-a-verifier):
+ * for each pair, independently score BOTH sessions on each criterion using a
+ * 20-point letter scale (A=best, T=worst). Higher score wins the pair.
+ * Total wins across all pairs × criteria determines the ranking.
  *
- * Inspired by LLM-as-a-Verifier (llm-as-a-verifier/llm-as-a-verifier):
- * pairwise comparison is more calibrated than absolute rating.
+ * Key design from the paper:
+ * - Independent scoring, not "pick A or B" (avoids framing bias)
+ * - 20-point letter scale (A-T) for fine-grained differentiation
+ * - "Trust output, not self-assessment" — judge what the session PRODUCED, not what it CLAIMED
+ * - Skip all-identical outcomes (only compare "swing" sessions)
  */
 export async function rankSessionOutcomes(outcomes: Array<{
   sessionId: string
@@ -194,16 +198,27 @@ export async function rankSessionOutcomes(outcomes: Array<{
     return outcomes.map(o => ({ sessionId: o.sessionId, tournamentScore: o.qualityScore * 10, wins: 0 }))
   }
 
+  // Skip if all sessions have the same score (all-pass or all-fail — no swing)
+  const allSameScore = outcomes.every(o => o.qualityScore === outcomes[0]!.qualityScore)
+  if (allSameScore) {
+    return outcomes.map(o => ({ sessionId: o.sessionId, tournamentScore: o.qualityScore * 10, wins: 0 }))
+  }
+
+  const SCALE = 'ABCDEFGHIJKLMNOPQRST'
+  function letterToScore(letter: string): number {
+    const idx = SCALE.indexOf(letter.toUpperCase())
+    return idx >= 0 ? 1 - (idx / 19) : 0.5
+  }
+
   const criteria = [
-    'completeness — which session accomplished more of the goal',
-    'quality — which session produced cleaner, more correct output',
-    'efficiency — which session wasted fewer steps on dead ends',
+    'goal completion — did the session accomplish what was asked? Judge by deliverables produced, not claims made.',
+    'output correctness — are the produced artifacts (code, files, configs) correct? Trust test results and build output, not the session\'s self-assessment.',
+    'efficiency — did the session reach its outcome without wasted steps, dead ends, or unnecessary exploration?',
   ]
 
   const wins = new Map<string, number>()
   for (const o of outcomes) wins.set(o.sessionId, 0)
 
-  // All pairs
   const pairs: [number, number][] = []
   for (let i = 0; i < outcomes.length; i++) {
     for (let j = i + 1; j < outcomes.length; j++) {
@@ -211,7 +226,6 @@ export async function rankSessionOutcomes(outcomes: Array<{
     }
   }
 
-  // Run pairwise comparisons in parallel
   const comparisons = pairs.flatMap(([i, j]) =>
     criteria.map(crit => ({ i, j, crit }))
   )
@@ -222,29 +236,32 @@ export async function rankSessionOutcomes(outcomes: Array<{
     const a = outcomes[aIdx!]!
     const b = outcomes[bIdx!]!
 
-    const prompt = `Compare two session outcomes on: "${crit}". Reply JSON only: {"winner": "A" or "B", "confidence": 0.0-1.0}
+    const prompt = `Score both sessions on: "${crit}"
+Use a single letter A-T where A=best, T=worst. Judge by what was PRODUCED, not what was CLAIMED.
+Reply JSON only: {"score_a": "<letter>", "score_b": "<letter>"}
 
-Session A (${a.sessionId}):
+Session A:
 ${a.summary}
-Steps: ${a.stepsCompleted.join(', ')}
-Score: ${a.qualityScore}/10
+Steps completed: ${a.stepsCompleted.join(', ') || 'none reported'}
 
-Session B (${b.sessionId}):
+Session B:
 ${b.summary}
-Steps: ${b.stepsCompleted.join(', ')}
-Score: ${b.qualityScore}/10`
+Steps completed: ${b.stepsCompleted.join(', ') || 'none reported'}`
 
     const result = await callClaudeForJSON(prompt, 'haiku')
-    if (!result || !result.winner) return null
+    if (!result) return null
 
-    const winnerIdx = result.winner === 'A' ? aIdx! : bIdx!
-    const confidence = typeof result.confidence === 'number' ? result.confidence : 0.5
-    return { winner: outcomes[winnerIdx]!.sessionId, confidence }
+    const scoreA = letterToScore(result.score_a ?? 'J')
+    const scoreB = letterToScore(result.score_b ?? 'J')
+
+    if (scoreA > scoreB) return { winner: outcomes[aIdx!]!.sessionId }
+    if (scoreB > scoreA) return { winner: outcomes[bIdx!]!.sessionId }
+    return null // tie
   }))
 
   for (const r of results) {
     if (r.status === 'fulfilled' && r.value) {
-      wins.set(r.value.winner, (wins.get(r.value.winner) ?? 0) + r.value.confidence)
+      wins.set(r.value.winner, (wins.get(r.value.winner) ?? 0) + 1)
     }
   }
 
