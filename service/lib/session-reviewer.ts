@@ -12,7 +12,21 @@
  */
 
 import { readSessionTranscript, type SessionSummary } from './session-reader.js'
-import { callClaudeForJSON } from './claude-runner.js'
+import { callClaudeForJSON as callClaudeLocal } from './claude-runner.js'
+import { callTcloudForJSON } from './tcloud-runner.js'
+
+/**
+ * Pick between the local Claude Code subprocess path and the router /
+ * cli-bridge tcloud path. Flip `FOREMAN_USE_TCLOUD=1` to route through
+ * the bridge. Pilot site for the wider migration — small, cheap, most
+ * frequent reviewer call so any latency regression shows up fast.
+ */
+const callClaudeForJSON = async <T = unknown>(prompt: string, model: string = 'sonnet'): Promise<T | null> => {
+  if (process.env.FOREMAN_USE_TCLOUD === '1') {
+    return callTcloudForJSON<T>(prompt, model)
+  }
+  return callClaudeLocal<T>(prompt, model) as Promise<T | null>
+}
 import {
   getDb, getStmts, getConfidence,
   log, emitEvent, sendNotification,

@@ -34,6 +34,7 @@
   },
   "dependencies": {
     "@ax-llm/ax": "^19.0.17",
+    "@tangle-network/tcloud": "^0.4.0",
     "better-sqlite3": "^12.8.0"
   }
 }
