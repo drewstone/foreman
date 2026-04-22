@@ -858,6 +858,61 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       return json(res, stmts.listTaste.all(limit))
     }
 
+    // ── RLM critique — shell to `rlm run <skill>` for headless review
+    // POST /api/critique { target, skill, max_rounds?, model?, resume?,
+    //                     extra?: Record<string,string> }
+    //
+    // Runs a registered rlm skill (critical-audit, deep-clean, reflect,
+    // session-extract, taste-distill, dispatch-compose, etc.) against a
+    // target path and returns the JSON report. Use from the dispatch
+    // pipeline to grade a session's output before advancing the goal.
+    if (path === '/api/critique' && method === 'POST') {
+      const body = await readBody(req) as Record<string, unknown>
+      const skill = String(body.skill ?? '')
+      const target = String(body.target ?? '')
+      if (!skill) return error(res, 'skill required')
+      const maxRounds = Number(body.max_rounds ?? 2)
+      const model = body.model ? String(body.model) : null
+      const resume = body.resume ? String(body.resume) : null
+      const extra = (body.extra && typeof body.extra === 'object')
+        ? body.extra as Record<string, string>
+        : {}
+
+      const args = ['run', skill, '--max-rounds', String(maxRounds), '--json-out']
+      if (model) args.push('--model', model)
+      if (resume) args.push('--resume', resume)
+      if (target) args.push('--target', target)
+      for (const [k, v] of Object.entries(extra)) {
+        args.push(`--${k.replaceAll('_', '-')}`, String(v))
+      }
+
+      try {
+        const { spawnSync } = await import('node:child_process')
+        const result = spawnSync('rlm', args, {
+          encoding: 'utf-8',
+          timeout: 20 * 60 * 1000,
+          env: { ...process.env, RLM_USE_BRIDGE: process.env.RLM_USE_BRIDGE ?? '1' },
+          maxBuffer: 32 * 1024 * 1024,
+        })
+        if (result.error) {
+          return error(res, `rlm spawn failed: ${result.error.message}`, 502)
+        }
+        const stdout = result.stdout?.trim() ?? ''
+        const stderr = result.stderr?.trim() ?? ''
+        if (result.status !== 0) {
+          return error(res, `rlm exited ${result.status}: ${stderr.slice(-600) || stdout.slice(-600)}`, 502)
+        }
+        // rlm --json-out dumps the full report as JSON
+        let report: unknown
+        try { report = JSON.parse(stdout) } catch {
+          return error(res, `rlm stdout not JSON: ${stdout.slice(0, 300)}`, 502)
+        }
+        return json(res, report)
+      } catch (e) {
+        return error(res, `rlm run failed: ${(e as Error).message}`, 502)
+      }
+    }
+
     if (path === '/api/taste' && method === 'POST') {
       const body = await readBody(req)
       stmts.insertTaste.run(String(body.pattern ?? ''), body.source ?? null, Number(body.weight ?? 1.0))
