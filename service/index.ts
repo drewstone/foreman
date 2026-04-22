@@ -858,6 +858,80 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       return json(res, stmts.listTaste.all(limit))
     }
 
+    // ── Replay harness — Phase 1 measurement substrate ───────────
+    //
+    // POST /api/replay/export { since_days?, limit?, out? }
+    //   → writes a JSONL bundle of decisions+outcomes to `out`
+    //     (default: ~/.foreman/replay/bundle-<ts>.jsonl) and returns its path
+    //
+    // POST /api/replay/evaluate { bundle, policy_description, max_records? }
+    //   → runs rlm replay-evaluate per record, then aggregates into
+    //     a scorecard (agreement_rate, skill_success_rate, variant-
+    //     projected success, skill_selection_delta, cost)
+    if (path === '/api/replay/export' && method === 'POST') {
+      const body = await readBody(req) as Record<string, unknown>
+      const since = body.since_days != null ? Number(body.since_days) : undefined
+      const limit = body.limit != null ? Number(body.limit) : undefined
+      const out = String(body.out ?? '') ||
+        `${process.env.HOME}/.foreman/replay/bundle-${Date.now()}.jsonl`
+      try {
+        const { exportBundle } = await import('./lib/replay.js')
+        const r = await exportBundle(db, out, { sinceDays: since, limit })
+        return json(res, r)
+      } catch (e) {
+        return error(res, `replay export failed: ${(e as Error).message}`, 500)
+      }
+    }
+
+    if (path === '/api/replay/evaluate' && method === 'POST') {
+      const body = await readBody(req) as Record<string, unknown>
+      const bundle = String(body.bundle ?? '')
+      const policy = String(body.policy_description ?? '')
+      if (!bundle) return error(res, 'bundle path required')
+      if (!policy) return error(res, 'policy_description required')
+      const maxRecords = body.max_records != null ? Number(body.max_records) : undefined
+      try {
+        const { runReplayEvaluate } = await import('./lib/replay.js')
+        const { build_scorecard } = await (async () => {
+          // scorecard aggregation happens in rlm via a tiny inline Python.
+          // Keeping this in-process by shelling to python once — cheaper
+          // than a dedicated endpoint and keeps aggregation logic single-sourced.
+          return {
+            build_scorecard: async (evals: Record<string, unknown>[]) => {
+              const { spawnSync } = await import('node:child_process')
+              const result = spawnSync('python3', [
+                '-c',
+                `import json,sys\nfrom rlm import build_scorecard\nprint(json.dumps(build_scorecard(json.loads(sys.stdin.read()))))`,
+              ], {
+                input: JSON.stringify(evals),
+                encoding: 'utf-8',
+                timeout: 60 * 1000,
+                env: process.env,
+                maxBuffer: 8 * 1024 * 1024,
+              })
+              if (result.status !== 0) {
+                return { error: `scorecard aggregation failed: ${String(result.stderr).slice(-400)}` }
+              }
+              try { return JSON.parse(result.stdout) } catch {
+                return { error: 'scorecard stdout not JSON' }
+              }
+            },
+          }
+        })()
+
+        const { evaluations, skipped } = await runReplayEvaluate({
+          bundlePath: bundle,
+          policyDescription: policy,
+          maxRecords,
+          rlmExtraEnv: { RLM_USE_BRIDGE: process.env.RLM_USE_BRIDGE ?? '1' },
+        })
+        const scorecard = await build_scorecard(evaluations)
+        return json(res, { evaluations, scorecard, skipped })
+      } catch (e) {
+        return error(res, `replay evaluate failed: ${(e as Error).message}`, 500)
+      }
+    }
+
     // ── RLM critique — shell to `rlm run <skill>` for headless review
     // POST /api/critique { target, skill, max_rounds?, model?, resume?,
     //                     extra?: Record<string,string> }
