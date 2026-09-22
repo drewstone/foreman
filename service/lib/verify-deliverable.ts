@@ -101,17 +101,20 @@ export function verifyDeliverable(
   }
 
   // ── Scope check ────────────────────────────────────────────────────
-  try {
-    const diffOutput = execFileSync('git', ['diff', '--name-only', 'HEAD~1..HEAD'], {
-      cwd: workDir,
-      timeout: 5_000,
-      encoding: 'utf8',
-    }).trim()
-    if (diffOutput) {
-      modifiedFiles.push(...diffOutput.split('\n').filter(Boolean))
+  if (isGitWorkTree(workDir)) {
+    try {
+      const diffOutput = execFileSync('git', ['diff', '--name-only', 'HEAD~1..HEAD'], {
+        cwd: workDir,
+        timeout: 5_000,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim()
+      if (diffOutput) {
+        modifiedFiles.push(...diffOutput.split('\n').filter(Boolean))
+      }
+    } catch {
+      // No commits or no diff range available — skip scope check
     }
-  } catch {
-    // No commits or not a git repo — skip scope check
   }
 
   if (scope && modifiedFiles.length > 0) {
@@ -183,4 +186,17 @@ export function runTestGate(workDir: string): { passed: boolean, output: string 
     }
   }
   return { passed: true, output: 'no test commands found' }
+}
+
+function isGitWorkTree(workDir: string): boolean {
+  try {
+    execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
+      cwd: workDir,
+      timeout: 2_000,
+      stdio: 'ignore',
+    })
+    return true
+  } catch {
+    return false
+  }
 }

@@ -39,6 +39,14 @@ The installer is consent-first. It explains each capability, asks before enablin
 | Endpoint | Method | What |
 |---|---|---|
 | `/api/status` | GET | Portfolio overview |
+| `/api/dashboard-model` | GET | Unified dashboard view model for live state, telemetry, replay, prompt policy, and scoped project recommendations; supports `project`, `focus`, `window_days`, `limit` |
+| `/api/recommendations/projects` | GET | Scoped project recommendation list; supports `project`, `focus`, `window_days`, `limit` |
+| `/api/recommendations/question` | GET | Answer “what should Drew focus on next?” over the same filtered recommendation surface |
+| `/api/recommendations/explain` | GET | Full recommendation explanation bundle: question, ranked projects, scores, warnings, evidence, and next actions |
+| `/api/recommendations/drilldown` | GET | Deep evidence view for one project: replay rows, training rows, operator sessions, prompt samples, telemetry, and active goals |
+| `/api/decisions/:id` | GET | One decision with attached session and telemetry rows |
+| `/api/sessions/:name/transcript` | GET | Transcript path and parsed transcript summary for one session |
+| `/api/telemetry/runs/:id` | GET | One telemetry run row for direct drilldown links |
 | `/api/goals` | POST/GET | Create/list goals |
 | `/api/dispatch` | POST | Dispatch work (non-blocking) |
 | `/api/sessions` | GET | List active sessions |
@@ -61,6 +69,11 @@ The installer is consent-first. It explains each capability, asks before enablin
 | `/api/replay/latest` | GET | Latest replay governance snapshot |
 | `/api/replay/history` | GET | Recent replay policy evaluations |
 | `/api/replay/promote` | POST | Evaluate and optionally apply a replay-promoted dispatch policy |
+| `/api/prompt-policy/policies` | GET | Show active prompt policy and known prompt policy candidates |
+| `/api/prompt-policy/latest` | GET | Latest prompt policy governance snapshot |
+| `/api/prompt-policy/history` | GET | Recent prompt policy evaluations |
+| `/api/prompt-policy/evaluate` | GET | Evaluate an observed prompt policy against a baseline |
+| `/api/prompt-policy/promote` | POST | Evaluate and optionally apply a prompt policy |
 | `/api/policy/dispatch` | GET/POST | Read or override the active dispatch policy |
 
 ## Pi Extension Tools

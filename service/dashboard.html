@@ -3,327 +3,1246 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Foreman</title>
+<title>Foreman Control Surface</title>
 <style>
   :root {
-    --bg: #0d1117; --surface: #161b22; --border: #30363d;
-    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
-    --green: #3fb950; --red: #f85149; --yellow: #d29922;
+    --bg: #0a0f14;
+    --surface: #121a22;
+    --surface-2: #18222d;
+    --border: #263341;
+    --text: #edf3f8;
+    --muted: #8ea0b2;
+    --accent: #68b2ff;
+    --good: #52c48f;
+    --warn: #f0b35a;
+    --bad: #f06a6a;
   }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace; background: var(--bg); color: var(--text); font-size: 14px; }
-  .container { max-width: 1200px; margin: 0 auto; padding: 16px; }
-  header { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
-  header h1 { font-size: 18px; font-weight: 600; }
-  header .status { font-size: 12px; color: var(--muted); }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
-  @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 16px; }
-  .card h2 { font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; }
-  .stat-row { display: flex; justify-content: space-between; padding: 4px 0; }
-  .stat-label { color: var(--muted); }
-  .stat-value { font-weight: 600; font-variant-numeric: tabular-nums; }
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 500; }
-  .badge-green { background: rgba(63,185,80,0.15); color: var(--green); }
-  .badge-red { background: rgba(248,81,73,0.15); color: var(--red); }
-  .badge-yellow { background: rgba(210,153,34,0.15); color: var(--yellow); }
-  .badge-blue { background: rgba(88,166,255,0.15); color: var(--accent); }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 14px/1.45 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background:
+      radial-gradient(circle at top left, rgba(104,178,255,0.12), transparent 30%),
+      radial-gradient(circle at top right, rgba(82,196,143,0.08), transparent 24%),
+      var(--bg);
+    color: var(--text);
+  }
+  .wrap { max-width: 1400px; margin: 0 auto; padding: 24px; }
+  header {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: end;
+    margin-bottom: 20px;
+  }
+  h1 { margin: 0; font-size: 26px; letter-spacing: -0.02em; }
+  .sub { color: var(--muted); margin-top: 6px; max-width: 720px; }
+  .meta { color: var(--muted); font-size: 12px; text-align: right; }
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 0 0 16px;
+    align-items: end;
+  }
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 150px;
+  }
+  .field label {
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .field input,
+  .field select,
+  .field button {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font: inherit;
+  }
+  .field button {
+    background: linear-gradient(180deg, rgba(104,178,255,0.18), rgba(104,178,255,0.08));
+    cursor: pointer;
+  }
+  .field.field-grow { flex: 1 1 280px; }
+  .preset-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0 0 16px;
+  }
+  .preset-button {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    border-radius: 999px;
+    padding: 9px 12px;
+    font: inherit;
+    cursor: pointer;
+  }
+  .preset-button.active {
+    border-color: rgba(104,178,255,0.5);
+    background: rgba(104,178,255,0.12);
+  }
+  .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 16px; }
+  .card {
+    grid-column: span 12;
+    background: linear-gradient(180deg, rgba(255,255,255,0.02), transparent), var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 18px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.18);
+  }
+  .span-3 { grid-column: span 3; }
+  .span-4 { grid-column: span 4; }
+  .span-5 { grid-column: span 5; }
+  .span-6 { grid-column: span 6; }
+  .span-7 { grid-column: span 7; }
+  .span-8 { grid-column: span 8; }
+  .span-12 { grid-column: span 12; }
+  @media (max-width: 1100px) {
+    .span-3, .span-4, .span-5, .span-6, .span-7, .span-8, .span-12 { grid-column: span 12; }
+    header { display: block; }
+    .meta { margin-top: 12px; text-align: left; }
+  }
+  h2 {
+    margin: 0 0 14px;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+  }
+  .kpi-value { font-size: 28px; font-weight: 700; letter-spacing: -0.03em; margin-bottom: 4px; }
+  .kpi-note { color: var(--muted); font-size: 12px; }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+  }
+  .pill.good { color: var(--good); }
+  .pill.warn { color: var(--warn); }
+  .pill.bad { color: var(--bad); }
+  .pill.info { color: var(--accent); }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+  .row { display: flex; justify-content: space-between; gap: 16px; align-items: start; }
+  .row .label { color: var(--muted); }
+  .row .value { font-weight: 600; text-align: right; }
+  .mini {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 16px;
+  }
+  .project {
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: rgba(255,255,255,0.02);
+    padding: 14px;
+  }
+  .project.selected {
+    border-color: rgba(104,178,255,0.55);
+    box-shadow: inset 0 0 0 1px rgba(104,178,255,0.25);
+  }
+  .project-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  .project h3 { margin: 0; font-size: 16px; }
+  .confidence {
+    height: 6px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 999px;
+    overflow: hidden;
+    margin-top: 10px;
+  }
+  .confidence > span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--good)); }
+  ul.clean { list-style: none; margin: 0; padding: 0; }
+  ul.clean li { padding: 8px 0; border-top: 1px solid rgba(255,255,255,0.05); }
+  ul.clean li:first-child { border-top: 0; padding-top: 0; }
   table { width: 100%; border-collapse: collapse; }
-  th { text-align: left; color: var(--muted); font-size: 12px; text-transform: uppercase; padding: 8px 4px; border-bottom: 1px solid var(--border); }
-  td { padding: 8px 4px; border-bottom: 1px solid var(--border); font-size: 13px; }
-  tr:hover { background: rgba(88,166,255,0.04); }
-  .session-output { font-family: monospace; font-size: 11px; color: var(--muted); max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .full-width { grid-column: 1 / -1; }
-  .confidence-bar { display: inline-block; width: 60px; height: 6px; background: var(--border); border-radius: 3px; margin-right: 6px; vertical-align: middle; }
-  .confidence-fill { height: 100%; border-radius: 3px; }
-  .empty { color: var(--muted); font-style: italic; padding: 12px 0; }
-  #live-indicator { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; margin-right: 6px; animation: pulse 2s infinite; }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  th, td { text-align: left; padding: 9px 6px; border-bottom: 1px solid rgba(255,255,255,0.06); vertical-align: top; }
+  th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+  td { font-size: 13px; }
+  .muted { color: var(--muted); }
+  .empty { color: var(--muted); font-style: italic; }
+  .danger { color: var(--bad); }
+  .warning { color: var(--warn); }
+  .good { color: var(--good); }
+  a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+  a:hover { text-decoration: underline; }
+  .detail-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px 12px;
+    margin-top: 12px;
+  }
+  .detail-grid strong {
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 2px;
+  }
+  .warning-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 12px;
+  }
+  .score-row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+  }
+  .score-chip {
+    min-width: 110px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 8px 10px;
+    background: rgba(255,255,255,0.02);
+  }
+  .score-chip strong {
+    display: block;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  .artifact-shell {
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    background:
+      linear-gradient(180deg, rgba(104,178,255,0.06), transparent 24%),
+      rgba(255,255,255,0.02);
+    overflow: hidden;
+  }
+  .artifact-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: start;
+    padding: 16px 18px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    background: rgba(10,15,20,0.28);
+  }
+  .artifact-title {
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  .artifact-subtitle {
+    margin-top: 4px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .artifact-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: end;
+  }
+  .artifact-button {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    border-radius: 999px;
+    padding: 8px 12px;
+    font: inherit;
+    cursor: pointer;
+  }
+  .artifact-button.active {
+    border-color: rgba(104,178,255,0.55);
+    background: rgba(104,178,255,0.12);
+    color: var(--accent);
+  }
+  .artifact-body {
+    padding: 18px;
+  }
+  .artifact-summary {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .artifact-stat {
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 14px;
+    padding: 12px;
+    background: rgba(255,255,255,0.02);
+  }
+  .artifact-stat strong {
+    display: block;
+    margin-bottom: 6px;
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .artifact-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .artifact-panel {
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 14px;
+    padding: 12px;
+    background: rgba(255,255,255,0.02);
+  }
+  .artifact-panel h3 {
+    margin: 0 0 10px;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+  }
+  .artifact-list {
+    display: grid;
+    gap: 8px;
+  }
+  .artifact-list div {
+    display: grid;
+    gap: 2px;
+  }
+  .artifact-list strong {
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .artifact-raw {
+    margin: 0;
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 14px;
+    background: #0b1218;
+    color: #dce8f4;
+    padding: 14px;
+    overflow: auto;
+    max-height: 520px;
+    font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (max-width: 1100px) {
+    .artifact-summary,
+    .artifact-grid {
+      grid-template-columns: 1fr;
+    }
+    .artifact-head {
+      flex-direction: column;
+    }
+    .artifact-actions {
+      justify-content: start;
+    }
+  }
 </style>
 </head>
 <body>
-<div class="container">
+<div class="wrap">
   <header>
-    <h1>Foreman</h1>
-    <div class="status"><span id="live-indicator"></span><span id="uptime"></span></div>
+    <div>
+      <h1>Foreman Control Surface</h1>
+      <div class="sub">One view for policy governance, training-set quality, telemetry evidence, and project-level autonomy recommendations.</div>
+    </div>
+    <div class="meta" id="meta">Loading…</div>
   </header>
 
-  <div class="grid">
-    <div class="card">
-      <h2>Stats</h2>
-      <div id="stats"><div class="empty">Loading...</div></div>
+  <form id="filters" class="toolbar">
+    <div class="field field-grow">
+      <label for="projects-input">Projects</label>
+      <input id="projects-input" name="projects" type="text" placeholder="foreman, pigraph, dotfiles">
     </div>
-    <div class="card">
-      <h2>Active Goals</h2>
-      <div id="goals"><div class="empty">Loading...</div></div>
+    <div class="field">
+      <label for="focus-select">Focus</label>
+      <select id="focus-select" name="focus">
+        <option value="all">All</option>
+        <option value="loop">Loop</option>
+        <option value="optimize">Optimize</option>
+        <option value="autoresearch">Autoresearch</option>
+      </select>
     </div>
-  </div>
+    <div class="field">
+      <label for="window-select">Window</label>
+      <select id="window-select" name="window-days">
+        <option value="7">7d</option>
+        <option value="14">14d</option>
+        <option value="30" selected>30d</option>
+        <option value="60">60d</option>
+        <option value="90">90d</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="limit-select">Limit</label>
+      <select id="limit-select" name="limit">
+        <option value="5">5</option>
+        <option value="8" selected>8</option>
+        <option value="12">12</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>&nbsp;</label>
+      <button type="submit">Apply</button>
+    </div>
+  </form>
+
+  <div id="presets" class="preset-bar"><div class="empty">Loading presets…</div></div>
 
   <div class="grid">
-    <div class="card full-width">
-      <h2>Active Sessions</h2>
-      <div id="sessions"><div class="empty">Loading...</div></div>
-    </div>
-  </div>
+    <section class="card span-3"><h2>Decisions</h2><div id="kpi-decisions"></div></section>
+    <section class="card span-3"><h2>Policy</h2><div id="kpi-policy"></div></section>
+    <section class="card span-3"><h2>Spend</h2><div id="kpi-spend"></div></section>
+    <section class="card span-3"><h2>Coverage</h2><div id="kpi-coverage"></div></section>
 
-  <div class="grid">
-    <div class="card full-width">
-      <h2>Recent Decisions</h2>
-      <div id="decisions"><div class="empty">Loading...</div></div>
-    </div>
-  </div>
+    <section class="card span-12">
+      <h2>Question Surface</h2>
+      <div id="question-surface" class="stack"><div class="empty">Loading…</div></div>
+    </section>
 
-  <div class="grid">
-    <div class="card">
-      <h2>Confidence Matrix</h2>
-      <div id="confidence"><div class="empty">Loading...</div></div>
-    </div>
-    <div class="card">
-      <h2>Recent Events</h2>
-      <div id="events"><div class="empty">Loading...</div></div>
-    </div>
-  </div>
+    <section class="card span-8">
+      <h2>Where To Point Autonomy</h2>
+      <div id="projects" class="stack"><div class="empty">Loading…</div></div>
+    </section>
 
-  <div class="grid">
-    <div class="card full-width">
-      <h2>Telemetry (24h)</h2>
-      <div id="telemetry"><div class="empty">Loading...</div></div>
-    </div>
-  </div>
+    <section class="card span-4">
+      <h2>Dataset Health</h2>
+      <div id="dataset-health" class="stack"><div class="empty">Loading…</div></div>
+    </section>
 
-  <div class="grid">
-    <div class="card full-width">
+    <section class="card span-12">
+      <h2>Project Drilldown</h2>
+      <div id="project-drilldown"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section class="card span-12">
+      <h2>Artifact Viewer</h2>
+      <div id="artifact-viewer"><div class="empty">Select a decision, transcript, or telemetry row from the drilldown.</div></div>
+    </section>
+
+    <section class="card span-6">
       <h2>Replay Governance</h2>
-      <div id="replay-governance"><div class="empty">Loading...</div></div>
-    </div>
+      <div id="replay-summary" class="stack"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section class="card span-6">
+      <h2>Replay History</h2>
+      <div id="replay-history"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section class="card span-6">
+      <h2>Dispatch Training Set</h2>
+      <div id="dispatch-training" class="stack"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section class="card span-6">
+      <h2>Prompt Policy Surface</h2>
+      <div id="prompt-policy" class="stack"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section class="card span-12">
+      <h2>Replay Examples</h2>
+      <div id="replay-examples"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section class="card span-7">
+      <h2>Telemetry Evidence</h2>
+      <div id="telemetry"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section class="card span-5">
+      <h2>Live State</h2>
+      <div id="live-state"><div class="empty">Loading…</div></div>
+    </section>
   </div>
 </div>
 
 <script>
-const API = ''
-
-function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML }
-
-function badge(status) {
-  const map = { success: 'green', failure: 'red', dispatched: 'blue', running: 'yellow', idle: 'yellow', starting: 'blue', dead: 'red', promote: 'green', hold: 'yellow', reject: 'red' }
-  return `<span class="badge badge-${map[status] || 'blue'}">${esc(status)}</span>`
+function esc(value) {
+  const div = document.createElement('div')
+  div.textContent = value == null ? '' : String(value)
+  return div.innerHTML
 }
 
-function confBar(score) {
-  const pct = Math.round(score * 100)
-  const color = score >= 0.8 ? 'var(--green)' : score >= 0.6 ? 'var(--yellow)' : score >= 0.3 ? 'var(--accent)' : 'var(--red)'
-  return `<span class="confidence-bar"><span class="confidence-fill" style="width:${pct}%;background:${color}"></span></span>${pct}%`
-}
-
-function timeAgo(ts) {
-  if (!ts) return ''
-  const d = new Date(ts)
-  const s = Math.floor((Date.now() - d.getTime()) / 1000)
-  if (s < 60) return `${s}s ago`
-  if (s < 3600) return `${Math.floor(s/60)}m ago`
-  if (s < 86400) return `${Math.floor(s/3600)}h ago`
-  return `${Math.floor(s/86400)}d ago`
-}
-
-function fmtPct(value) {
+function pct(value) {
   return value == null ? 'n/a' : `${(value * 100).toFixed(1)}%`
 }
 
-function fmtSourceMix(sources) {
-  if (!sources || sources.length === 0) return 'none'
-  return sources.map(src => `${esc(src.key)} (${src.count})`).join(', ')
+function money(value) {
+  return value == null ? 'n/a' : `$${Number(value).toFixed(2)}`
 }
 
-async function fetchJSON(path) {
-  try { const r = await fetch(API + path); return r.ok ? await r.json() : null }
-  catch { return null }
+function ago(ts) {
+  if (!ts) return 'n/a'
+  const diff = Math.max(0, Date.now() - new Date(ts).getTime())
+  const s = Math.floor(diff / 1000)
+  if (s < 60) return `${s}s ago`
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
+  return `${Math.floor(s / 86400)}d ago`
 }
 
-async function loadStats() {
-  const s = await fetchJSON('/api/stats')
-  if (!s) return
-  const blocked = s.cost?.budgetBlocked ? ' 🔴' : ''
-  const activePolicy = s.policy?.active?.policyName || 'env-default'
-  document.getElementById('stats').innerHTML = `
-    <div class="stat-row"><span class="stat-label">Decisions</span><span class="stat-value">${s.decisions}</span></div>
-    <div class="stat-row"><span class="stat-label">Success Rate</span><span class="stat-value">${s.successRate}%</span></div>
-    <div class="stat-row"><span class="stat-label">Operator / Auto</span><span class="stat-value">${s.operatorDispatches} / ${s.autoDispatches}</span></div>
-    <div class="stat-row"><span class="stat-label">Learnings</span><span class="stat-value">${s.learnings}</span></div>
-    <div class="stat-row"><span class="stat-label">Cost (today)</span><span class="stat-value">$${(s.cost?.today ?? 0).toFixed(2)}${blocked}</span></div>
-    <div class="stat-row"><span class="stat-label">Cost (total)</span><span class="stat-value">$${(s.cost?.total ?? 0).toFixed(2)}</span></div>
-    <div class="stat-row"><span class="stat-label">Telemetry Runs (24h)</span><span class="stat-value">${s.cost?.runs24h ?? 0}</span></div>
-    <div class="stat-row"><span class="stat-label">Tokens (24h)</span><span class="stat-value">${(s.cost?.tokens24h ?? 0).toLocaleString()}</span></div>
-    <div class="stat-row"><span class="stat-label">Telemetry Coverage</span><span class="stat-value">${Math.round((s.cost?.coverage?.coverageRate ?? 0) * 100)}%</span></div>
-    <div class="stat-row"><span class="stat-label">Active Policy</span><span class="stat-value">${esc(activePolicy)}</span></div>
-    <div class="stat-row"><span class="stat-label">Operator Sessions</span><span class="stat-value">${s.operatorSessions}</span></div>
+function uptime(seconds) {
+  const totalMinutes = Math.floor(seconds / 60)
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`
+}
+
+function pill(text, kind = 'info') {
+  return `<span class="pill ${kind}">${esc(text)}</span>`
+}
+
+function link(href, label) {
+  if (!href) return 'n/a'
+  return `<a href="${esc(href)}" data-artifact-href="${esc(href)}" data-artifact-label="${esc(label)}">${esc(label)}</a>`
+}
+
+function kindForRecommendation(value) {
+  if (value === 'loop') return 'good'
+  if (value === 'optimize') return 'warn'
+  if (value === 'autoresearch') return 'info'
+  return 'info'
+}
+
+function kindForHealth(value) {
+  if (value === 'good') return 'good'
+  if (value === 'warn') return 'warn'
+  return 'bad'
+}
+
+function kindForWarning(value) {
+  if (value === 'critical') return 'bad'
+  if (value === 'warn') return 'warn'
+  return 'info'
+}
+
+function rows(items, render) {
+  return items.length > 0 ? items.map(render).join('') : '<div class="empty">No data yet</div>'
+}
+
+const artifactState = {
+  href: '',
+  label: '',
+  mode: 'summary',
+  loading: false,
+  error: '',
+  data: null,
+}
+
+function readFilterState() {
+  const params = new URLSearchParams(window.location.search)
+  return {
+    projects: params.getAll('project'),
+    focus: params.get('focus') || 'all',
+    windowDays: params.get('window_days') || '30',
+    limit: params.get('limit') || '8',
+    selectedProject: params.get('selected_project') || '',
+  }
+}
+
+function writeFilterState(state, replace = false) {
+  const params = new URLSearchParams()
+  for (const project of state.projects) {
+    if (project) params.append('project', project)
+  }
+  if (state.focus && state.focus !== 'all') params.set('focus', state.focus)
+  if (state.windowDays) params.set('window_days', state.windowDays)
+  if (state.limit) params.set('limit', state.limit)
+  if (state.selectedProject) params.set('selected_project', state.selectedProject)
+  const nextUrl = `${window.location.pathname}?${params.toString()}`
+  if (replace) {
+    window.history.replaceState(null, '', nextUrl)
+  } else {
+    window.history.pushState(null, '', nextUrl)
+  }
+}
+
+function syncControls(state) {
+  document.getElementById('projects-input').value = state.projects.join(', ')
+  document.getElementById('focus-select').value = state.focus
+  document.getElementById('window-select').value = state.windowDays
+  document.getElementById('limit-select').value = state.limit
+}
+
+async function fetchDashboard() {
+  const params = new URLSearchParams(window.location.search)
+  const response = await fetch(`/api/dashboard-model?${params.toString()}`)
+  if (!response.ok) throw new Error(`dashboard load failed: ${response.status}`)
+  return response.json()
+}
+
+async function fetchArtifact(href) {
+  const response = await fetch(href)
+  if (!response.ok) throw new Error(`artifact load failed: ${response.status}`)
+  return response.json()
+}
+
+function renderOverview(model) {
+  document.getElementById('meta').innerHTML = `
+    <div>Updated ${ago(model.generatedAt)}</div>
+    <div>Service uptime ${uptime(model.uptimeSeconds)}</div>
+  `
+
+  document.getElementById('kpi-decisions').innerHTML = `
+    <div class="kpi-value">${model.overview.decisions}</div>
+    <div class="kpi-note">${pct(model.overview.successRate)} success, ${model.overview.activeGoals} active goals, ${model.overview.activeSessions} live sessions</div>
+  `
+
+  const policy = model.overview.activeDispatchPolicy
+  const latestReplay = model.overview.latestReplay
+  document.getElementById('kpi-policy').innerHTML = `
+    <div class="kpi-value">${esc(policy?.policyName || 'env-default')}</div>
+    <div class="kpi-note">Latest replay: ${latestReplay ? esc(latestReplay.candidatePolicyName) + ' → ' + esc(latestReplay.promotionStatus || 'n/a') : 'none yet'}</div>
+  `
+
+  document.getElementById('kpi-spend').innerHTML = `
+    <div class="kpi-value">${money(model.overview.todayCostUsd)}</div>
+    <div class="kpi-note">${money(model.overview.budgetDailyUsd)} daily cap ${model.overview.budgetBlocked ? '<span class="danger">blocked</span>' : ''}</div>
+  `
+
+  document.getElementById('kpi-coverage').innerHTML = `
+    <div class="kpi-value">${pct(model.overview.telemetryCoverage.coverageRate)}</div>
+    <div class="kpi-note">${model.overview.telemetryCoverage.decisionsWithTelemetry}/${model.overview.telemetryCoverage.completedDecisions} completed decisions linked to telemetry</div>
   `
 }
 
-async function loadTelemetry() {
-  const t = await fetchJSON('/api/telemetry/summary?hours=24')
-  if (!t) return
-  const topHarnesses = t.byHarness?.slice(0, 6) ?? []
-  const topModels = t.byModel?.slice(0, 6) ?? []
-  const topSources = t.sources?.slice(0, 6) ?? []
-  const harnessHealth = t.harnessHealth?.slice(0, 6) ?? []
-  const latestImport = t.latestImport
-  const recentImports = t.recentImports?.slice(0, 5) ?? []
+function renderProjects(model) {
+  const selectedProject = model.selectedProject
+  document.getElementById('projects').innerHTML = rows(model.projectRecommendations, project => `
+    <article class="project ${selectedProject === project.project ? 'selected' : ''}" data-project="${esc(project.project)}">
+      <div class="project-head">
+        <div>
+          <h3>${esc(project.project)}</h3>
+          <div class="muted">${project.metrics.activeGoals} active goals · ${project.metrics.telemetryRuns7d} telemetry runs in 7d</div>
+        </div>
+        ${pill(project.recommendation, kindForRecommendation(project.recommendation))}
+      </div>
+      <div class="mini">
+        <div><span class="muted">Replay success</span><div>${pct(project.metrics.successRate)}</div></div>
+        <div><span class="muted">Deliverable pass</span><div>${pct(project.metrics.deliverablePassRate)}</div></div>
+        <div><span class="muted">Scope violations</span><div>${pct(project.metrics.scopeViolationRate)}</div></div>
+        <div><span class="muted">7d cost</span><div>${money(project.metrics.cost7dUsd)}</div></div>
+      </div>
+      <div class="score-row">
+        <div class="score-chip"><strong>Loop</strong>${pct(project.scores.loop)}</div>
+        <div class="score-chip"><strong>Optimize</strong>${pct(project.scores.optimize)}</div>
+        <div class="score-chip"><strong>Autoresearch</strong>${pct(project.scores.autoresearch)}</div>
+      </div>
+      <div class="detail-grid">
+        <div><strong>Why now</strong>${esc(project.whyNow)}</div>
+        <div><strong>Freshness</strong>${esc(project.evidence.freshness)}</div>
+        <div><strong>Prompt samples</strong>${project.evidence.promptSamples} · ${pct(project.evidence.promptSuccessRate)}</div>
+        <div><strong>Top skills</strong>${project.evidence.topSkills.map(item => `${esc(item.key)} (${item.count})`).join(', ') || 'n/a'}</div>
+        <div><strong>Trajectories</strong>${project.evidence.topTrajectories.map(item => `${esc(item.key)} (${item.count})`).join(', ') || 'n/a'}</div>
+        <div><strong>Harnesses</strong>${project.evidence.telemetryHarnesses.map(item => `${esc(item.key)} (${item.count})`).join(', ') || 'n/a'}</div>
+      </div>
+      <div class="warning-list">
+        ${(project.warnings.length > 0 ? project.warnings : [{ level: 'info', summary: 'No major warnings in the current slice.' }]).map(warning => pill(warning.summary, kindForWarning(warning.level))).join('')}
+      </div>
+      <ul class="clean">
+        ${project.rationale.map(reason => `<li>${esc(reason)}</li>`).join('')}
+      </ul>
+      <ul class="clean">
+        ${project.nextActions.map(step => `<li>${esc(step)}</li>`).join('')}
+      </ul>
+      <div class="muted" style="margin-top:10px">${project.whyNot.map(item => esc(item)).join(' ')}</div>
+      <div class="confidence"><span style="width:${Math.round(project.confidence * 100)}%"></span></div>
+    </article>
+  `)
+}
+
+function renderQuestionSurface(model) {
+  const question = model.questionSurface
+  document.getElementById('question-surface').innerHTML = `
+    <div class="row">
+      <div>
+        <div style="font-size:18px;font-weight:700">${esc(question.question)}</div>
+        <div class="muted" style="margin-top:6px">${esc(question.answer)}</div>
+      </div>
+      ${pill(`confidence ${Math.round(question.confidence * 100)}%`, 'info')}
+    </div>
+    <div class="mini" style="margin-top:12px">
+      <div><span class="muted">Window</span><div>${esc(`${question.windowDays}d`)}</div></div>
+      <div><span class="muted">Focus</span><div>${esc(question.focus)}</div></div>
+      <div><span class="muted">Loop-ready</span><div>${question.recommendationCounts.loop}</div></div>
+      <div><span class="muted">Optimize-first</span><div>${question.recommendationCounts.optimize}</div></div>
+    </div>
+    <ul class="clean" style="margin-top:12px">
+      ${question.rationale.map(reason => `<li>${esc(reason)}</li>`).join('')}
+    </ul>
+    <table style="margin-top:12px">
+      <tr><th>Project</th><th>Recommendation</th><th>Why</th><th>Confidence</th></tr>
+      ${question.alternatives.map(item => `
+        <tr>
+          <td>${esc(item.project)}</td>
+          <td>${pill(item.recommendation, kindForRecommendation(item.recommendation))}</td>
+          <td>${esc(item.whyNow)}</td>
+          <td>${Math.round(item.confidence * 100)}%</td>
+        </tr>
+      `).join('') || '<tr><td colspan="4" class="empty">No alternatives</td></tr>'}
+    </table>
+  `
+}
+
+function renderPresets(model) {
+  const state = readFilterState()
+  document.getElementById('presets').innerHTML = model.recommendationPresets.map(preset => {
+    const active = state.focus === preset.focus && Number(state.windowDays) === preset.windowDays
+    return `<button class="preset-button ${active ? 'active' : ''}" type="button" data-preset="${esc(preset.id)}" title="${esc(preset.description)}">${esc(preset.label)}</button>`
+  }).join('')
+}
+
+function renderProjectDrilldown(model) {
+  const drilldown = model.projectDrilldown
+  if (!drilldown) {
+    document.getElementById('project-drilldown').innerHTML = '<div class="empty">Select a project to inspect its evidence.</div>'
+    return
+  }
+  document.getElementById('project-drilldown').innerHTML = `
+    <div class="row">
+      <div>
+        <div style="font-size:18px;font-weight:700">${esc(drilldown.project)}</div>
+        <div class="muted" style="margin-top:6px">${drilldown.recommendation ? esc(drilldown.recommendation.whyNow) : 'No active recommendation for this slice.'}</div>
+      </div>
+      ${drilldown.recommendation ? pill(drilldown.recommendation.recommendation, kindForRecommendation(drilldown.recommendation.recommendation)) : ''}
+    </div>
+    <div class="detail-grid" style="margin-top:12px">
+      <div><strong>Active goals</strong>${drilldown.activeGoals.length}</div>
+      <div><strong>Operator sessions</strong>${drilldown.operatorSessions.length}</div>
+      <div><strong>Replay rows</strong>${drilldown.replayExamples.length}</div>
+      <div><strong>Training rows</strong>${drilldown.trainingExamples.length}</div>
+      <div><strong>Prompt rows</strong>${drilldown.promptSamples.length}</div>
+      <div><strong>Telemetry rows</strong>${drilldown.telemetryRuns.length}</div>
+    </div>
+    <table style="margin-top:12px">
+      <tr><th>Replay</th><th>Skill</th><th>Status</th><th>Trajectory</th><th>Refs</th><th>Cost</th></tr>
+      ${drilldown.replayExamples.map(item => `
+        <tr>
+          <td>${esc(ago(item.createdAt))}</td>
+          <td>${esc(item.skill)}</td>
+          <td>${esc(item.deliverableStatus)}</td>
+          <td>${esc(item.trajectory)}</td>
+          <td>${[link(item.refs.decision, 'decision'), link(item.refs.session, 'session'), link(item.refs.transcript, 'transcript')].join(' · ')}</td>
+          <td>${money(item.costUsd)}</td>
+        </tr>
+      `).join('') || '<tr><td colspan="6" class="empty">No replay evidence in this slice</td></tr>'}
+    </table>
+    <table style="margin-top:12px">
+      <tr><th>Training</th><th>Source</th><th>Mode</th><th>Skill</th><th>Outcome</th><th>Refs</th></tr>
+      ${drilldown.trainingExamples.map(item => `
+        <tr>
+          <td>${esc(ago(item.createdAt))}</td>
+          <td>${esc(item.source)}</td>
+          <td>${esc(item.mode || 'unknown')}</td>
+          <td>${esc(item.skill)}</td>
+          <td>${esc(item.outcome)}</td>
+          <td>${[link(item.refs.decision, 'decision'), link(item.refs.session, 'session'), link(item.refs.transcript, 'transcript')].join(' · ')}</td>
+        </tr>
+      `).join('') || '<tr><td colspan="6" class="empty">No dispatch-training evidence in this slice</td></tr>'}
+    </table>
+    <table style="margin-top:12px">
+      <tr><th>Operator</th><th>Harness</th><th>Skills</th><th>Outcomes</th><th>Preview</th></tr>
+      ${drilldown.operatorSessions.map(item => `
+        <tr>
+          <td>${esc(ago(item.timestamp))}</td>
+          <td>${esc(item.harness)}</td>
+          <td>${esc(item.skills.join(', ') || 'n/a')}</td>
+          <td>${esc(item.outcomes.join(', ') || 'n/a')}</td>
+          <td>${esc((item.preview || '').slice(0, 100))}</td>
+        </tr>
+      `).join('') || '<tr><td colspan="5" class="empty">No operator sessions in this slice</td></tr>'}
+    </table>
+    <table style="margin-top:12px">
+      <tr><th>Telemetry</th><th>Harness</th><th>Skill</th><th>Model</th><th>Refs</th><th>Cost</th></tr>
+      ${drilldown.telemetryRuns.map(item => `
+        <tr>
+          <td>${esc(ago(item.finishedAt))}</td>
+          <td>${esc(item.harness)}</td>
+          <td>${esc(item.skill || 'n/a')}</td>
+          <td>${esc(item.model || 'n/a')}</td>
+          <td>${[link(item.refs.telemetry, 'telemetry'), link(item.refs.decision, 'decision'), link(item.refs.transcript, 'transcript')].join(' · ')}</td>
+          <td>${money(item.costUsd)}</td>
+        </tr>
+      `).join('') || '<tr><td colspan="6" class="empty">No telemetry runs in this slice</td></tr>'}
+    </table>
+    <table style="margin-top:12px">
+      <tr><th>Prompt</th><th>Skill</th><th>Policy</th><th>Deliverable</th><th>Decision</th></tr>
+      ${drilldown.promptSamples.map(item => `
+        <tr>
+          <td>${esc(ago(item.createdAt))}</td>
+          <td>${esc(item.skill)}</td>
+          <td>${esc(item.promptPolicyId)}</td>
+          <td>${esc(item.deliverableStatus)}</td>
+          <td>${link(item.refs.decision, `decision ${item.id}`)}</td>
+        </tr>
+      `).join('') || '<tr><td colspan="5" class="empty">No prompt-policy rows in this slice</td></tr>'}
+    </table>
+  `
+}
+
+function summarizeArtifact(data) {
+  if (!data || typeof data !== 'object') return { title: 'Artifact', subtitle: 'No artifact loaded.', stats: [], panels: [] }
+
+  if (data.decision) {
+    const decision = data.decision
+    const session = data.session
+    const telemetry = Array.isArray(data.telemetry) ? data.telemetry : []
+    return {
+      title: `Decision ${decision.id ?? ''}`.trim(),
+      subtitle: `${decision.skill || 'unknown skill'} · ${decision.status || 'unknown status'}`,
+      stats: [
+        { label: 'Created', value: ago(decision.created_at) },
+        { label: 'Deliverable', value: decision.deliverable_status || 'unchecked' },
+        { label: 'Telemetry Rows', value: telemetry.length },
+      ],
+      panels: [
+        {
+          title: 'Decision',
+          rows: [
+            ['Task', decision.task || 'n/a'],
+            ['Reasoning', decision.reasoning || 'n/a'],
+            ['Outcome', decision.outcome || 'n/a'],
+            ['Session', decision.session_name || 'n/a'],
+          ],
+        },
+        {
+          title: 'Attached Session',
+          rows: session ? [
+            ['Status', session.status || 'n/a'],
+            ['Backend', session.backend || 'n/a'],
+            ['Model', session.model || 'n/a'],
+            ['Work Dir', session.work_dir || 'n/a'],
+          ] : [['Session', 'No live session row attached.']],
+        },
+      ],
+    }
+  }
+
+  if (data.summary && Object.prototype.hasOwnProperty.call(data, 'transcriptPath')) {
+    const summary = data.summary
+    return {
+      title: `Transcript ${data.session || ''}`.trim(),
+      subtitle: data.transcriptPath || 'No transcript path attached.',
+      stats: [
+        { label: 'Turns', value: summary?.turnCount ?? 'n/a' },
+        { label: 'Tool Calls', value: summary?.toolCalls?.length ?? 'n/a' },
+        { label: 'Model', value: summary?.model || 'n/a' },
+      ],
+      panels: [
+        {
+          title: 'Session Summary',
+          rows: [
+            ['Start', summary?.startTime ? ago(summary.startTime) : 'n/a'],
+            ['End', summary?.endTime ? ago(summary.endTime) : 'n/a'],
+            ['Branch', summary?.gitBranch || 'n/a'],
+            ['CWD', summary?.cwd || 'n/a'],
+          ],
+        },
+        {
+          title: 'Closing Block',
+          rows: summary?.closingBlock ? [
+            ['Status', summary.closingBlock.status || 'n/a'],
+            ['Summary', summary.closingBlock.summary || 'n/a'],
+            ['Deliverables', (summary.closingBlock.deliverables || []).join(', ') || 'n/a'],
+            ['Next Context', summary.closingBlock.nextContext || 'n/a'],
+          ] : [['Closing Block', 'No closing block parsed.']],
+        },
+      ],
+    }
+  }
+
+  return {
+    title: `Telemetry ${data.id ?? ''}`.trim(),
+    subtitle: `${data.harness || 'unknown harness'} · ${data.source || 'unknown source'}`,
+    stats: [
+      { label: 'Cost', value: money(data.cost_usd) },
+      { label: 'Model', value: data.model || 'n/a' },
+      { label: 'Finished', value: data.finished_at ? ago(data.finished_at) : 'n/a' },
+    ],
+    panels: [
+      {
+        title: 'Run',
+        rows: [
+          ['Skill', data.skill || 'n/a'],
+          ['Repo', data.repo || 'n/a'],
+          ['Session', data.session_name || 'n/a'],
+          ['Decision', data.decision_id || 'n/a'],
+        ],
+      },
+      {
+        title: 'Usage',
+        rows: [
+          ['Input Tokens', data.input_tokens ?? 'n/a'],
+          ['Output Tokens', data.output_tokens ?? 'n/a'],
+          ['Total Tokens', data.total_tokens ?? 'n/a'],
+          ['Status', data.status || 'n/a'],
+        ],
+      },
+    ],
+  }
+}
+
+function renderArtifactViewer() {
+  const root = document.getElementById('artifact-viewer')
+  if (artifactState.loading) {
+    root.innerHTML = '<div class="empty">Loading artifact…</div>'
+    return
+  }
+  if (artifactState.error) {
+    root.innerHTML = `<div class="danger">${esc(artifactState.error)}</div>`
+    return
+  }
+  if (!artifactState.data) {
+    root.innerHTML = '<div class="empty">Select a decision, transcript, or telemetry row from the drilldown.</div>'
+    return
+  }
+
+  const view = summarizeArtifact(artifactState.data)
+  root.innerHTML = `
+    <div class="artifact-shell">
+      <div class="artifact-head">
+        <div>
+          <div class="artifact-title">${esc(view.title)}</div>
+          <div class="artifact-subtitle">${esc(view.subtitle)}</div>
+        </div>
+        <div class="artifact-actions">
+          <button class="artifact-button ${artifactState.mode === 'summary' ? 'active' : ''}" type="button" data-artifact-mode="summary">Summary</button>
+          <button class="artifact-button ${artifactState.mode === 'raw' ? 'active' : ''}" type="button" data-artifact-mode="raw">Raw JSON</button>
+          <a class="artifact-button" href="${esc(artifactState.href)}" target="_blank" rel="noreferrer">Open Raw</a>
+        </div>
+      </div>
+      <div class="artifact-body">
+        ${artifactState.mode === 'summary' ? `
+          <div class="artifact-summary">
+            ${view.stats.map(stat => `
+              <div class="artifact-stat">
+                <strong>${esc(stat.label)}</strong>
+                <div>${esc(stat.value)}</div>
+              </div>
+            `).join('')}
+          </div>
+          <div class="artifact-grid">
+            ${view.panels.map(panel => `
+              <section class="artifact-panel">
+                <h3>${esc(panel.title)}</h3>
+                <div class="artifact-list">
+                  ${panel.rows.map(([label, value]) => `
+                    <div>
+                      <strong>${esc(label)}</strong>
+                      <span>${esc(value)}</span>
+                    </div>
+                  `).join('')}
+                </div>
+              </section>
+            `).join('')}
+          </div>
+        ` : `
+          <pre class="artifact-raw">${esc(JSON.stringify(artifactState.data, null, 2))}</pre>
+        `}
+      </div>
+    </div>
+  `
+}
+
+async function openArtifact(href, label) {
+  artifactState.href = href
+  artifactState.label = label
+  artifactState.loading = true
+  artifactState.error = ''
+  renderArtifactViewer()
+  try {
+    artifactState.data = await fetchArtifact(href)
+    artifactState.loading = false
+    renderArtifactViewer()
+  } catch (error) {
+    artifactState.loading = false
+    artifactState.error = String(error)
+    renderArtifactViewer()
+  }
+}
+
+function renderDatasetHealth(model) {
+  document.getElementById('dataset-health').innerHTML = rows(model.datasetHealth, item => `
+    <div>
+      <div class="row">
+        <div>
+          <div>${pill(item.level, kindForHealth(item.level))}</div>
+          <div style="margin-top:8px;font-weight:600">${esc(item.summary)}</div>
+        </div>
+      </div>
+      <div class="muted" style="margin-top:6px">${esc(item.detail)}</div>
+    </div>
+  `)
+}
+
+function renderReplay(model) {
+  const latest = model.replay.latest
+  document.getElementById('replay-summary').innerHTML = `
+    <div class="row"><span class="label">Examples</span><span class="value">${model.replay.summary.examples}</span></div>
+    <div class="row"><span class="label">Success rate</span><span class="value">${pct(model.replay.summary.successRate)}</span></div>
+    <div class="row"><span class="label">Deliverable pass</span><span class="value">${pct(model.replay.summary.deliverablePassRate)}</span></div>
+    <div class="row"><span class="label">Average cost</span><span class="value">${money(model.replay.summary.avgCostUsd)}</span></div>
+    <div class="row"><span class="label">Latest candidate</span><span class="value">${latest ? esc(latest.candidatePolicyName) : 'none'}</span></div>
+    <div class="row"><span class="label">Promotion</span><span class="value">${latest ? pill(latest.promotionStatus || 'n/a', kindForRecommendation(latest.promotionStatus === 'promote' ? 'loop' : latest.promotionStatus === 'reject' ? 'optimize' : 'autoresearch')) : 'n/a'}</span></div>
+    <div class="row"><span class="label">Safe good delta</span><span class="value">${latest?.comparison?.delta ? pct(latest.comparison.delta.safeGoodContinuationRate) : 'n/a'}</span></div>
+    <div class="row"><span class="label">Bad divergence delta</span><span class="value">${latest?.comparison?.delta ? pct(latest.comparison.delta.divergedFromBadDecisionRate) : 'n/a'}</span></div>
+  `
+
+  document.getElementById('replay-history').innerHTML = `
+    <table>
+      <tr><th>When</th><th>Candidate</th><th>Baseline</th><th>Examples</th><th>Decision</th><th>Applied</th></tr>
+      ${model.replay.history.map(item => `
+        <tr>
+          <td>${esc(ago(item.createdAt))}</td>
+          <td>${esc(item.candidatePolicyName)}</td>
+          <td>${esc(item.baselinePolicyName || 'none')}</td>
+          <td>${item.examples}</td>
+          <td>${pill(item.promotionStatus || 'n/a', kindForRecommendation(item.promotionStatus === 'promote' ? 'loop' : item.promotionStatus === 'reject' ? 'optimize' : 'autoresearch'))}</td>
+          <td>${item.applied ? 'yes' : 'no'}</td>
+        </tr>
+      `).join('') || '<tr><td colspan="6" class="empty">No replay history yet</td></tr>'}
+    </table>
+  `
+
+  document.getElementById('replay-examples').innerHTML = `
+    <table>
+      <tr><th>Project</th><th>Skill</th><th>Task</th><th>Status</th><th>Deliverable</th><th>Trajectory</th><th>Cost</th></tr>
+      ${model.replay.recentExamples.map(example => `
+        <tr>
+          <td>${esc(example.project || 'unknown')}</td>
+          <td>${esc(example.skill)}</td>
+          <td>${esc((example.task || '').slice(0, 100))}</td>
+          <td>${esc(example.status)}</td>
+          <td>${esc(example.deliverableStatus)}</td>
+          <td>${esc(example.trajectory)}</td>
+          <td>${money(example.costUsd)}</td>
+        </tr>
+      `).join('') || '<tr><td colspan="7" class="empty">No replay examples</td></tr>'}
+    </table>
+  `
+}
+
+function renderDispatchTraining(model) {
+  document.getElementById('dispatch-training').innerHTML = `
+    <div class="row"><span class="label">Examples</span><span class="value">${model.dispatchTraining.examples}</span></div>
+    <div class="row"><span class="label">Sources</span><span class="value">${model.dispatchTraining.bySource.map(item => `${esc(item.key)} (${item.count})`).join(', ')}</span></div>
+    <div class="row"><span class="label">Modes</span><span class="value">${model.dispatchTraining.byMode.map(item => `${esc(item.key)} (${item.count})`).join(', ')}</span></div>
+    <div class="row"><span class="label">Top skills</span><span class="value">${model.dispatchTraining.bySkill.slice(0, 4).map(item => `${esc(item.key)} (${item.count})`).join(', ')}</span></div>
+    <table>
+      <tr><th>Source</th><th>Project</th><th>Mode</th><th>Skill</th><th>Outcome</th></tr>
+      ${model.dispatchTraining.sampleExamples.map(example => `
+        <tr>
+          <td>${esc(example.source)}</td>
+          <td>${esc(example.project)}</td>
+          <td>${esc(example.mode || 'unknown')}</td>
+          <td>${esc(example.skill)}</td>
+          <td>${esc(example.outcome)}</td>
+        </tr>
+      `).join('')}
+    </table>
+  `
+}
+
+function renderPromptPolicy(model) {
+  const latest = model.promptPolicy.latestEvaluation
+  document.getElementById('prompt-policy').innerHTML = `
+    <div class="row"><span class="label">Active policy</span><span class="value">${esc(model.promptPolicy.active?.id || 'unknown')}</span></div>
+    <div class="row"><span class="label">Samples</span><span class="value">${model.promptPolicy.samples}</span></div>
+    <div class="row"><span class="label">Success rate</span><span class="value">${pct(model.promptPolicy.successRate)}</span></div>
+    <div class="row"><span class="label">Top policies</span><span class="value">${model.promptPolicy.byPolicy.slice(0, 4).map(item => `${esc(item.key)} (${item.count})`).join(', ')}</span></div>
+    <div class="row"><span class="label">Top skills</span><span class="value">${model.promptPolicy.bySkill.slice(0, 4).map(item => `${esc(item.key)} (${item.count})`).join(', ')}</span></div>
+    <div class="row"><span class="label">Latest governance</span><span class="value">${latest ? `${esc(latest.candidatePolicyId)} → ${esc(latest.promotion?.status || 'n/a')}` : 'none'}</span></div>
+    <table>
+      <tr><th>Skill</th><th>Policy</th><th>Success</th><th>Deliverable</th><th>Scope</th></tr>
+      ${model.promptPolicy.sampleExamples.map(example => `
+        <tr>
+          <td>${esc(example.skill)}</td>
+          <td>${esc(example.promptPolicyId)}</td>
+          <td>${example.success ? '<span class="good">yes</span>' : '<span class="danger">no</span>'}</td>
+          <td>${esc(example.deliverableStatus)}</td>
+          <td>${example.scopeViolation ? '<span class="danger">violation</span>' : 'clean'}</td>
+        </tr>
+      `).join('')}
+    </table>
+    <table style="margin-top:10px">
+      <tr><th>Candidate</th><th>Baseline</th><th>Decision</th><th>When</th></tr>
+      ${model.promptPolicy.history.map(item => `
+        <tr>
+          <td>${esc(item.candidatePolicyId)}</td>
+          <td>${esc(item.baselinePolicyId || 'none')}</td>
+          <td>${item.promotion ? pill(item.promotion.status, kindForRecommendation(item.promotion.status === 'promote' ? 'loop' : item.promotion.status === 'reject' ? 'optimize' : 'autoresearch')) : 'n/a'}</td>
+          <td>${esc(ago(item.createdAt))}</td>
+        </tr>
+      `).join('') || '<tr><td colspan="4" class="empty">No prompt policy evaluations</td></tr>'}
+    </table>
+  `
+}
+
+function renderTelemetry(model) {
+  const summary = model.telemetry.summary24h
   document.getElementById('telemetry').innerHTML = `
-    <div class="stat-row"><span class="stat-label">24h Cost / Budget</span><span class="stat-value">$${(t.budget?.todayCostUsd ?? 0).toFixed(2)} / $${(t.budget?.dailyUsd ?? 0).toFixed(2)}</span></div>
-    <div class="stat-row"><span class="stat-label">24h Runs</span><span class="stat-value">${t.runs ?? 0}</span></div>
-    <div class="stat-row"><span class="stat-label">24h Tokens</span><span class="stat-value">${(t.totalTokens ?? 0).toLocaleString()}</span></div>
-    <div class="stat-row"><span class="stat-label">Completed Decisions Covered</span><span class="stat-value">${t.coverage?.decisionsWithTelemetry ?? 0} / ${t.coverage?.completedDecisions ?? 0}</span></div>
-    <div class="stat-row"><span class="stat-label">Orphan Telemetry Runs</span><span class="stat-value">${t.coverage?.orphanTelemetryRuns ?? 0}</span></div>
-    <div class="stat-row"><span class="stat-label">Latest Import</span><span class="stat-value">${latestImport ? `${badge(latestImport.status)} ${timeAgo(latestImport.finishedAt || latestImport.startedAt)}` : 'none'}</span></div>
-    <div class="stat-row"><span class="stat-label">Latest Import Result</span><span class="stat-value">${latestImport ? `${latestImport.imported}/${latestImport.scanned} imported` : 'n/a'}</span></div>
-    <br>
+    <div class="row"><span class="label">24h cost / runs / tokens</span><span class="value">${money(summary.totalCostUsd)} · ${summary.runs} · ${(summary.totalTokens || 0).toLocaleString()}</span></div>
+    <div class="row"><span class="label">Coverage</span><span class="value">${pct(model.telemetry.coverage.coverageRate)}</span></div>
+    <div class="row"><span class="label">Latest import</span><span class="value">${model.telemetry.latestImport ? `${esc(model.telemetry.latestImport.status)} · ${ago(model.telemetry.latestImport.finishedAt || model.telemetry.latestImport.startedAt)}` : 'none'}</span></div>
     <table>
-      <tr><th>Harness</th><th>Runs</th><th>Cost</th><th>Tokens</th></tr>
-      ${topHarnesses.map(h => `<tr><td>${esc(h.key)}</td><td>${h.runs}</td><td>$${Number(h.costUsd || 0).toFixed(2)}</td><td>${Number(h.totalTokens || 0).toLocaleString()}</td></tr>`).join('')}
+      <tr><th>Harness</th><th>Runs</th><th>Cost</th><th>Last seen</th></tr>
+      ${model.telemetry.harnessHealth.slice(0, 6).map(item => `
+        <tr>
+          <td>${esc(item.harness)}</td>
+          <td>${item.runs}</td>
+          <td>${money(item.costUsd)}</td>
+          <td>${item.lastSeenAt ? esc(ago(item.lastSeenAt)) : 'n/a'}</td>
+        </tr>
+      `).join('')}
     </table>
-    <br>
-    <table>
-      <tr><th>Source</th><th>Runs</th><th>Cost</th><th>Last Seen</th></tr>
-      ${topSources.map(src => `<tr><td>${esc(src.key)}</td><td>${src.runs}</td><td>$${Number(src.costUsd || 0).toFixed(2)}</td><td>${src.lastSeenAt ? esc(timeAgo(src.lastSeenAt)) : 'n/a'}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">No telemetry sources</td></tr>'}
-    </table>
-    <br>
-    <table>
-      <tr><th>Model</th><th>Runs</th><th>Cost</th></tr>
-      ${topModels.map(m => `<tr><td>${esc(m.key)}</td><td>${m.runs}</td><td>$${Number(m.costUsd || 0).toFixed(2)}</td></tr>`).join('')}
-    </table>
-    <br>
-    <table>
-      <tr><th>Harness</th><th>Runs</th><th>Last Seen</th><th>Sources</th></tr>
-      ${harnessHealth.map(h => `<tr><td>${esc(h.harness)}</td><td>${h.runs}</td><td>${h.lastSeenAt ? esc(timeAgo(h.lastSeenAt)) : 'n/a'}</td><td>${fmtSourceMix(h.sources)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">No harness telemetry</td></tr>'}
-    </table>
-    <br>
-    <table>
-      <tr><th>Import Status</th><th>When</th><th>Imported</th><th>Skipped</th></tr>
-      ${recentImports.map(run => `<tr><td>${badge(run.status)}</td><td>${esc(timeAgo(run.finishedAt || run.startedAt))}</td><td>${run.imported}/${run.scanned}</td><td>${run.skipped}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">No import runs yet</td></tr>'}
+    <table style="margin-top:10px">
+      <tr><th>Source</th><th>Runs</th><th>Cost</th></tr>
+      ${model.telemetry.sources.slice(0, 6).map(item => `
+        <tr>
+          <td>${esc(item.key)}</td>
+          <td>${item.runs}</td>
+          <td>${money(item.costUsd)}</td>
+        </tr>
+      `).join('')}
     </table>
   `
 }
 
-async function loadReplayGovernance() {
-  const r = await fetchJSON('/api/replay/latest')
-  if (!r?.latest) {
-    document.getElementById('replay-governance').innerHTML = '<div class="empty">No replay evaluations recorded yet</div>'
-    return
-  }
-
-  const active = r.activePolicy?.policyName || 'env-default'
-  const latest = r.latest
-  const promotion = latest.promotion?.status || latest.promotionStatus || 'unknown'
-  const delta = latest.comparison?.delta || {}
-  const evidence = latest.summary?.objectiveVector?.diagnostics || {}
-
-  document.getElementById('replay-governance').innerHTML = `
-    <div class="stat-row"><span class="stat-label">Active Dispatch Policy</span><span class="stat-value">${esc(active)}</span></div>
-    <div class="stat-row"><span class="stat-label">Latest Candidate / Baseline</span><span class="stat-value">${esc(latest.candidatePolicyName)} / ${esc(latest.baselinePolicyName || 'none')}</span></div>
-    <div class="stat-row"><span class="stat-label">Promotion Decision</span><span class="stat-value">${badge(promotion)}</span></div>
-    <div class="stat-row"><span class="stat-label">Replay Scope</span><span class="stat-value">${esc(latest.scopeProject || 'all-projects')} · ${esc(latest.scopeSkill || 'all-skills')}</span></div>
-    <div class="stat-row"><span class="stat-label">Examples</span><span class="stat-value">${latest.examples}</span></div>
-    <div class="stat-row"><span class="stat-label">Safe Good Delta</span><span class="stat-value">${delta.safeGoodContinuationRate == null ? 'n/a' : (delta.safeGoodContinuationRate * 100).toFixed(1) + '%'}</span></div>
-    <div class="stat-row"><span class="stat-label">Bad Divergence Delta</span><span class="stat-value">${delta.divergedFromBadDecisionRate == null ? 'n/a' : (delta.divergedFromBadDecisionRate * 100).toFixed(1) + '%'}</span></div>
-    <div class="stat-row"><span class="stat-label">Predicted Cost Delta</span><span class="stat-value">${delta.avgPredictedCostUsd == null ? 'n/a' : '$' + Number(delta.avgPredictedCostUsd).toFixed(2)}</span></div>
-    <div class="stat-row"><span class="stat-label">Telemetry Evidence Samples</span><span class="stat-value">${evidence.predictedCostEvidenceSamples ?? 0}</span></div>
-    <table>
-      <tr><th>Cost Evidence Source</th><th>Count</th></tr>
-      ${((evidence.predictedCostSources || []).slice(0, 5)).map(src => `<tr><td>${esc(src.key)}</td><td>${src.count}</td></tr>`).join('') || '<tr><td colspan="2" class="empty">No cost evidence</td></tr>'}
+function renderLive(model) {
+  const live = model.live
+  document.getElementById('live-state').innerHTML = `
+    <div class="row"><span class="label">Goals</span><span class="value">${live.goals.length}</span></div>
+    <div class="row"><span class="label">Sessions</span><span class="value">${live.sessions.length}</span></div>
+    <div class="row"><span class="label">Confidence entries</span><span class="value">${live.confidenceEntries.length}</span></div>
+    <table style="margin-top:10px">
+      <tr><th>Session</th><th>Status</th><th>Output</th></tr>
+      ${live.sessions.slice(0, 6).map(session => `
+        <tr>
+          <td>${esc(session.name)}</td>
+          <td>${esc(session.alive ? (session.idle ? 'idle' : session.status) : 'dead')}</td>
+          <td>${esc((session.lastOutput || '').slice(0, 60))}</td>
+        </tr>
+      `).join('') || '<tr><td colspan="3" class="empty">No active sessions</td></tr>'}
     </table>
   `
-}
-
-async function loadStatus() {
-  const s = await fetchJSON('/api/status')
-  if (!s) return
-
-  // Goals
-  if (s.goals?.length > 0) {
-    document.getElementById('goals').innerHTML = s.goals.map(g =>
-      `<div class="stat-row"><span>${esc(g.intent.slice(0, 80))}</span><span>${badge(g.status)}</span></div>`
-    ).join('')
-  } else {
-    document.getElementById('goals').innerHTML = '<div class="empty">No active goals</div>'
-  }
-
-  // Sessions
-  if (s.sessions?.length > 0) {
-    document.getElementById('sessions').innerHTML = `<table>
-      <tr><th>Name</th><th>Status</th><th>Output</th></tr>
-      ${s.sessions.map(sess => `<tr>
-        <td>${esc(sess.name)}</td>
-        <td>${badge(sess.alive ? (sess.idle ? 'idle' : sess.status) : 'dead')}</td>
-        <td class="session-output">${esc(sess.lastOutput || '')}</td>
-      </tr>`).join('')}
-    </table>`
-  } else {
-    document.getElementById('sessions').innerHTML = '<div class="empty">No active sessions</div>'
-  }
-
-  // Decisions
-  if (s.recentDecisions?.length > 0) {
-    document.getElementById('decisions').innerHTML = `<table>
-      <tr><th>Skill</th><th>Task</th><th>Status</th><th>Outcome</th><th>When</th></tr>
-      ${s.recentDecisions.slice(0, 15).map(d => `<tr>
-        <td><span class="badge badge-blue">${esc(d.skill || 'direct')}</span></td>
-        <td>${esc((d.task || '').slice(0, 80))}</td>
-        <td>${badge(d.status)}</td>
-        <td class="session-output">${esc((d.outcome || '').slice(0, 60))}</td>
-        <td style="color:var(--muted);white-space:nowrap">${timeAgo(d.created_at)}</td>
-      </tr>`).join('')}
-    </table>`
-  } else {
-    document.getElementById('decisions').innerHTML = '<div class="empty">No decisions yet</div>'
-  }
-
-  // Events
-  if (s.events?.length > 0) {
-    document.getElementById('events').innerHTML = s.events.map(e =>
-      `<div class="stat-row"><span style="color:var(--muted)">${timeAgo(e.created_at)}</span><span>${esc(e.type)}${e.session_name ? ' — ' + esc(e.session_name) : ''}</span></div>`
-    ).join('')
-  } else {
-    document.getElementById('events').innerHTML = '<div class="empty">No events</div>'
-  }
-}
-
-async function loadConfidence() {
-  const entries = await fetchJSON('/api/confidence')
-  if (!entries || entries.length === 0) {
-    document.getElementById('confidence').innerHTML = '<div class="empty">No confidence data</div>'
-    return
-  }
-  document.getElementById('confidence').innerHTML = `<table>
-    <tr><th>Skill</th><th>Project</th><th>Level</th><th>Score</th></tr>
-    ${entries.slice(0, 15).map(e => `<tr>
-      <td>${esc(e.skill)}</td>
-      <td>${esc(e.project)}</td>
-      <td>${badge(e.level)}</td>
-      <td>${confBar(e.confidence)}</td>
-    </tr>`).join('')}
-  </table>`
-}
-
-async function loadHealth() {
-  const h = await fetchJSON('/api/health')
-  if (h) {
-    const m = Math.floor(h.uptime / 60)
-    const hrs = Math.floor(m / 60)
-    document.getElementById('uptime').textContent = hrs > 0 ? `Up ${hrs}h ${m % 60}m` : `Up ${m}m`
-  }
 }
 
 async function refresh() {
-  await Promise.all([loadStats(), loadStatus(), loadConfidence(), loadHealth(), loadTelemetry(), loadReplayGovernance()])
+  try {
+    const model = await fetchDashboard()
+    renderPresets(model)
+    renderOverview(model)
+    renderQuestionSurface(model)
+    renderProjects(model)
+    renderProjectDrilldown(model)
+    renderDatasetHealth(model)
+    renderReplay(model)
+    renderDispatchTraining(model)
+    renderPromptPolicy(model)
+    renderTelemetry(model)
+    renderLive(model)
+    renderArtifactViewer()
+  } catch (error) {
+    document.getElementById('meta').textContent = String(error)
+  }
 }
 
-// SSE for live updates
+function bindFilters() {
+  const form = document.getElementById('filters')
+  form.addEventListener('submit', event => {
+    event.preventDefault()
+    const projects = document.getElementById('projects-input').value
+      .split(',')
+      .map(project => project.trim())
+      .filter(Boolean)
+    writeFilterState({
+      projects,
+      focus: document.getElementById('focus-select').value,
+      windowDays: document.getElementById('window-select').value,
+      limit: document.getElementById('limit-select').value,
+      selectedProject: readFilterState().selectedProject,
+    })
+    refresh()
+  })
+  window.addEventListener('popstate', () => {
+    syncControls(readFilterState())
+    refresh()
+  })
+  document.getElementById('presets').addEventListener('click', event => {
+    const button = event.target.closest('[data-preset]')
+    if (!button) return
+    const presetId = button.getAttribute('data-preset')
+    const current = readFilterState()
+    const preset = {
+      portfolio: { focus: 'all', windowDays: '30' },
+      loop: { focus: 'loop', windowDays: '30' },
+      optimize: { focus: 'optimize', windowDays: '30' },
+      research: { focus: 'autoresearch', windowDays: '30' },
+      hot: { focus: 'all', windowDays: '14' },
+    }[presetId]
+    if (!preset) return
+    const nextState = {
+      projects: current.projects,
+      focus: preset.focus,
+      windowDays: preset.windowDays,
+      limit: current.limit,
+      selectedProject: current.selectedProject,
+    }
+    syncControls(nextState)
+    writeFilterState(nextState)
+    refresh()
+  })
+  document.getElementById('projects').addEventListener('click', event => {
+    const card = event.target.closest('[data-project]')
+    if (!card) return
+    const state = readFilterState()
+    const project = card.getAttribute('data-project') || ''
+    writeFilterState({
+      ...state,
+      selectedProject: project,
+    })
+    refresh()
+  })
+  document.getElementById('project-drilldown').addEventListener('click', event => {
+    const linkNode = event.target.closest('[data-artifact-href]')
+    if (!linkNode) return
+    event.preventDefault()
+    openArtifact(
+      linkNode.getAttribute('data-artifact-href') || '',
+      linkNode.getAttribute('data-artifact-label') || 'artifact',
+    )
+  })
+  document.getElementById('artifact-viewer').addEventListener('click', event => {
+    const button = event.target.closest('[data-artifact-mode]')
+    if (!button) return
+    artifactState.mode = button.getAttribute('data-artifact-mode') || 'summary'
+    renderArtifactViewer()
+  })
+}
+
 function connectSSE() {
   const es = new EventSource('/api/events')
-  es.onmessage = () => { refresh() }
-  es.onerror = () => { setTimeout(connectSSE, 5000) }
+  es.onmessage = () => refresh()
+  es.onerror = () => setTimeout(connectSSE, 5000)
 }
 
+syncControls(readFilterState())
+bindFilters()
 refresh()
 setInterval(refresh, 15000)
 connectSSE()

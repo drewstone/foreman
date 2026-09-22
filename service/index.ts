@@ -17,6 +17,7 @@ import { promisify } from 'node:util'
 import Database from 'better-sqlite3'
 
 const execFileAsync = promisify(execFile)
+type AnyRecord = Record<string, unknown>
 
 // ─── Shared state ────────────────────────────────────────────────────
 import {
@@ -37,12 +38,13 @@ import {
 import { watcherTick } from './lib/watcher.js'
 import { harvestOutcome } from './lib/harvester.js'
 import { composePrompt, createWorktree } from './lib/prompt-composer.js'
+import { DEFAULT_PROMPT_POLICY, parsePromptPolicy, serializePromptPolicy } from './lib/prompt-policy.js'
 import { cleanupWorktrees, reapZombieSessions } from './lib/maintenance.js'
 import { runLearningLoop, runDeepAnalysis } from './lib/learning-loop.js'
 
 // ─── Existing lib modules ────────────────────────────────────────────
 import { createProposal, listProposals, updateProposalStatus, openProposalPR as openSkillPR } from './lib/skill-proposals.js'
-import { getDispatchPolicy, getDispatchPolicyByName, initGepaPolicy, listDispatchPolicies, policyRequiresLiveCalls, type DispatchContext } from './lib/dispatch-policy.js'
+import { buildDispatchTrainingData, getDispatchPolicy, getDispatchPolicyByName, initGepaPolicy, listDispatchPolicies, policyRequiresLiveCalls } from './lib/dispatch-policy.js'
 import { buildIdeationDispatch, buildFullPlanDispatch, parseIdeationOutput, listPlans, updatePlanStatus, getPlan, openProposalPR as openPlanPR, type PlanGeneratorContext } from './lib/plan-generator.js'
 import { callClaudeForJSON } from './lib/claude-runner.js'
 import { verifyDeliverable, runTestGate, type DeliverableSpec, type ScopeSpec } from './lib/verify-deliverable.js'
@@ -69,6 +71,8 @@ const { listReplayExamples, summarizeReplayExamples, exportReplayDataset, evalua
 import policyControl from './lib/policy-control.js'
 import replayGovernor from './lib/replay-governor.js'
 import telemetryImport from './lib/telemetry-import.js'
+import dashboardModel from './lib/dashboard-model.js'
+import promptPolicyGovernor from './lib/prompt-policy-governor.js'
 
 const {
   ensurePolicyControlSchema,
@@ -84,6 +88,16 @@ const {
   getLatestTelemetryImportRun,
   listTelemetryImportRuns,
 } = telemetryImport
+const { buildDashboardModel, listProjectRecommendations, answerProjectQuestion, getProjectDrilldown } = dashboardModel
+const {
+  ensurePromptPolicyGovernanceSchema,
+  listPromptPolicyIds,
+  getActivePromptPolicy,
+  getLatestPromptPolicyEvaluation,
+  listPromptPolicyEvaluations,
+  evaluatePromptPolicy,
+  promotePromptPolicy,
+} = promptPolicyGovernor
 
 // ─── Database ────────────────────────────────────────────────────────
 
@@ -138,6 +152,7 @@ db.exec(`
     deliverable_spec TEXT,
     scope_spec TEXT,
     prompt_sections TEXT,
+    prompt_policy_id TEXT,
     deliverable_status TEXT DEFAULT 'unchecked',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -213,6 +228,7 @@ db.exec(`
 ensureTelemetrySchema(db)
 ensureTelemetryImportSchema(db)
 ensurePolicyControlSchema(db)
+ensurePromptPolicyGovernanceSchema(db)
 
 // Migrations for existing databases
 try { db.exec(`ALTER TABLE decisions ADD COLUMN origin TEXT NOT NULL DEFAULT 'operator'`) } catch {}
@@ -222,6 +238,7 @@ try { db.exec(`ALTER TABLE decisions ADD COLUMN deliverable_path TEXT`) } catch 
 try { db.exec(`ALTER TABLE decisions ADD COLUMN deliverable_spec TEXT`) } catch {}
 try { db.exec(`ALTER TABLE decisions ADD COLUMN scope_spec TEXT`) } catch {}
 try { db.exec(`ALTER TABLE decisions ADD COLUMN prompt_sections TEXT`) } catch {}
+try { db.exec(`ALTER TABLE decisions ADD COLUMN prompt_policy_id TEXT`) } catch {}
 try { db.exec(`ALTER TABLE decisions ADD COLUMN deliverable_status TEXT DEFAULT 'unchecked'`) } catch {}
 try { db.exec(`ALTER TABLE sessions ADD COLUMN transcript_path TEXT`) } catch {}
 try { db.exec(`ALTER TABLE sessions ADD COLUMN backend TEXT`) } catch {}
@@ -367,6 +384,112 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       return json(res, { goals, sessions: enriched, recentDecisions, events, activePolicy, latestReplayEvaluation })
     }
 
+    if (path === '/api/dashboard-model' && method === 'GET') {
+      const query = parseQuery(url)
+      const goals = stmts.listGoals.all() as AnyRecord[]
+      const sessions = stmts.activeSessions.all() as Array<{ name: string, status: string }>
+      const recentDecisions = stmts.listDecisions.all(20) as AnyRecord[]
+      const recentEvents = stmts.recentEvents.all(12) as AnyRecord[]
+      const confidenceEntries = confidence.list() as unknown as AnyRecord[]
+      const projects = query.getAll('project').map(project => project.trim()).filter(Boolean)
+      const limit = parseInt(query.get('limit') ?? '8', 10)
+      const windowDays = parseInt(query.get('window_days') ?? '30', 10)
+      const focus = query.get('focus') ?? 'all'
+      const selectedProject = query.get('selected_project')?.trim() || undefined
+
+      const enrichedSessions = sessions.map(s => ({
+        ...s,
+        alive: isTmuxAlive(s.name),
+        idle: detectIdle(s.name),
+        lastOutput: captureTmux(s.name, 1).trim().split('\n').pop() ?? '',
+      })) as AnyRecord[]
+
+      return json(res, buildDashboardModel({
+        db,
+        maxDailyCostUsd: MAX_DAILY_COST_USD,
+        uptimeSeconds: process.uptime(),
+        goals,
+        sessions: enrichedSessions,
+        recentDecisions,
+        recentEvents,
+        confidenceEntries,
+      }, {
+        projects,
+        limit: Number.isFinite(limit) ? limit : 8,
+        windowDays: Number.isFinite(windowDays) ? windowDays : 30,
+        focus,
+        selectedProject,
+      }))
+    }
+
+    if (path === '/api/recommendations/projects' && method === 'GET') {
+      const query = parseQuery(url)
+      const projects = query.getAll('project').map(project => project.trim()).filter(Boolean)
+      const limit = parseInt(query.get('limit') ?? '8', 10)
+      const windowDays = parseInt(query.get('window_days') ?? '30', 10)
+      const focus = query.get('focus') ?? 'all'
+      return json(res, {
+        generatedAt: new Date().toISOString(),
+        projects,
+        recommendations: listProjectRecommendations(db, {
+          projects,
+          limit: Number.isFinite(limit) ? limit : 8,
+          windowDays: Number.isFinite(windowDays) ? windowDays : 30,
+          focus,
+        }),
+      })
+    }
+
+    if (path === '/api/recommendations/question' && method === 'GET') {
+      const query = parseQuery(url)
+      const projects = query.getAll('project').map(project => project.trim()).filter(Boolean)
+      const limit = parseInt(query.get('limit') ?? '8', 10)
+      const windowDays = parseInt(query.get('window_days') ?? '30', 10)
+      const focus = query.get('focus') ?? 'all'
+      return json(res, answerProjectQuestion(db, {
+        projects,
+        limit: Number.isFinite(limit) ? limit : 8,
+        windowDays: Number.isFinite(windowDays) ? windowDays : 30,
+        focus,
+      }))
+    }
+
+    if (path === '/api/recommendations/explain' && method === 'GET') {
+      const query = parseQuery(url)
+      const projects = query.getAll('project').map(project => project.trim()).filter(Boolean)
+      const limit = parseInt(query.get('limit') ?? '8', 10)
+      const windowDays = parseInt(query.get('window_days') ?? '30', 10)
+      const focus = query.get('focus') ?? 'all'
+      const filters = {
+        projects,
+        limit: Number.isFinite(limit) ? limit : 8,
+        windowDays: Number.isFinite(windowDays) ? windowDays : 30,
+        focus,
+      }
+      return json(res, {
+        generatedAt: new Date().toISOString(),
+        filters,
+        question: answerProjectQuestion(db, filters),
+        recommendations: listProjectRecommendations(db, filters),
+      })
+    }
+
+    if (path === '/api/recommendations/drilldown' && method === 'GET') {
+      const query = parseQuery(url)
+      const project = query.get('project')?.trim()
+      if (!project) return error(res, 'project required')
+      const projects = query.getAll('project').map(value => value.trim()).filter(Boolean)
+      const limit = parseInt(query.get('limit') ?? '8', 10)
+      const windowDays = parseInt(query.get('window_days') ?? '30', 10)
+      const focus = query.get('focus') ?? 'all'
+      return json(res, getProjectDrilldown(db, project, {
+        projects,
+        limit: Number.isFinite(limit) ? limit : 8,
+        windowDays: Number.isFinite(windowDays) ? windowDays : 30,
+        focus,
+      }))
+    }
+
     // ── Goals ─────────────────────────────────────────────────
     if (path === '/api/goals' && method === 'POST') {
       const body = await readBody(req)
@@ -509,6 +632,73 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       }
     }
 
+    if (path === '/api/prompt-policy/policies' && method === 'GET') {
+      return json(res, {
+        active: getActivePromptPolicy(db),
+        policies: listPromptPolicyIds(db),
+      })
+    }
+
+    if (path === '/api/prompt-policy/latest' && method === 'GET') {
+      return json(res, {
+        active: getActivePromptPolicy(db),
+        latest: getLatestPromptPolicyEvaluation(db),
+      })
+    }
+
+    if (path === '/api/prompt-policy/history' && method === 'GET') {
+      const limit = parseInt(parseQuery(url).get('limit') ?? '10', 10)
+      return json(res, listPromptPolicyEvaluations(db, {
+        limit: Number.isFinite(limit) ? limit : 10,
+      }))
+    }
+
+    if (path === '/api/prompt-policy/evaluate' && method === 'GET') {
+      const policyId = parseQuery(url).get('policy') ?? ''
+      if (!policyId) return error(res, 'policy required')
+      const baselinePolicyId = parseQuery(url).get('baseline') ?? undefined
+      const project = parseQuery(url).get('project') ?? undefined
+      const skill = parseQuery(url).get('skill') ?? undefined
+      const limit = parseInt(parseQuery(url).get('limit') ?? '160', 10)
+      const minCandidateExamples = parseInt(parseQuery(url).get('min_candidate_examples') ?? '', 10)
+      const minBaselineExamples = parseInt(parseQuery(url).get('min_baseline_examples') ?? '', 10)
+      return json(res, evaluatePromptPolicy(db, {
+        policyId,
+        baselinePolicyId,
+        project,
+        skill,
+        limit: Number.isFinite(limit) ? limit : 160,
+        promotionRule: {
+          minCandidateExamples: Number.isFinite(minCandidateExamples) ? minCandidateExamples : undefined,
+          minBaselineExamples: Number.isFinite(minBaselineExamples) ? minBaselineExamples : undefined,
+        },
+      }))
+    }
+
+    if (path === '/api/prompt-policy/promote' && method === 'POST') {
+      const body = await readBody(req)
+      const policyId = String(body.policy ?? body.policyId ?? '')
+      if (!policyId) return error(res, 'policy required')
+      try {
+        return json(res, promotePromptPolicy(db, {
+          policyId,
+          baselinePolicyId: body.baseline != null ? String(body.baseline) : undefined,
+          project: body.project ? String(body.project) : undefined,
+          skill: body.skill ? String(body.skill) : undefined,
+          limit: body.limit != null ? Number(body.limit) : undefined,
+          apply: body.apply === true,
+          force: body.force === true,
+          promotionRule: {
+            minCandidateExamples: body.minCandidateExamples != null ? Number(body.minCandidateExamples) : undefined,
+            minBaselineExamples: body.minBaselineExamples != null ? Number(body.minBaselineExamples) : undefined,
+          },
+        }))
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e)
+        return error(res, message, message.startsWith('unknown') ? 404 : 400)
+      }
+    }
+
     if (path === '/api/policy/dispatch' && method === 'GET') {
       return json(res, {
         active: getDispatchPolicyControl(db),
@@ -633,8 +823,8 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         repoDir: worktreePath ? repoDir : null,
       })
       // Store prompt sections for ablation analysis
-      db.prepare(`UPDATE decisions SET prompt_sections = ? WHERE id = ?`)
-        .run(JSON.stringify(composed.sections), decisionId)
+      db.prepare(`UPDATE decisions SET prompt_sections = ?, prompt_policy_id = ? WHERE id = ?`)
+        .run(JSON.stringify(composed.sections), composed.policyId, decisionId)
 
       const model = selectModel(skill, task)
       const requestedModel = body.model ? String(body.model) : undefined
@@ -668,6 +858,18 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         idle: detectIdle(s.name),
       }))
       return json(res, enriched)
+    }
+
+    if (path.startsWith('/api/sessions/') && path.endsWith('/transcript') && method === 'GET') {
+      const name = decodeURIComponent(path.slice('/api/sessions/'.length, -'/transcript'.length))
+      const session = stmts.getSession.get(name) as { transcript_path?: string | null } | undefined
+      if (!session) return error(res, 'session not found', 404)
+      const transcriptPath = session.transcript_path ?? null
+      return json(res, {
+        session: name,
+        transcriptPath,
+        summary: transcriptPath ? readSessionTranscript(transcriptPath) : null,
+      })
     }
 
     if (path.startsWith('/api/sessions/') && method === 'GET') {
@@ -778,6 +980,25 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     }
 
     // ── Decisions search ──────────────────────────────────────
+    if (path.startsWith('/api/decisions/') && method === 'GET') {
+      const idRaw = decodeURIComponent(path.slice('/api/decisions/'.length))
+      const decisionId = Number(idRaw)
+      if (!Number.isFinite(decisionId) || decisionId <= 0) return error(res, 'invalid decision id')
+      const decision = stmts.getDecision.get(decisionId) as { session_name?: string | null } | undefined
+      if (!decision) return error(res, 'decision not found', 404)
+      const telemetryRows = db.prepare(`
+        SELECT *
+        FROM telemetry_runs
+        WHERE decision_id = ?
+        ORDER BY datetime(COALESCE(finished_at, created_at)) DESC, id DESC
+      `).all(decisionId) as Array<Record<string, unknown>>
+      return json(res, {
+        decision,
+        session: decision.session_name ? stmts.getSession.get(decision.session_name) : null,
+        telemetry: telemetryRows,
+      })
+    }
+
     if (path === '/api/decisions' && method === 'GET') {
       const query = parseQuery(url)
       const q = query.get('q')
@@ -935,8 +1156,8 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         skill, task: selfTask, workDir: wt.path, goalIntent: 'Improve Foreman itself',
         goalId, worktreeBranch: wt.branch, baseBranch: wt.baseBranch, repoDir: foremanRepo,
       })
-      db.prepare(`UPDATE decisions SET prompt_sections = ? WHERE id = ?`)
-        .run(JSON.stringify(composed.sections), decisionId)
+      db.prepare(`UPDATE decisions SET prompt_sections = ?, prompt_policy_id = ? WHERE id = ?`)
+        .run(JSON.stringify(composed.sections), composed.policyId, decisionId)
 
       const model = selectModel(skill, selfTask)
       spawnSession({ name: sName, workDir: wt.path, prompt: composed.text, goalId, decisionId, model: model ?? undefined })
@@ -999,7 +1220,8 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const surfaces = getDefaultSurfaces()
       const experiments = surfaces.map(s => ({
         surface: s.name,
-        currentInstruction: s.currentInstruction.slice(0, 200),
+        currentPolicyId: s.currentPolicy.id,
+        currentPolicy: s.currentPolicy,
         activeExperiment: getActiveExperiment(s.name),
       }))
       const baselineRate = samples.length > 0
@@ -1104,6 +1326,15 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         hoursBack: Number.isFinite(hours) ? hours : 168,
         limit: Number.isFinite(limit) ? limit : 100,
       }))
+    }
+
+    if (path.startsWith('/api/telemetry/runs/') && method === 'GET') {
+      const idRaw = decodeURIComponent(path.slice('/api/telemetry/runs/'.length))
+      const telemetryId = Number(idRaw)
+      if (!Number.isFinite(telemetryId) || telemetryId <= 0) return error(res, 'invalid telemetry id')
+      const row = db.prepare(`SELECT * FROM telemetry_runs WHERE id = ?`).get(telemetryId) as Record<string, unknown> | undefined
+      if (!row) return error(res, 'telemetry run not found', 404)
+      return json(res, row)
     }
 
     if (path === '/api/telemetry/runs' && method === 'POST') {
@@ -1381,6 +1612,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const foremanSession = (
         db.prepare(
           `SELECT d.id, d.skill, d.task, d.goal_id, d.session_name, d.worktree_path,
+                  d.prompt_policy_id,
                   d.worktree_branch, d.base_branch, g.intent as goal_intent
            FROM decisions d
            JOIN sessions s ON s.decision_id = d.id
@@ -1401,6 +1633,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       ) as {
         id: number, skill: string, task: string, goal_id: number | null,
         session_name: string, worktree_path: string | null,
+        prompt_policy_id: string | null,
         worktree_branch: string | null, base_branch: string | null,
         goal_intent: string | null,
       } | undefined
@@ -1456,9 +1689,10 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           // Record outcome for active prompt lab experiment
           try {
             const labRow = db.prepare(
-              `SELECT id, surface FROM prompt_lab WHERE status = 'testing' ORDER BY created_at DESC LIMIT 1`
-            ).get() as { id: string, surface: string } | undefined
-            if (labRow) {
+              `SELECT id, surface, variant FROM prompt_lab WHERE status = 'testing' ORDER BY created_at DESC LIMIT 1`
+            ).get() as { id: string, surface: string, variant: string } | undefined
+            const experimentPolicyId = labRow ? parsePromptPolicy(labRow.variant).id : null
+            if (labRow && foremanSession.prompt_policy_id && experimentPolicyId === foremanSession.prompt_policy_id) {
               db.prepare(`UPDATE prompt_lab SET dispatches = dispatches + 1, successes = successes + ? WHERE id = ?`)
                 .run(review.status === 'success' ? 1 : 0, labRow.id)
             }
@@ -1632,35 +1866,11 @@ server.listen(PORT, '0.0.0.0', () => {
   // GEPA dispatch policy — retrain every 6 hours from accumulated decisions
   if (process.env.FOREMAN_DISPATCH_POLICY === 'gepa') {
     const trainGepaPolicy = async () => {
-      const decisions = db.prepare(`
-        SELECT d.skill, d.task, d.status, d.outcome, d.goal_id,
-               g.intent as goal_intent, g.workspace_path
-        FROM decisions d
-        LEFT JOIN goals g ON g.id = d.goal_id
-        WHERE d.status IN ('success', 'failure') AND d.skill != ''
-        ORDER BY d.created_at DESC LIMIT 50
-      `).all() as Array<{
-        skill: string, task: string, status: string, outcome: string | null,
-        goal_id: number | null, goal_intent: string | null, workspace_path: string | null
-      }>
-
-      if (decisions.length < 5) { log('GEPA policy: need 5+ decisions'); return }
-
-      const flows = stmts.learningsByType.all('flow', 10) as Array<{ content: string }>
-      const prefs = stmts.learningsByType.all('skill_preference', 10) as Array<{ content: string }>
-
-      const trainingData = decisions.map(d => ({
-        context: {
-          goalIntent: d.goal_intent ?? d.task.slice(0, 100),
-          projectName: (d.workspace_path ?? '').split('/').pop() ?? 'unknown',
-          recentDecisions: [{ skill: d.skill, status: d.status, outcome: d.outcome }],
-          learnedFlows: flows.map(f => f.content),
-          skillPreferences: prefs.map(p => p.content),
-          confidenceLevel: 'dry-run',
-        },
-        decision: { skill: d.skill, task: d.task.slice(0, 200), reasoning: '' },
-        outcome: d.status as 'success' | 'failure',
-      }))
+      const trainingData = buildDispatchTrainingData(db, {
+        decisionLimit: 60,
+        operatorSessionLimit: 40,
+      })
+      if (trainingData.length < 5) { log('GEPA policy: need 5+ training examples'); return }
 
       await initGepaPolicy(trainingData)
     }
@@ -1720,7 +1930,7 @@ server.listen(PORT, '0.0.0.0', () => {
   // Bootstrap prompt template if none exists
   const hasTemplate = stmts.activeTemplate.get()
   if (!hasTemplate) {
-    stmts.insertTemplate.run(1, 'v1-default', 1)
+    stmts.insertTemplate.run(1, serializePromptPolicy(DEFAULT_PROMPT_POLICY).trim(), 1)
     log('Bootstrapped prompt template v1')
   }
 })

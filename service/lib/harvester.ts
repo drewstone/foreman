@@ -21,6 +21,7 @@ import { runPostCompletionPipeline } from './post-completion.js'
 import { reviewSession } from './session-reviewer.js'
 import { updateLearningsFromOutcome } from './prompt-optimizer.js'
 import { maybeAutoDispatch } from './auto-dispatch.js'
+import { parsePromptPolicy } from './prompt-policy.js'
 import telemetry from './telemetry.js'
 
 const { recordTelemetryRun } = telemetry
@@ -350,7 +351,7 @@ export async function harvestOutcome(sessionName: string, goalId: number, backen
   let reviewQuality = 0
   let nextSkillRecommendation: { skill: string, task: string, reasoning: string } | null = null
 
-  const goalRow = goalId ? stmts.getGoal.get(goalId) as { intent?: string } | undefined : undefined
+  const goalRow = goalId ? stmts.getGoal.get(goalId) as { intent?: string, workspace_path?: string | null } | undefined : undefined
 
   if (transcriptPath) {
     try {
@@ -404,7 +405,7 @@ export async function harvestOutcome(sessionName: string, goalId: number, backen
   // Update confidence
   let projectName = workDir.split('/').pop() ?? workDir
   if (goalId) {
-    if (goalRow?.workspace_path) projectName = (goalRow as any).workspace_path.split('/').pop() ?? projectName
+    if (goalRow?.workspace_path) projectName = goalRow.workspace_path.split('/').pop() ?? projectName
   }
   const confSignal = reviewQuality >= 7 ? 'success' as const
     : status === 'success' ? 'success' as const : 'failure' as const
@@ -428,9 +429,11 @@ export async function harvestOutcome(sessionName: string, goalId: number, backen
   // Record outcome for active prompt lab experiments
   try {
     const labRow = db.prepare(
-      `SELECT id, surface FROM prompt_lab WHERE status = 'testing' ORDER BY created_at DESC LIMIT 1`
-    ).get() as { id: string, surface: string } | undefined
-    if (labRow) {
+      `SELECT id, surface, variant FROM prompt_lab WHERE status = 'testing' ORDER BY created_at DESC LIMIT 1`
+    ).get() as { id: string, surface: string, variant: string } | undefined
+    const decisionPolicyId = (decision as { prompt_policy_id?: string | null }).prompt_policy_id
+    const experimentPolicyId = labRow ? parsePromptPolicy(labRow.variant).id : null
+    if (labRow && decisionPolicyId && experimentPolicyId === decisionPolicyId) {
       db.prepare(`UPDATE prompt_lab SET dispatches = dispatches + 1, successes = successes + ? WHERE id = ?`)
         .run(status === 'success' ? 1 : 0, labRow.id)
       log(`Lab experiment ${labRow.id}: recorded ${status} (${labRow.surface})`)

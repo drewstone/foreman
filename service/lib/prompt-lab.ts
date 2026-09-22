@@ -1,40 +1,33 @@
 /**
- * Prompt Lab — experimental testbed for dispatch prompt optimization.
+ * Prompt Lab — manual experiment loop for structured prompt policies.
  *
- * Architecture:
- *   River: dispatches flow continuously, producing (prompt, outcome) pairs
- *   Lab: reads the river, generates prompt variants, A/B tests them
- *   Promotion: winning variants become the default for future dispatches
- *
- * The lab doesn't interfere with the river. It observes, experiments,
- * and promotes — an explore/exploit loop over the prompt surface.
- *
- * What we optimize:
- *   NOT the full prompt. The prompt is composed from sections (task,
- *   standards, git workflow, context). We optimize the FRAMING of
- *   each section — the instruction that tells Claude how to behave.
- *
- * Optimization surfaces:
- *   1. Standards section — scope compliance, commit behavior
- *   2. Task framing — how the task description is presented
- *   3. Context budget — how much context per prompt tier
- *   4. Section selection — which sections to include/exclude
- *
- * Each surface has its own AxGen generator with a tunable instruction.
- * GEPA optimizes these instructions using dispatch outcomes as signal.
+ * This is intentionally narrower now:
+ * - The runtime path uses structured prompt policies
+ * - The lab proposes/testing/promotes full prompt-policy variants
+ * - It no longer optimizes stale per-section instruction fragments
  */
 
 import { getDb, getStmts, log } from './state.js'
-import { callClaudeForJSON } from './claude-runner.js'
-
-// ─── River: read dispatch outcomes ───────────────────────────────────
+import {
+  buildPromptPolicyCandidates,
+  chooseHeuristicPromptPolicy,
+  classifyPromptTaskShape,
+  classifyTaskLengthBucket,
+  parsePromptPolicy,
+  serializePromptPolicy,
+  type PromptPolicy,
+  type PromptPolicyTrainingExample,
+} from './prompt-policy.js'
 
 export interface DispatchSample {
   id: number
+  createdAt: string
+  worktreePath: string | null
   skill: string
   task: string
   promptSections: string[]
   promptTier: string
+  promptPolicyId: string
   deliverableStatus: 'pass' | 'fail' | 'unchecked'
   scopeViolation: boolean
   success: boolean
@@ -42,104 +35,103 @@ export interface DispatchSample {
   hasDeliverable: boolean
 }
 
-/**
- * Pull labeled samples from the decisions table.
- * This is the river — it only grows, never shrinks.
- */
 export function pullSamples(limit = 100): DispatchSample[] {
   const db = getDb()
   const rows = db.prepare(`
-    SELECT id, skill, task, prompt_sections, deliverable_status,
-           scope_spec, deliverable_spec, status,
-           CASE WHEN outcome LIKE '%SCOPE VIOLATION%' THEN 1 ELSE 0 END as scope_violation
-    FROM decisions
-    WHERE status IN ('success', 'failure')
-    ORDER BY created_at DESC LIMIT ?
+    SELECT d.id, d.skill, d.task, d.prompt_sections, d.prompt_policy_id, d.deliverable_status,
+           d.scope_spec, d.deliverable_spec, d.status, d.metrics, d.created_at, d.worktree_path, pt.template
+    FROM decisions d
+    LEFT JOIN prompt_templates pt ON pt.version = d.template_version
+    WHERE d.status IN ('success', 'failure')
+    ORDER BY d.created_at DESC LIMIT ?
   `).all(limit) as Array<{
-    id: number, skill: string, task: string, prompt_sections: string | null,
-    deliverable_status: string | null, scope_spec: string | null,
-    deliverable_spec: string | null, status: string, scope_violation: number
+    id: number
+    skill: string
+    task: string
+    prompt_sections: string | null
+    prompt_policy_id: string | null
+    deliverable_status: string | null
+    scope_spec: string | null
+    deliverable_spec: string | null
+    status: string
+    metrics: string | null
+    created_at: string
+    worktree_path: string | null
+    template: string | null
   }>
 
-  return rows.map(r => ({
-    id: r.id,
-    skill: r.skill || 'direct',
-    task: r.task,
-    promptSections: r.prompt_sections ? JSON.parse(r.prompt_sections) : [],
-    promptTier: r.prompt_sections ? 'unknown' : 'unknown',
-    deliverableStatus: (r.deliverable_status as any) ?? 'unchecked',
-    scopeViolation: r.scope_violation === 1,
-    success: r.status === 'success',
-    hasScope: !!r.scope_spec,
-    hasDeliverable: !!r.deliverable_spec,
-  }))
-}
+  return rows.map(row => {
+    let scopeViolation = false
+    try {
+      const metrics = row.metrics ? JSON.parse(row.metrics) as Record<string, unknown> : {}
+      scopeViolation = metrics.scopeStatus === 'violation' || false
+    } catch {}
 
-// ─── Prompt surfaces (what we optimize) ──────────────────────────────
+    const templatePolicy = parsePromptPolicy(row.template)
+    return {
+      id: row.id,
+      createdAt: row.created_at,
+      worktreePath: row.worktree_path,
+      skill: row.skill || 'direct',
+      task: row.task,
+      promptSections: row.prompt_sections ? JSON.parse(row.prompt_sections) : [],
+      promptTier: row.prompt_sections ? 'known' : 'unknown',
+      promptPolicyId: row.prompt_policy_id || templatePolicy.id,
+      deliverableStatus: row.deliverable_status === 'pass' || row.deliverable_status === 'fail'
+        ? row.deliverable_status
+        : 'unchecked',
+      scopeViolation,
+      success: row.status === 'success',
+      hasScope: !!row.scope_spec,
+      hasDeliverable: !!row.deliverable_spec,
+    }
+  })
+}
 
 export interface PromptSurface {
   name: string
-  currentInstruction: string
-  // Each surface is a tunable instruction string
+  currentPolicy: PromptPolicy
 }
 
-/**
- * The surfaces we optimize. Each one controls a section of the composed prompt.
- */
+function getCurrentPromptPolicy(): PromptPolicy {
+  try {
+    const stmts = getStmts()
+    const activeTemplate = stmts.activeTemplate.get() as { template?: string | null } | undefined
+    return parsePromptPolicy(activeTemplate?.template)
+  } catch {
+    return parsePromptPolicy(null)
+  }
+}
+
 export function getDefaultSurfaces(): PromptSurface[] {
-  return [
-    {
-      name: 'standards',
-      currentInstruction: [
-        'L7/L8 staff engineer quality. Zero tolerance for slop.',
-        'Complete everything fully. No TODOs, no stubs.',
-        'ONLY create or modify the files specified in your task.',
-        'Do NOT use "git add -A" or "git add .". Add files by name.',
-        'If your commit is rejected by a scope hook, run: git reset HEAD . && git add <your-allowed-file> && git commit.',
-        'If tests exist, run them. Fix failures before moving on.',
-        'Never ask for permission. Act.',
-      ].join('\n'),
-    },
-    {
-      name: 'task_framing',
-      currentInstruction: 'Present the task as a direct imperative. Include the exact file path to create/modify. Emphasize the ONLY constraint.',
-    },
-    {
-      name: 'context_budget',
-      currentInstruction: 'slim=1500 chars for /verify /converge /polish. medium=3000 for /evolve /critical-audit. rich=6000 for /pursue /plan /research /reflect.',
-    },
-  ]
+  return [{ name: 'prompt_policy', currentPolicy: getCurrentPromptPolicy() }]
 }
-
-// ─── Lab: experiment runner ──────────────────────────────────────────
 
 export interface Experiment {
   id: string
-  surface: string           // which surface we're testing
-  variant: string           // the new instruction
-  baseline: string          // the old instruction
-  dispatches: number        // how many dispatches used this variant
-  successes: number         // how many succeeded
+  surface: string
+  variant: string
+  baseline: string
+  dispatches: number
+  successes: number
   created: string
 }
 
-export interface LabState {
-  experiments: Experiment[]
-  activeSurface: string | null  // which surface we're currently optimizing
-  lastOptimization: string | null
+function buildTrainingExamples(samples: DispatchSample[]): PromptPolicyTrainingExample[] {
+  return samples.map(sample => ({
+    skill: sample.skill,
+    task: sample.task,
+    taskShape: classifyPromptTaskShape(sample.skill, sample.task),
+    taskLengthBucket: classifyTaskLengthBucket(sample.task),
+    hasScope: sample.hasScope,
+    hasDeliverable: sample.hasDeliverable,
+    success: sample.success,
+    scopeViolation: sample.scopeViolation,
+    deliverableStatus: sample.deliverableStatus,
+    variantId: sample.promptPolicyId,
+  }))
 }
 
-/**
- * Run an optimization cycle on one surface.
- *
- * Strategy: analyze failure patterns in the data, then ask Claude
- * to generate a better instruction that addresses those patterns.
- * Uses callClaudeForJSON (Claude Code pipe mode with OAuth auth)
- * instead of raw AxGEPA (which needs ANTHROPIC_API_KEY).
- *
- * When ANTHROPIC_API_KEY is available, this can be upgraded to use
- * AxGEPA for proper Pareto optimization. The interface stays the same.
- */
 export async function optimizeSurface(
   surface: PromptSurface,
   samples: DispatchSample[],
@@ -149,69 +141,26 @@ export async function optimizeSurface(
     return null
   }
 
-  // Analyze failure patterns from the data
-  const failures = samples.filter(s => !s.success)
-  const successes = samples.filter(s => s.success)
-  const scopeViolations = samples.filter(s => s.scopeViolation)
-
-  const failuresBySkill: Record<string, number> = {}
-  const successesBySkill: Record<string, number> = {}
-  for (const s of failures) failuresBySkill[s.skill] = (failuresBySkill[s.skill] ?? 0) + 1
-  for (const s of successes) successesBySkill[s.skill] = (successesBySkill[s.skill] ?? 0) + 1
-
-  const failureTasks = failures.slice(0, 8).map(f => `- [${f.skill}] ${f.task.slice(0, 100)}`)
-  const successTasks = successes.slice(0, 5).map(s => `- [${s.skill}] ${s.task.slice(0, 100)}`)
-
-  const prompt = `You are optimizing the "standards" instruction for an autonomous coding dispatch system.
-
-## Current instruction (baseline: ${Math.round(successes.length / samples.length * 100)}% success rate)
-${surface.currentInstruction}
-
-## Failure analysis (${failures.length}/${samples.length} failed)
-Scope violations: ${scopeViolations.length}
-Failures by skill: ${JSON.stringify(failuresBySkill)}
-Successes by skill: ${JSON.stringify(successesBySkill)}
-
-Failed tasks:
-${failureTasks.join('\n')}
-
-Successful tasks:
-${successTasks.join('\n')}
-
-## Key pattern
-The #1 failure mode is SCOPE VIOLATION — agents create 8-9 files when asked to create 1.
-They ignore "ONLY modify specified files" and build dashboards, CLIs, hooks regardless of task.
-When scope hooks block their commit, they don't recover.
-
-## Your job
-Write an IMPROVED standards instruction that:
-1. More forcefully prevents scope creep
-2. Gives clearer recovery instructions when commits are rejected
-3. Keeps what works (the successes above show the current instruction works for some tasks)
-4. Is concise — every word must earn its place
-
-Respond with JSON only:
-{"instruction": "the new standards instruction text (newline-separated bullet points)"}
-
-Do NOT include anything except the JSON object.`
-
-  try {
-    const result = await callClaudeForJSON(prompt) as any
-    if (!result?.instruction) return null
-
-    const variant = String(result.instruction)
-    if (variant === surface.currentInstruction) return null
-    if (variant.length < 50 || variant.length > 2000) return null
-
-    log(`PromptLab: ${surface.name} variant generated (${variant.length} chars)`)
-    return variant
-  } catch (e) {
-    log(`PromptLab: optimization failed for ${surface.name}: ${e instanceof Error ? e.message : String(e)}`)
-    return null
+  const current = surface.currentPolicy
+  const examples = buildTrainingExamples(samples)
+  const heuristic = chooseHeuristicPromptPolicy(current, examples)
+  if (heuristic.id !== current.id) {
+    log(`PromptLab: selected heuristic prompt policy ${heuristic.id}`)
+    return serializePromptPolicy(heuristic).trim()
   }
-}
 
-// ─── Experiment store (SQLite) ───────────────────────────────────────
+  const candidates = buildPromptPolicyCandidates(current).filter(candidate => candidate.id !== current.id)
+  const scored = candidates.map(candidate => {
+    const matchCount = examples.filter(example => example.variantId === candidate.id).length
+    const penalty = examples.filter(example => example.scopeViolation && candidate.id !== 'strict-guarded').length
+    return { candidate, score: matchCount - penalty * 0.5 }
+  }).sort((left, right) => right.score - left.score || left.candidate.id.localeCompare(right.candidate.id))
+
+  const best = scored[0]?.candidate
+  if (!best) return null
+  log(`PromptLab: selected fallback prompt policy ${best.id}`)
+  return serializePromptPolicy(best).trim()
+}
 
 export function ensureLabTable(): void {
   const db = getDb()
@@ -278,35 +227,18 @@ export function abandonExperiment(expId: string): void {
   log(`PromptLab: abandoned experiment ${expId}`)
 }
 
-/**
- * Evaluate whether an active experiment should be promoted or abandoned.
- * Uses a simple significance test: need 5+ dispatches, and variant must
- * beat baseline by 10+ percentage points.
- */
 export function evaluateExperiment(exp: Experiment, baselineRate: number): 'promote' | 'abandon' | 'continue' {
   if (exp.dispatches < 5) return 'continue'
 
   const variantRate = exp.dispatches > 0 ? exp.successes / exp.dispatches : 0
   const delta = variantRate - baselineRate
 
-  if (delta >= 0.10) return 'promote'    // 10pp improvement
-  if (delta <= -0.10) return 'abandon'   // 10pp regression
-  if (exp.dispatches >= 10) {
-    // After 10 dispatches, if no clear signal, abandon
-    return delta >= 0 ? 'promote' : 'abandon'
-  }
+  if (delta >= 0.10) return 'promote'
+  if (delta <= -0.10) return 'abandon'
+  if (exp.dispatches >= 10) return delta >= 0 ? 'promote' : 'abandon'
   return 'continue'
 }
 
-// ─── Main loop: called periodically by the service ───────────────────
-
-/**
- * Run one cycle of the prompt lab.
- * 1. Pull samples from the river
- * 2. Check if an active experiment needs evaluation
- * 3. If no active experiment, generate a new variant
- * 4. Report state
- */
 export async function runPromptLabCycle(): Promise<{
   samples: number
   activeExperiment: string | null
@@ -315,36 +247,48 @@ export async function runPromptLabCycle(): Promise<{
   const samples = pullSamples(100)
   const surfaces = getDefaultSurfaces()
   const baselineRate = samples.length > 0
-    ? samples.filter(s => s.success).length / samples.length
+    ? samples.filter(sample => sample.success).length / samples.length
     : 0
 
-  // Check each surface for active experiments
   for (const surface of surfaces) {
     const exp = getActiveExperiment(surface.name)
-
     if (exp) {
       const verdict = evaluateExperiment(exp, baselineRate)
       if (verdict === 'promote') {
         promoteExperiment(exp.id)
-        return { samples: samples.length, activeExperiment: exp.id, action: `promoted ${surface.name} variant (${Math.round(exp.successes/exp.dispatches*100)}% vs ${Math.round(baselineRate*100)}% baseline)` }
+        return {
+          samples: samples.length,
+          activeExperiment: exp.id,
+          action: `promoted ${surface.name} variant (${Math.round(exp.successes / exp.dispatches * 100)}% vs ${Math.round(baselineRate * 100)}% baseline)`,
+        }
       }
       if (verdict === 'abandon') {
         abandonExperiment(exp.id)
-        return { samples: samples.length, activeExperiment: exp.id, action: `abandoned ${surface.name} variant (${Math.round(exp.successes/exp.dispatches*100)}% vs ${Math.round(baselineRate*100)}% baseline)` }
+        return {
+          samples: samples.length,
+          activeExperiment: exp.id,
+          action: `abandoned ${surface.name} variant (${Math.round(exp.successes / exp.dispatches * 100)}% vs ${Math.round(baselineRate * 100)}% baseline)`,
+        }
       }
-      // Still testing
-      return { samples: samples.length, activeExperiment: exp.id, action: `testing ${surface.name} (${exp.dispatches} dispatches, ${Math.round(exp.successes/exp.dispatches*100)}%)` }
+      return {
+        samples: samples.length,
+        activeExperiment: exp.id,
+        action: `testing ${surface.name} (${exp.dispatches} dispatches, ${Math.round(exp.successes / Math.max(exp.dispatches, 1) * 100)}%)`,
+      }
     }
   }
 
-  // No active experiments — generate a variant for the lowest-performing surface
-  // For now, always optimize 'standards' since that's where scope compliance lives
-  const targetSurface = surfaces[0] // standards
+  const targetSurface = surfaces[0]
   const variant = await optimizeSurface(targetSurface, samples)
-
-  if (variant) {
-    const expId = createExperiment(targetSurface.name, variant, targetSurface.currentInstruction)
-    return { samples: samples.length, activeExperiment: expId, action: `generated new ${targetSurface.name} variant` }
+  const baseline = serializePromptPolicy(targetSurface.currentPolicy).trim()
+  if (variant && variant !== baseline) {
+    const expId = createExperiment(targetSurface.name, variant, baseline)
+    const variantId = parsePromptPolicy(variant).id
+    return {
+      samples: samples.length,
+      activeExperiment: expId,
+      action: `generated new ${targetSurface.name} variant (${variantId})`,
+    }
   }
 
   return { samples: samples.length, activeExperiment: null, action: 'no variant generated' }

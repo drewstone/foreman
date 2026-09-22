@@ -836,7 +836,7 @@ async function loadOpenclawCronSummaryIndex(): Promise<Map<string, {
   model?: string;
   jobId?: string;
 }>> {
-  const root = resolve(homedir(), '.openclaw', 'cron', 'runs');
+  const root = resolve(homedir(), 'company', 'agent-state', 'cron-runs');
   let files: string[] = [];
   try {
     const entries = await readdir(root, { withFileTypes: true });

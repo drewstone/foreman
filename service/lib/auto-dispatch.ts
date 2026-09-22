@@ -7,7 +7,7 @@ import {
   getDb, getStmts, getConfidence,
   log, emitEvent, sendNotification,
 } from './state.js'
-import { getDispatchPolicy, type DispatchContext } from './dispatch-policy.js'
+import { createDispatchContext, getDispatchPolicy, listOperatorSkillSignals } from './dispatch-policy.js'
 import { sessionName, spawnSession, selectModel } from './session-manager.js'
 import { composePrompt, createWorktree } from './prompt-composer.js'
 import telemetry from './telemetry.js'
@@ -42,8 +42,15 @@ export async function maybeAutoDispatch(skill: string, project: string, goalId: 
 
   const flows = stmts.learningsByType.all('flow', 10) as Array<{ content: string }>
   const skillPrefs = stmts.learningsByType.all('skill_preference', 10) as Array<{ content: string }>
+  const latestDeliverable = db.prepare(`
+    SELECT deliverable_status
+    FROM decisions
+    WHERE goal_id = ?
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  `).get(goal.id) as { deliverable_status?: string | null } | undefined
 
-  const ctx: DispatchContext = {
+  const ctx = createDispatchContext({
     goalIntent: goal.intent,
     projectName: project,
     recentDecisions: lastDecisions.slice(0, 5).map(d => ({
@@ -51,8 +58,11 @@ export async function maybeAutoDispatch(skill: string, project: string, goalId: 
     })),
     learnedFlows: flows.map(f => f.content),
     skillPreferences: skillPrefs.map(p => p.content),
+    operatorSkillSignals: listOperatorSkillSignals(db, { projectName: project, limit: 5 }),
     confidenceLevel: level,
-  }
+    budgetStatus: 'ok',
+    latestDeliverableStatus: latestDeliverable?.deliverable_status ?? 'unknown',
+  })
 
   const policy = getDispatchPolicy()
   const decision = await policy.decide(ctx)
@@ -81,8 +91,8 @@ export async function maybeAutoDispatch(skill: string, project: string, goalId: 
     goalIntent: goal.intent, goalId: goal.id,
     worktreeBranch: wt.branch, baseBranch: wt.baseBranch, repoDir,
   })
-  db.prepare(`UPDATE decisions SET prompt_sections = ? WHERE id = ?`)
-    .run(JSON.stringify(composed.sections), decisionId)
+  db.prepare(`UPDATE decisions SET prompt_sections = ?, prompt_policy_id = ? WHERE id = ?`)
+    .run(JSON.stringify(composed.sections), composed.policyId, decisionId)
 
   const model = selectModel(nextSkill, nextTask)
   spawnSession({ name: sName, workDir: wt.path, prompt: composed.text, goalId: goal.id, decisionId, model: model ?? undefined })

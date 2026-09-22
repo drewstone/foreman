@@ -11,36 +11,97 @@ import {
   FOREMAN_HOME,
   getDb, getStmts,
 } from './state.js'
+import {
+  DEFAULT_PROMPT_POLICY,
+  getContextBudgetForSkill,
+  parsePromptPolicy,
+  shouldIncludeSkillGuide,
+  type PromptPolicy,
+} from './prompt-policy.js'
 
 const execFileAsync = promisify(execFile)
 
-import { getCurrentInstruction } from './optimization/experiment-runner.js'
-
-/**
- * Read the active instruction for a surface.
- * Priority: 1) active 'testing' experiment (A/B test in progress)
- *           2) 'promoted' experiment (proven winner)
- *           3) optimization/current/<surface>.ts (file-based)
- *           4) null (use hardcoded default)
- */
-function getPromotedInstruction(surface: string): string | null {
+function getLabPromptPolicy(): PromptPolicy | null {
   try {
     const db = getDb()
-    // If there's an active A/B test, use the variant
     const testing = db.prepare(
-      `SELECT variant FROM prompt_lab WHERE surface = ? AND status = 'testing' ORDER BY created_at DESC LIMIT 1`
-    ).get(surface) as { variant: string } | undefined
-    if (testing?.variant) return testing.variant
+      `SELECT variant FROM prompt_lab WHERE surface = 'prompt_policy' AND status = 'testing' ORDER BY created_at DESC LIMIT 1`
+    ).get() as { variant: string } | undefined
+    if (testing?.variant) return parsePromptPolicy(testing.variant)
 
-    // Otherwise use the last promoted winner
     const promoted = db.prepare(
-      `SELECT variant FROM prompt_lab WHERE surface = ? AND status = 'promoted' ORDER BY promoted_at DESC LIMIT 1`
-    ).get(surface) as { variant: string } | undefined
-    if (promoted?.variant) return promoted.variant
+      `SELECT variant FROM prompt_lab WHERE surface = 'prompt_policy' AND status = 'promoted' ORDER BY promoted_at DESC LIMIT 1`
+    ).get() as { variant: string } | undefined
+    if (promoted?.variant) return parsePromptPolicy(promoted.variant)
   } catch {}
+  return null
+}
 
-  // Fallback: file-based
-  return getCurrentInstruction(surface)
+function getActivePromptPolicy(): PromptPolicy {
+  const labPolicy = getLabPromptPolicy()
+  if (labPolicy) return labPolicy
+  try {
+    const stmts = getStmts()
+    const activeTemplate = stmts.activeTemplate.get() as { template?: string | null } | undefined
+    return parsePromptPolicy(activeTemplate?.template)
+  } catch {
+    return { ...DEFAULT_PROMPT_POLICY }
+  }
+}
+
+interface PromptSection {
+  name: string
+  text: string
+  group: 'core' | 'project_history' | 'goal_history' | 'operator' | 'operator_exemplar' | 'risk'
+}
+
+function shouldIncludeSection(group: PromptSection['group'], policy: PromptPolicy): boolean {
+  switch (group) {
+    case 'project_history':
+      return policy.includeProjectHistory
+    case 'goal_history':
+      return policy.includeGoalHistory
+    case 'operator':
+      return policy.includeOperatorSignals
+    case 'operator_exemplar':
+      return policy.includeOperatorExemplars
+    case 'risk':
+      return policy.includeDeadEnds
+    case 'core':
+    default:
+      return true
+  }
+}
+
+function getStandardsInstruction(policy: PromptPolicy): string {
+  if (policy.standardsProfile === 'strict') {
+    return [
+      'Staff engineer quality. Complete the task fully.',
+      'Respect scope strictly. Do not widen the change without evidence.',
+      'Commit after each meaningful change and keep the branch reviewable.',
+      'Run relevant tests before finishing and repair failures you introduce.',
+    ].join('\n- ')
+  }
+
+  if (policy.standardsProfile === 'delivery') {
+    return [
+      'Staff engineer quality. Finish the job decisively.',
+      'Prefer concrete implementation over long explanation.',
+      'Run the most relevant checks before finishing.',
+      'Commit meaningful progress so the result is reviewable.',
+    ].join('\n- ')
+  }
+
+  return [
+    'Staff engineer quality. Complete the task fully.',
+    'Commit your work after each meaningful change.',
+    'If tests exist, run them. Fix failures before moving on.',
+    'Act decisively. Do what the task requires.',
+  ].join('\n- ')
+}
+
+function appendSection(sections: PromptSection[], section: PromptSection | null): void {
+  if (section?.text) sections.push(section)
 }
 
 // ─── Git worktree ────────────────────────────────────────────────────
@@ -133,16 +194,17 @@ export function composePrompt(opts: {
   worktreeBranch?: string | null
   baseBranch?: string | null
   repoDir?: string | null
-}): { text: string, sections: string[], tier: string } {
+}): { text: string, sections: string[], tier: string, policyId: string } {
   const { skill, task, workDir, goalIntent, goalId, worktreeBranch, baseBranch, repoDir } = opts
   const db = getDb()
   const stmts = getStmts()
-  const sections: string[] = []
+  const sections: PromptSection[] = []
   const projectName = (repoDir ?? workDir).split('/').pop() ?? 'project'
+  const policy = getActivePromptPolicy()
 
   // Goal context
   if (goalIntent && goalIntent !== task) {
-    sections.push(`## Goal\n${goalIntent}`)
+    appendSection(sections, { name: 'Goal', text: `## Goal\n${goalIntent}`, group: 'core' })
   }
 
   // Project understanding
@@ -152,21 +214,21 @@ export function composePrompt(opts: {
   const cargo = readProjectFile(workDir, 'Cargo.toml', 500)
   const pyproject = readProjectFile(workDir, 'pyproject.toml', 500)
 
-  if (claudeMd) sections.push(`## Project Instructions (CLAUDE.md)\n${claudeMd}`)
-  if (readme) sections.push(`## What This Project Is\n${readme.slice(0, 1200)}`)
+  if (claudeMd) appendSection(sections, { name: 'Project Instructions (CLAUDE.md)', text: `## Project Instructions (CLAUDE.md)\n${claudeMd}`, group: 'core' })
+  if (readme) appendSection(sections, { name: 'What This Project Is', text: `## What This Project Is\n${readme.slice(0, 1200)}`, group: 'core' })
   const manifest = pkg ?? cargo ?? pyproject
-  if (manifest) sections.push(`## Manifest\n\`\`\`\n${manifest}\n\`\`\``)
+  if (manifest) appendSection(sections, { name: 'Manifest', text: `## Manifest\n\`\`\`\n${manifest}\n\`\`\``, group: 'core' })
 
   // Git log
   try {
     const gitLog = execFileSync('git', ['log', '--oneline', '-8'], { cwd: workDir, encoding: 'utf8', timeout: 5_000 }).trim()
-    if (gitLog) sections.push(`## Recent Git History\n${gitLog}`)
+    if (gitLog) appendSection(sections, { name: 'Recent Git History', text: `## Recent Git History\n${gitLog}`, group: 'core' })
   } catch {}
 
   // Git status
   try {
     const status = execFileSync('git', ['status', '--short'], { cwd: workDir, encoding: 'utf8', timeout: 5_000 }).trim()
-    if (status) sections.push(`## Uncommitted Changes\n${status}`)
+    if (status) appendSection(sections, { name: 'Uncommitted Changes', text: `## Uncommitted Changes\n${status}`, group: 'core' })
   } catch {}
 
   // Evolve state + experiment trajectory
@@ -174,9 +236,9 @@ export function composePrompt(opts: {
     ?? readProjectFile(workDir, 'evolve-progress.md', 1000)
   const evolveCurrent = readProjectFile(workDir, '.evolve/current.json', 1000)
   const autoresearchMd = readProjectFile(workDir, 'autoresearch.md', 1000)
-  if (evolveProgress) sections.push(`## Current Evolve State\n${evolveProgress}`)
-  if (evolveCurrent) sections.push(`## Evolve Pointer\n${evolveCurrent}`)
-  if (autoresearchMd) sections.push(`## Autoresearch Config\n${autoresearchMd}`)
+  if (evolveProgress) appendSection(sections, { name: 'Current Evolve State', text: `## Current Evolve State\n${evolveProgress}`, group: 'core' })
+  if (evolveCurrent) appendSection(sections, { name: 'Evolve Pointer', text: `## Evolve Pointer\n${evolveCurrent}`, group: 'core' })
+  if (autoresearchMd) appendSection(sections, { name: 'Autoresearch Config', text: `## Autoresearch Config\n${autoresearchMd}`, group: 'core' })
 
   // Experiment history
   const experimentsPath = join(workDir, '.evolve', 'experiments.jsonl')
@@ -221,7 +283,7 @@ export function composePrompt(opts: {
           for (const l of unique) lines.push(`- ${l.slice(0, 120)}`)
         }
 
-        sections.push(lines.join('\n'))
+        appendSection(sections, { name: 'Experiment History', text: lines.join('\n'), group: 'core' })
       }
     }
   } catch {}
@@ -258,7 +320,7 @@ export function composePrompt(opts: {
       const seedsMatch = content.match(/###?\s*Next Generation Seeds\n([\s\S]*?)(?=\n---|\n$)/i)
       if (seedsMatch) lines.push(`Next seeds: ${seedsMatch[1].trim().slice(0, 200)}`)
 
-      sections.push(lines.join('\n'))
+      appendSection(sections, { name: entry.label, text: lines.join('\n'), group: 'core' })
     }
   } catch {}
 
@@ -274,7 +336,7 @@ export function composePrompt(opts: {
           lines.push(`${icon} ${flow.name}: ${flow.score ?? 'unmeasured'} (target: ${flow.target})`)
         }
         if (scorecard.aggregate) lines.push(`Aggregate: ${scorecard.aggregate}`)
-        sections.push(lines.join('\n'))
+        appendSection(sections, { name: 'Product Scorecard', text: lines.join('\n'), group: 'core' })
       }
     }
   } catch {}
@@ -300,7 +362,7 @@ export function composePrompt(opts: {
         } catch {}
       }
     }
-    sections.push(lines.join('\n'))
+    appendSection(sections, { name: 'What Foreman Has Tried Before', text: lines.join('\n'), group: 'project_history' })
   }
 
   // Goal decisions
@@ -316,7 +378,7 @@ export function composePrompt(opts: {
         lines.push(`${icon} [${d.status}] ${d.skill} — ${d.task.slice(0, 100)}`)
         if (d.outcome) lines.push(`  Result: ${d.outcome.slice(0, 120)}`)
       }
-      sections.push(lines.join('\n'))
+      appendSection(sections, { name: 'Other Attempts on This Goal', text: lines.join('\n'), group: 'goal_history' })
     }
   }
 
@@ -325,7 +387,7 @@ export function composePrompt(opts: {
   if (tasteSignals.length > 0) {
     const lines = ['## Operator Preferences (learned from feedback)']
     for (const t of tasteSignals) lines.push(`- ${t.pattern}`)
-    sections.push(lines.join('\n'))
+    appendSection(sections, { name: 'Operator Preferences (learned from feedback)', text: lines.join('\n'), group: 'operator' })
   }
 
   // Dead ends
@@ -339,7 +401,7 @@ export function composePrompt(opts: {
   if (failures.length > 0) {
     const lines = ['## Dead Ends (DO NOT REPEAT)']
     for (const f of failures) lines.push(`- ${f.skill} "${f.task.slice(0, 80)}" → FAILED: ${(f.outcome ?? 'unknown').slice(0, 100)}`)
-    sections.push(lines.join('\n'))
+    appendSection(sections, { name: 'Dead Ends (DO NOT REPEAT)', text: lines.join('\n'), group: 'risk' })
   }
 
   // Learned exemplars
@@ -348,7 +410,7 @@ export function composePrompt(opts: {
   if (promptExemplars.length > 0) {
     const lines = ['## How the Operator Writes Tasks (learn from these)']
     for (const e of promptExemplars.slice(0, 3)) lines.push(`> ${e.content.slice(0, 200)}`)
-    sections.push(lines.join('\n'))
+    appendSection(sections, { name: 'How the Operator Writes Tasks (learn from these)', text: lines.join('\n'), group: 'operator_exemplar' })
   }
 
   // Dispatch success patterns
@@ -356,7 +418,7 @@ export function composePrompt(opts: {
   if (successLearnings.length > 0) {
     const lines = ['## What Works (from past dispatches)']
     for (const l of successLearnings) lines.push(`- ${l.content.slice(0, 150)}`)
-    sections.push(lines.join('\n'))
+    appendSection(sections, { name: 'What Works (from past dispatches)', text: lines.join('\n'), group: 'operator' })
   }
 
   // Learned flows
@@ -364,7 +426,7 @@ export function composePrompt(opts: {
   if (flows.length > 0) {
     const lines = ['## Operator Workflows (learned from session analysis)']
     for (const f of flows) lines.push(`- ${f.content.slice(0, 200)}`)
-    sections.push(lines.join('\n'))
+    appendSection(sections, { name: 'Operator Workflows (learned from session analysis)', text: lines.join('\n'), group: 'operator' })
   }
 
   // Anti-patterns
@@ -372,7 +434,7 @@ export function composePrompt(opts: {
   if (antiPatterns.length > 0) {
     const lines = ['## Avoid (learned from operator patterns)']
     for (const ap of antiPatterns) lines.push(`- ${ap.content.slice(0, 150)}`)
-    sections.push(lines.join('\n'))
+    appendSection(sections, { name: 'Avoid (learned from operator patterns)', text: lines.join('\n'), group: 'operator' })
   }
 
   // Skill preferences
@@ -380,7 +442,7 @@ export function composePrompt(opts: {
   if (skillPrefs.length > 0) {
     const lines = ['## Skill Selection Guide (learned from operator)']
     for (const sp of skillPrefs) lines.push(`- ${sp.content.slice(0, 150)}`)
-    sections.push(lines.join('\n'))
+    appendSection(sections, { name: 'Skill Selection Guide (learned from operator)', text: lines.join('\n'), group: 'operator' })
   }
 
   // Project relationships
@@ -388,7 +450,7 @@ export function composePrompt(opts: {
   if (relationships.length > 0) {
     const lines = ['## Related Projects']
     for (const r of relationships) lines.push(`- ${r.content.slice(0, 150)}`)
-    sections.push(lines.join('\n'))
+    appendSection(sections, { name: 'Related Projects', text: lines.join('\n'), group: 'operator' })
   }
 
   // Compose final prompt
@@ -397,17 +459,11 @@ export function composePrompt(opts: {
 
   // Standards — data shows: constraints HURT (32% with "ONLY" vs 71% without).
   // Rich context + freedom + post-hoc review beats upfront restriction.
-  const standardsInstruction = getPromotedInstruction('standards') ?? [
-    'Staff engineer quality. Complete the task fully.',
-    'Commit your work after each meaningful change.',
-    'If tests exist, run them. Fix failures before moving on.',
-    'Act decisively. Do what the task requires.',
-  ].join('\n- ')
+  const standardsInstruction = getStandardsInstruction(policy)
   prompt += `## Standards\n- ${standardsInstruction}\n`
 
   // Skill chaining: tell the session what skills are available and how to recommend next work
-  const reasoningSkillsSet = new Set(['/pursue', '/plan', '/research', '/reflect'])
-  if (reasoningSkillsSet.has(skill) || !skill) {
+  if (shouldIncludeSkillGuide(skill, policy)) {
     prompt += `\n## Available Skills\n`
     prompt += `You have access to these skills via slash commands:\n`
     prompt += `- /evolve — iterative improvement toward a measurable target\n`
@@ -425,48 +481,41 @@ export function composePrompt(opts: {
   // No closing protocol — Foreman reviews the session transcript independently.
   // The agent just does its job. Foreman's reviewer reads the JSONL after.
 
-  if (worktreeBranch && baseBranch) {
+  if (policy.includeGitWorkflow && worktreeBranch && baseBranch) {
     prompt += `\n## Git Workflow — CRITICAL\n`
     prompt += `You are working in an isolated worktree on branch \`${worktreeBranch}\`.\n`
     prompt += `The operator is working on branch \`${baseBranch}\` — your work must not interfere with theirs.\n\n`
-    prompt += `**You MUST commit and push before finishing.** Uncommitted work is lost work.\n\n`
-    prompt += `During work: commit after each logical change.\n`
-    prompt += `When complete:\n`
-    prompt += `1. \`git add -A && git status\` — verify all changes are staged\n`
-    prompt += `2. \`git commit -m "feat: <what you did>"\` — if anything is uncommitted\n`
-    prompt += `3. \`git push -u origin ${worktreeBranch}\`\n`
-    prompt += `4. \`gh pr create --base ${baseBranch} --title "foreman: <summary>" --body "<what you did and why>"\`\n\n`
-    prompt += `If you skip the commit/push, your work will be lost. The operator reviews PRs, not worktree diffs.\n`
+    if (policy.gitWorkflowDetail === 'brief') {
+      prompt += `Commit meaningful progress, push \`${worktreeBranch}\`, and open a PR against \`${baseBranch}\` before finishing.\n`
+    } else {
+      prompt += `**You MUST commit and push before finishing.** Uncommitted work is lost work.\n\n`
+      prompt += `During work: commit after each logical change.\n`
+      prompt += `When complete:\n`
+      prompt += `1. \`git add -A && git status\` — verify all changes are staged\n`
+      prompt += `2. \`git commit -m "feat: <what you did>"\` — if anything is uncommitted\n`
+      prompt += `3. \`git push -u origin ${worktreeBranch}\`\n`
+      prompt += `4. \`gh pr create --base ${baseBranch} --title "foreman: <summary>" --body "<what you did and why>"\`\n\n`
+      prompt += `If you skip the commit/push, your work will be lost. The operator reviews PRs, not worktree diffs.\n`
+    }
   }
   prompt += '\n'
 
-  // Context budget — data shows more context = higher success (92% at 400+ chars).
-  // The slim tier (1500) starved agents. Bump everything up.
-  // /evolve and /pursue get full context — they need the most.
-  const reasoningSkills = new Set(['/pursue', '/plan', '/research', '/reflect', '/evolve'])
-  const isReasoning = reasoningSkills.has(skill)
-
-  let contextBudget: number
-  let promptTier: string
-  if (isReasoning) {
-    contextBudget = 8000
-    promptTier = 'rich'
-  } else {
-    contextBudget = 4000
-    promptTier = 'standard'
-  }
+  const contextBudget = getContextBudgetForSkill(skill, policy)
+  const promptTier = contextBudget >= policy.reasoningContextBudget ? 'rich' : 'standard'
 
   const includedSections: string[] = []
+  let remainingBudget = contextBudget
   for (const section of sections) {
-    if (contextBudget <= 0) break
-    const sectionName = section.match(/^## (.+)/m)?.[1] ?? section.slice(0, 30)
-    if (section.length <= contextBudget) {
-      prompt += section + '\n\n'
-      contextBudget -= section.length
+    if (!shouldIncludeSection(section.group, policy)) continue
+    if (remainingBudget <= 0) break
+    const sectionName = section.name
+    if (section.text.length <= remainingBudget) {
+      prompt += section.text + '\n\n'
+      remainingBudget -= section.text.length
       includedSections.push(sectionName)
     } else {
-      prompt += section.slice(0, contextBudget) + '\n...(truncated)\n\n'
-      contextBudget = 0
+      prompt += section.text.slice(0, remainingBudget) + '\n...(truncated)\n\n'
+      remainingBudget = 0
       includedSections.push(sectionName + ' (truncated)')
     }
   }
@@ -475,5 +524,5 @@ export function composePrompt(opts: {
     ? `${skill} ${prompt.trim()}`
     : prompt.trim()
 
-  return { text, sections: includedSections, tier: promptTier }
+  return { text, sections: includedSections, tier: promptTier, policyId: policy.id }
 }

@@ -98,18 +98,18 @@ describe('verifyDeliverable scope checking', () => {
   before(async () => {
     dir = await mkdtemp(join(tmpdir(), 'foreman-scope-test-'))
     // Init a git repo with a commit
-    execFileSync('git', ['init'], { cwd: dir })
-    execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: dir })
-    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir })
+    execFileSync('git', ['init'], { cwd: dir, stdio: 'ignore' })
+    execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: dir, stdio: 'ignore' })
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir, stdio: 'ignore' })
     await writeFile(join(dir, 'allowed.ts'), 'export const x = 1\n')
     await writeFile(join(dir, 'forbidden.ts'), 'export const y = 2\n')
-    execFileSync('git', ['add', '-A'], { cwd: dir })
-    execFileSync('git', ['commit', '-m', 'init'], { cwd: dir })
+    execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' })
+    execFileSync('git', ['commit', '-m', 'init'], { cwd: dir, stdio: 'ignore' })
     // Make a change
     await writeFile(join(dir, 'allowed.ts'), 'export const x = 2\n')
     await writeFile(join(dir, 'forbidden.ts'), 'export const y = 3\n')
-    execFileSync('git', ['add', '-A'], { cwd: dir })
-    execFileSync('git', ['commit', '-m', 'change both'], { cwd: dir })
+    execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' })
+    execFileSync('git', ['commit', '-m', 'change both'], { cwd: dir, stdio: 'ignore' })
   })
 
   after(async () => {

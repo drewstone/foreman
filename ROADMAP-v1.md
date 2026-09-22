@@ -1,149 +1,172 @@
 # Foreman Roadmap v1
 
-Date: 2026-03-24 (updated 2026-03-24 Gen 11)
-Generation: 11 (current)
-Decisions: 97 | Deliverable-verified: 19 (11 pass, 8 fail) | Goals: 4
+Date: 2026-03-27
+State: governance and operator-control phase
 
-## Where We Are
+## Where Foreman Actually Is
 
-Built in 4 days across 10 generations. 97 dispatches, 5K lines of TypeScript, 9 modules. The system dispatches agent sessions, harvests outcomes, verifies deliverables, enforces scope via git hooks, and tracks confidence per (skill, project).
+Foreman is no longer just a tmux orchestrator.
 
-Key metrics:
-- Focused task deliverable rate: 85% (11/13 with specs)
-- Self-improvement deliverable rate: 1/24 (4%) — first scope-respecting edit in Gen 10
-- SWE-bench: 0% pass, 59% partial (right files, wrong fix)
-- Session success vs actual deliverable: 91.5% vs ~56% (35pp gap closed by Gen 9 verification)
-- Tests: 0
+The core system now exists in four layers:
+- execution and session management
+- telemetry and budget control
+- replay and promotion governance
+- policy optimization for dispatch and prompt surfaces
 
-## Competitive Position
+What is real today:
+- service installer, setup flow, and `foreman doctor`
+- normalized telemetry sink with import/backfill
+- daily budget visibility and budget blocking
+- replay dataset export and replay policy evaluation
+- staged dispatch policy with operator-session learning
+- structured prompt policy and prompt-policy governance
+- unified dashboard model with project recommendations
+- `185` passing tests
 
-| Capability | Hyperagents | Hermes (10.3K stars) | Foreman |
-|---|---|---|---|
-| Portfolio orchestration | None | None | **Unique** |
-| Honest deliverable measurement | Published benchmarks | Community benchmarks | **Novel** (3-tier metric) |
-| Scope enforcement | Diff validation | None | **Novel** (git hooks) |
-| Operator session mining | None | Honcho profiles | **Unique** (3000+ sessions) |
-| Single-task coding | Strong | Strong (200+ models) | Weak (0% SWE-bench) |
-| Tests | Research rigor | 3,000 | **0** |
-| Execution backends | Unknown | 6 (Docker, SSH, Modal...) | 1 (tmux) |
-| Model support | Multiple | 200+ (OpenRouter) | Claude only |
-| Community | Meta/FAIR | Active contributors | 1 user |
+What is still not true:
+- runtime is not production-grade yet
+- counterfactual evaluation is still approximate
+- external-user readiness is not proven
+- roadmap/docs have lagged the implementation
 
-Foreman's moat: portfolio orchestration + honest measurement + scope enforcement + operator learning. Nobody else does all four. But the foundation (tests, backends, multi-model) is far behind production-grade competitors.
+## Product Thesis
 
-## Tier 1: Foundation (must-haves before anyone else can use this)
+Foreman should become a governed autonomy system for a portfolio of projects:
+- measure everything
+- learn from both autonomous runs and operator behavior
+- optimize bounded policy surfaces
+- promote changes only when replay and telemetry justify them
+- tell the operator where to research, optimize, or loop next
 
-### 1.1 Test Suite
-- **Why**: 0 tests. Can't self-improve (no regression gate), can't ship, can't CI. Everything else depends on this.
-- **What**: Unit tests for verify-deliverable.ts, scope-enforcer.ts, dispatch-policy.ts, confidence.ts. Integration tests for the harvest pipeline. E2E test for dispatch → harvest → verify flow.
-- **Effort**: 2-3 sessions
-- **Blocks**: Self-improvement, CI, contributor onboarding
+## Current Architecture
 
-### 1.2 Service Module Split -- DONE (Gen 11)
-- **Result**: 3,580 -> 1,141 lines in index.ts. 10 extracted modules: state.ts, session-manager.ts, watcher.ts, harvester.ts, post-completion.ts, prompt-optimizer.ts, auto-dispatch.ts, prompt-composer.ts, maintenance.ts, learning-loop.ts.
-- 160 tests passing, clean TypeScript compilation.
+### 1. Execution Layer
+- tmux-backed sessions
+- worktree isolation
+- deliverable verification
+- scope enforcement
 
-### 1.3 Web Dashboard -- STARTED (Gen 11 MVP)
-- **Result**: Single HTML file at http://localhost:7374/. Stats, goals, live sessions, decisions, confidence matrix, events. SSE for live updates. Dark theme, zero build step.
-- **Remaining**: Plan board, session detail view with full output, dispatch form, taste/feedback UI.
+### 2. Measurement Layer
+- telemetry sink for harness/provider/model/repo/skill/cost/tokens
+- telemetry import from local artifacts
+- coverage and freshness reporting
+- daily budget controls
 
-### 1.4 E2E Installer Test
-- **Why**: `curl install.sh` has never been tested on a clean machine.
-- **What**: Docker-based test: fresh Ubuntu, run installer, verify service starts, dispatch a task, verify deliverable.
-- **Effort**: 1 session
-- **Blocks**: Distribution, onboarding
+### 3. Governance Layer
+- replay dataset and replay summaries
+- replay candidate-vs-baseline policy evaluation
+- promotion rules and persisted promotion history
+- prompt policy observational evaluation and promotion
 
-## Tier 2: Competitive Differentiators (double down on what's unique)
+### 4. Optimization Layer
+- staged dispatch policy: choose `mode + skill`, then synthesize task text
+- structured prompt policy: optimize configuration, not raw prompt blobs
+- operator session mining as training signal
 
-### 2.1 Deliverable Spec Auto-Inference
-- **Why**: Currently manual — operator must specify `deliverable.path` in dispatch. LLM should infer it from task description.
-- **What**: Before dispatch, a fast LLM call (Haiku) analyzes the task and generates a DeliverableSpec. "Write results to foo.md" → `{path: "foo.md", minLines: 10}`.
-- **Effort**: 1-2 sessions
+## What Is Done
 
-### 2.2 Scope Enforcement UX
-- **Why**: Git hooks reject commits but the agent doesn't always recover gracefully. Need clear retry guidance.
-- **What**: Improve hook error messages. Add prompt instruction: "If your commit is rejected by a scope hook, unstage the out-of-scope files with `git reset HEAD <file>` and commit only the allowed files." Test with 5 scoped dispatches.
-- **Effort**: 1 session
+### Foundation
+- tests are in place and growing
+- installer and reconfiguration UX exist
+- service module split is done
+- dashboard exists and is now meaningful
 
-### 2.3 Operator Feedback Loop
-- **Why**: `agree/disagree` confidence signals are defined but never called. The operator has no way to approve/reject dispatches.
-- **What**: Wire up taste API. Add `foreman approve <id>` / `foreman reject <id>` CLI commands. Dashboard buttons. Confidence updates on feedback.
-- **Effort**: 1 session
+### Measurement
+- telemetry sink is implemented
+- telemetry imports and source mix reporting exist
+- cost is visible by harness/provider/model/repo/skill
+- coverage and orphan-telemetry reporting exist
 
-### 2.4 Confidence Recalibration
-- **Why**: 19 deliverable-verified decisions — first real data for calibration. Can compute ECE.
-- **What**: Analyze deliverable_status vs confidence at dispatch time. Plot calibration curve. Adjust signal weights if miscalibrated. Target ECE < 0.15.
-- **Effort**: 1 session
+### Governance
+- dispatch replay evaluation exists
+- replay promotion/apply flow exists
+- replay governance history exists
+- prompt policy evaluation and promotion now exist
 
-### 2.5 Cost Tracking
-- **Why**: Still $0 across all decisions. Can't optimize what you can't measure.
-- **What**: Parse Claude Code session cost from pipe-pane logs or `claude --usage` API. Store per-decision. Add to dashboard and CLI.
-- **Effort**: 1 session
+### Operator UX
+- dashboard answers “where should Drew point autonomy next?”
+- project recommendations exist for:
+  - `autoresearch`
+  - `optimize`
+  - `loop`
+- dataset health warnings exist for:
+  - replay sparsity
+  - telemetry gaps
+  - training skew
+  - prompt-policy sample thinness
 
-## Tier 3: Expansion (reach new users and use cases)
+## Main Gaps
 
-### 3.1 Docker Execution Backend
-- **Why**: tmux-only means local-only. Docker enables cloud deployment, better isolation, multi-user, CI integration.
-- **What**: New backend in ExecutionBackend interface. `docker run` with mounted worktree, Claude Code installed. Session monitoring via `docker logs`.
-- **Effort**: 2-3 sessions
+### 1. Runtime Hardening
+- tmux remains brittle
+- no Docker backend yet
+- no Agent SDK/runtime migration yet
 
-### 3.2 Multi-Model Support (OpenRouter)
-- **Why**: Claude-only limits cost optimization and capability matching. Haiku for simple tasks, Opus for complex.
-- **What**: Model router in dispatch. selectModel() returns model + provider. Support OpenRouter endpoint for 200+ models.
-- **Effort**: 1-2 sessions
+### 2. Evaluation Quality
+- replay is strong enough to guide, not strong enough to prove
+- prompt policy evaluation is observational, not counterfactual
+- counterfactual labels and trajectory understanding should get richer
 
-### 3.3 Slack/Discord Gateway
-- **Why**: Mobile access. Review PRs, approve dispatches, check status from phone.
-- **What**: Slack bot (slash commands + event subscriptions). Existing gateway/slack.ts is scaffolded but untested.
-- **Effort**: 1-2 sessions
+### 3. Operator Query Layer
+- dashboard is better, but the question-answering layer is still thin
+- project recommendation API exists, but not a richer natural-language or interactive filter UX
 
-### 3.4 Agent SDK Migration
-- **Why**: tmux + pipe-pane is brittle. Claude Agent SDK provides proper tool tracking, cost reporting, streaming, structured output.
-- **What**: Replace tmux backend with Agent SDK. Each dispatch becomes an SDK agent run. Output captured structurally, not via terminal scraping.
-- **Effort**: Big refactor (3-5 sessions)
+### 4. External Validation
+- no real beta deployment proving install, onboarding, and operations on someone else’s machine
 
-## Tier 4: Research (validate the thesis)
+## Highest-Value Priorities
 
-### 4.1 AxGEPA Dispatch Policy Training
-- **Why**: 97 decisions — enough data to start training the learned dispatch policy.
-- **What**: Set FOREMAN_DISPATCH_POLICY=gepa. Train on (context, decision, outcome) triples. Compare to LLM policy on held-out goals.
-- **Effort**: 2-3 sessions
+### Priority 1. Consolidate Control Surfaces
+- keep the dashboard, recommendation API, telemetry, replay, and policy governance on one coherent data model
+- avoid one-off observability features
 
-### 4.2 SWE-bench with Slim Prompts
-- **Why**: Bare outperformed full (78% vs 50% partial). Test whether Gen 9's slim tier improves pass rate from 0%.
-- **What**: Rerun 10 SWE-bench tasks with slim prompts. Compare to existing bare/full results.
-- **Effort**: 1 session (30-60 min compute)
+### Priority 2. Strengthen Prompt Governance
+- move prompt policy from observational comparison toward stronger replay-like promotion criteria where possible
+- make prompt-policy promotion as interpretable as dispatch-policy promotion
 
-### 4.3 Cross-Repo Deployment
-- **Why**: First external user is the real product validation.
-- **What**: Find a willing beta tester. Install on their machine. Set up a goal. Observe what breaks.
-- **Effort**: Variable
+### Priority 3. Better Question Layer
+- answer questions like:
+  - what should Drew auto-research next across these repos?
+  - which project is safe to loop harder on?
+  - where are we spending money without improving deliverables?
+  - which policy changes improved outcomes and which only moved cost?
 
-### 4.4 Paper Finalization
-- **Why**: Draft exists (279 lines). SWE-bench + Gen 9/10 results need to be added.
-- **What**: Update results sections with deliverable verification data, scope enforcement findings, context rot ablation. Submit to workshop or arxiv.
-- **Effort**: 1-2 sessions
+### Priority 4. Runtime Upgrade
+- add Docker backend
+- reduce dependence on tmux scraping
+- prepare for a more structured agent runtime
 
-## Critical Path
+### Priority 5. External User Proof
+- run installer and onboarding with a real external user
+- measure what breaks first
 
-```
-Tests ──→ Module split ──→ Web dashboard ──→ Docker backend ──→ First external user
-  │                                                                    │
-  └── self-improvement becomes viable ─────────────────────────────────┘
-```
+## Explicit Do / Avoid
 
-## Session History (for context)
+Do:
+- optimize bounded subsystems, not the whole product at once
+- keep raw metrics and vector objectives
+- gate policy changes through replay or observed-governance checks
+- learn from operator sessions, but measure skew
 
-| Session | Date | Key Outputs |
-|---|---|---|
-| 1 | Mar 22 | Scaffold → service + Pi extension. Gen 0-2. |
-| 2 | Mar 22-23 | Gen 3-4. Confidence, overnight run (26 dispatches, 85%). |
-| 3 | Mar 23 | Gen 5-7. Self-improvement (0/18), planning layer, SWE-bench harness. |
-| 4 | Mar 24 | Gen 8-10. Evidence pursuit, paper, deliverable verification, scope enforcement. 3 critical bugs fixed. Exp 5/6 honest self-assessment. |
-| 5 | Mar 24 | Gen 11. Module split (3580->1141 lines, 10 modules). Skill chaining. Web dashboard MVP. |
+Avoid:
+- freeform full-prompt optimization as the main control surface
+- broad autonomy expansion before telemetry and governance stay honest
+- adding more disconnected dashboards or analytics endpoints
+- treating replay as proof rather than evidence
 
-## Next Session Priorities
+## Suggested Near-Term Sequence
 
-1. **Test suite** for service/lib modules (verify-deliverable, scope-enforcer, dispatch-policy, confidence)
-2. **Module split** of service/index.ts into 8 focused modules
-3. **Web dashboard** MVP (status page + session viewer + decision log)
+1. Finish consolidating the dashboard and query layer.
+2. Use the query layer operationally for a week across your real projects.
+3. Refresh promotion thresholds based on real usage and observed false positives.
+4. Add Docker backend.
+5. Do first external-user install and beta.
+
+## Success Markers
+
+Foreman is on track if:
+- operators can see where to spend autonomy clearly
+- prompt and dispatch policy changes are both governed
+- telemetry coverage stays high enough to trust cost signals
+- the system can recommend projects to research, optimize, or loop without hand-auditing raw tables
+- runtime upgrades do not break the governance layer

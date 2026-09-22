@@ -8,6 +8,17 @@ import {
   getDb, getStmts, getConfidence,
   log, emitEvent,
 } from './state.js'
+import {
+  buildPromptPolicyCandidates,
+  chooseHeuristicPromptPolicy,
+  classifyPromptTaskShape,
+  classifyTaskLengthBucket,
+  inferRecommendedPromptPolicyId,
+  parsePromptPolicy,
+  serializePromptPolicy,
+  type PromptPolicy,
+  type PromptPolicyTrainingExample,
+} from './prompt-policy.js'
 
 // ─── Outcome-driven learning ─────────────────────────────────────────
 
@@ -72,8 +83,9 @@ export function updateLearningsFromOutcome(
 // ─── Prompt Optimizer Interface ──────────────────────────────────────
 
 interface PromptOptimizerResult {
-  variant: string | null
+  policy: PromptPolicy | null
   score?: number
+  source: 'heuristic' | 'gepa'
 }
 
 interface PromptOptimizer {
@@ -81,94 +93,97 @@ interface PromptOptimizer {
   optimize(data: {
     currentVersion: number
     currentScore: number
-    trainExamples: Array<{ task: string, prompt: string, outcome: string, success: boolean }>
+    currentPolicy: PromptPolicy
+    trainExamples: PromptPolicyTrainingExample[]
   }): Promise<PromptOptimizerResult>
 }
 
 const identityOptimizer: PromptOptimizer = {
   name: 'identity',
-  async optimize() { return { variant: null } },
+  async optimize() { return { policy: null, source: 'heuristic' } },
 }
 
 const axGepaOptimizer: PromptOptimizer = {
   name: 'gepa',
   async optimize(data) {
-    const axLib: any = await import('@ax-llm/ax')
-    const { ai, ax, AxGEPA } = axLib
+    const candidates = buildPromptPolicyCandidates(data.currentPolicy)
+    const candidateIds = candidates.map(candidate => candidate.id)
+    const heuristicPolicy = chooseHeuristicPromptPolicy(data.currentPolicy, data.trainExamples)
 
-    const studentAI = ai({ name: 'anthropic', config: { model: 'claude-sonnet-4-6' as any } })
-    const teacherAI = ai({ name: 'anthropic', config: { model: 'claude-opus-4-6' as any } })
-
-    const promptGenerator = ax(
-      'task:string, projectContext:string -> composedPrompt:string "A rich, context-loaded prompt for a Claude Code session that will accomplish the task"',
-    )
-    promptGenerator.setInstruction(
-      `You compose dispatch prompts for autonomous coding sessions. Include: task description, quality standards, git workflow, project context, past decisions, learned patterns, and dead ends to avoid. Be specific and actionable.`
-    )
-
-    const train = data.trainExamples.slice(0, 8).map(e => ({
-      task: e.task.slice(0, 200),
-      projectContext: 'project context available',
-      composedPrompt: e.prompt.slice(0, 500),
+    const labeled = data.trainExamples.map(example => ({
+      skill: example.skill,
+      taskShape: example.taskShape,
+      taskLengthBucket: example.taskLengthBucket,
+      hasScope: example.hasScope ? 'true' : 'false',
+      hasDeliverable: example.hasDeliverable ? 'true' : 'false',
+      variantId: candidateIds.includes(example.variantId)
+        ? example.variantId
+        : inferRecommendedPromptPolicyId(example, data.currentPolicy.id),
     }))
 
-    const validation = data.trainExamples.slice(8, 12).map(e => ({
-      task: e.task.slice(0, 200),
-      projectContext: 'project context available',
-      composedPrompt: e.prompt.slice(0, 500),
-    }))
+    const labelCount = new Set(labeled.map(item => item.variantId)).size
+    const splitIndex = Math.max(1, Math.floor(labeled.length * 0.8))
+    const train = labeled.slice(0, splitIndex)
+    const validation = labeled.slice(splitIndex)
 
-    if (train.length < 3 || validation.length < 1) {
-      log('AxGEPA: not enough data (need 3+ train, 1+ validation)')
-      return { variant: null }
+    if (train.length < 4 || validation.length < 1 || labelCount < 2) {
+      return { policy: heuristicPolicy.id === data.currentPolicy.id ? null : heuristicPolicy, source: 'heuristic' }
     }
-
-    const successMap = new Map(data.trainExamples.map(e => [e.task.slice(0, 200), e.success]))
-    const metric = ({ prediction, example }: { prediction: any, example: any }) => {
-      const taskSuccess = successMap.get(example.task) ? 1 : 0
-      const specificity = typeof prediction?.composedPrompt === 'string'
-        ? Math.min(1, prediction.composedPrompt.length / 500)
-        : 0
-      return { taskSuccess, specificity }
-    }
-
-    const optimizer = new AxGEPA({
-      studentAI, teacherAI,
-      numTrials: 6, minibatch: true, minibatchSize: 3,
-      earlyStoppingTrials: 3, sampleCount: 1,
-    })
 
     try {
-      const result = await optimizer.compile(promptGenerator, train, metric, {
-        validationExamples: validation, maxMetricCalls: 60,
+      const axLib: any = await import('@ax-llm/ax')
+      const { ai, ax, AxGEPA } = axLib
+
+      const studentAI = ai({ name: 'anthropic', config: { model: 'claude-sonnet-4-6' as any } })
+      const teacherAI = ai({ name: 'anthropic', config: { model: 'claude-opus-4-6' as any } })
+
+      const selector = ax(
+        `skill:string, taskShape:string, taskLengthBucket:string, hasScope:string, hasDeliverable:string -> variantId:class "${candidateIds.join(', ')}"`
+      )
+      selector.setInstruction(
+        'Choose the best global prompt policy variant for Foreman dispatches. Prefer stricter variants when scope control is important, lean variants for verification and recovery work, and richer variants for redesign or research-heavy work.'
+      )
+
+      const metric = ({ prediction, example }: { prediction: any, example: any }) =>
+        prediction?.variantId === example?.variantId ? 1 : 0
+
+      const optimizer = new AxGEPA({
+        studentAI, teacherAI,
+        numTrials: 6, minibatch: true, minibatchSize: 3,
+        earlyStoppingTrials: 3, sampleCount: 1,
       })
 
-      const prog = result.optimizedProgram as any
-      const optimizedInstruction = prog?.instruction
-        ?? (prog?.instructionMap ? Object.values(prog.instructionMap)[0] : null)
+      const result = await optimizer.compile(selector, train, metric, {
+        validationExamples: validation,
+        maxMetricCalls: 60,
+      })
+      if (result.optimizedProgram) selector.applyOptimization(result.optimizedProgram)
 
-      if (optimizedInstruction) {
-        log(`AxGEPA: optimized instruction (score: ${result.bestScore})`)
-        return {
-          variant: String(optimizedInstruction),
-          score: typeof result.bestScore === 'number' ? result.bestScore : undefined,
-        }
+      const tallies = new Map<string, number>()
+      for (const example of data.trainExamples.slice(0, 12)) {
+        const prediction = await selector.forward(studentAI, {
+          skill: example.skill,
+          taskShape: example.taskShape,
+          taskLengthBucket: example.taskLengthBucket,
+          hasScope: example.hasScope ? 'true' : 'false',
+          hasDeliverable: example.hasDeliverable ? 'true' : 'false',
+        })
+        const variantId = typeof prediction?.variantId === 'string' ? prediction.variantId : heuristicPolicy.id
+        const weight = example.success ? 1 : 1.5
+        tallies.set(variantId, (tallies.get(variantId) ?? 0) + weight)
       }
 
-      if (result.paretoFront?.length > 0) {
-        const best = result.paretoFront[0] as any
-        const instruction = best.configuration?.instruction
-          ?? (best.configuration?.instructionMap ? Object.values(best.configuration.instructionMap)[0] : null)
-        if (instruction) {
-          log(`AxGEPA: Pareto front candidate (scores: ${JSON.stringify(best.scores)})`)
-          return { variant: String(instruction) }
-        }
+      const chosenId = [...tallies.entries()]
+        .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]?.[0]
+      const chosenPolicy = candidates.find(candidate => candidate.id === chosenId) ?? heuristicPolicy
+      return {
+        policy: chosenPolicy.id === data.currentPolicy.id ? null : chosenPolicy,
+        score: typeof result.bestScore === 'number' ? result.bestScore : undefined,
+        source: 'gepa',
       }
-
-      return { variant: null }
     } catch (e) {
-      log(`AxGEPA optimization failed: ${e instanceof Error ? e.message : String(e)}`)
-      return { variant: null }
+      log(`AxGEPA policy optimization failed: ${e instanceof Error ? e.message : String(e)}`)
+      return { policy: heuristicPolicy.id === data.currentPolicy.id ? null : heuristicPolicy, source: 'heuristic' }
     }
   },
 }
@@ -180,6 +195,52 @@ const optimizers: Record<string, PromptOptimizer> = {
 
 function getOptimizer(): PromptOptimizer {
   return optimizers[OPTIMIZER_STRATEGY] ?? identityOptimizer
+}
+
+function parseMetrics(value: string | null): Record<string, unknown> {
+  if (!value) return {}
+  try {
+    const parsed = JSON.parse(value) as unknown
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {}
+  } catch {
+    return {}
+  }
+}
+
+function buildPromptPolicyExamples(rows: Array<{
+  skill: string
+  task: string
+  status: string
+  outcome: string | null
+  metrics: string | null
+  scope_spec: string | null
+  deliverable_spec: string | null
+  deliverable_status: string | null
+  prompt_policy_id: string | null
+  template: string | null
+}>): PromptPolicyTrainingExample[] {
+  return rows.map(row => {
+    const metrics = parseMetrics(row.metrics)
+    const templatePolicy = parsePromptPolicy(row.template)
+    const variantId = row.prompt_policy_id || templatePolicy.id
+    const scopeViolation = metrics.scopeStatus === 'violation' || (row.outcome ?? '').includes('SCOPE VIOLATION')
+    return {
+      skill: row.skill || 'direct',
+      task: row.task,
+      taskShape: classifyPromptTaskShape(row.skill, row.task),
+      taskLengthBucket: classifyTaskLengthBucket(row.task),
+      hasScope: !!row.scope_spec,
+      hasDeliverable: !!row.deliverable_spec,
+      success: row.status === 'success',
+      scopeViolation,
+      deliverableStatus: row.deliverable_status === 'pass' || row.deliverable_status === 'fail'
+        ? row.deliverable_status
+        : 'unchecked',
+      variantId,
+    }
+  })
 }
 
 // ─── Template evolution ──────────────────────────────────────────────
@@ -200,36 +261,45 @@ export async function triggerGepaVariant(currentVersion: number, currentScore: n
   const stmts = getStmts()
 
   try {
+    const activeTemplate = stmts.activeTemplate.get() as { template?: string | null } | undefined
+    const currentPolicy = parsePromptPolicy(activeTemplate?.template)
     const examples = db.prepare(`
-      SELECT d.task, d.status, d.outcome, s.prompt
+      SELECT d.skill, d.task, d.status, d.outcome, d.metrics, d.scope_spec, d.deliverable_spec,
+             d.deliverable_status, d.prompt_policy_id, pt.template
       FROM decisions d
-      LEFT JOIN sessions s ON s.decision_id = d.id
-      WHERE d.status IN ('success', 'failure') AND s.prompt IS NOT NULL
-      ORDER BY d.created_at DESC LIMIT 12
-    `).all() as Array<{ task: string, status: string, outcome: string | null, prompt: string | null }>
+      LEFT JOIN prompt_templates pt ON pt.version = d.template_version
+      WHERE d.status IN ('success', 'failure')
+      ORDER BY d.created_at DESC LIMIT 24
+    `).all() as Array<{
+      skill: string
+      task: string
+      status: string
+      outcome: string | null
+      metrics: string | null
+      scope_spec: string | null
+      deliverable_spec: string | null
+      deliverable_status: string | null
+      prompt_policy_id: string | null
+      template: string | null
+    }>
 
-    const trainExamples = examples
-      .filter(e => e.prompt)
-      .map(e => ({
-        task: e.task, prompt: e.prompt!,
-        outcome: e.outcome ?? '', success: e.status === 'success',
-      }))
+    const trainExamples = buildPromptPolicyExamples(examples)
 
-    if (trainExamples.length < 4) {
-      log(`Optimizer: need 4+ scored dispatches with prompts (have ${trainExamples.length})`)
+    if (trainExamples.length < 6) {
+      log(`Optimizer: need 6+ scored dispatches with prompt policy metadata (have ${trainExamples.length})`)
       gepaRunning = false
       return
     }
 
-    const result = await optimizer.optimize({ currentVersion, currentScore, trainExamples })
+    const result = await optimizer.optimize({ currentVersion, currentScore, currentPolicy, trainExamples })
 
-    if (result.variant) {
+    if (result.policy) {
       const newVersion = currentVersion + 1
-      stmts.insertTemplate.run(newVersion, result.variant.slice(0, 2000), 0)
-      log(`${optimizer.name}: generated template v${newVersion}${result.score ? ` (score: ${result.score})` : ''}`)
+      stmts.insertTemplate.run(newVersion, serializePromptPolicy(result.policy).trim().slice(0, 2000), 0)
+      log(`${optimizer.name}: generated prompt policy v${newVersion} (${result.policy.id})${result.score ? ` (score: ${result.score})` : ''}`)
       promoteTemplateIfBetter()
     } else {
-      log(`${optimizer.name}: no variant generated (insufficient signal or no improvement found)`)
+      log(`${optimizer.name}: no prompt policy variant generated (insufficient signal or no improvement found)`)
     }
   } catch (e) {
     log(`${optimizer.name} failed: ${e instanceof Error ? e.message : String(e)}`)

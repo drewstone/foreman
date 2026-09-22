@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3'
-import type { DispatchContext, DispatchDecision } from './dispatch-policy.js'
+import { createDispatchContext, listOperatorSkillSignals, type DispatchContext, type DispatchDecision } from './dispatch-policy.js'
 import { estimateTelemetryCost, type TelemetryCostEstimate } from './telemetry.js'
 
 export interface ReplayGroupRow {
@@ -539,14 +539,20 @@ function toReplayExample(db: Database.Database, row: ReplayRow): ReplayExample {
       previousProjectDecisions,
       previousProjectSkillDecisions,
       previousGoalDecisions,
-      policyContext: {
+      policyContext: createDispatchContext({
         goalIntent,
         projectName: project ?? 'unknown',
         recentDecisions,
         learnedFlows,
         skillPreferences,
+        operatorSkillSignals: listOperatorSkillSignals(db, {
+          projectName: project,
+          before: row.created_at,
+          limit: 5,
+        }),
         confidenceLevel: 'dry-run',
-      },
+        latestDeliverableStatus: previousDeliverableStatus(db, row.id, row.goal_id, row.project_path),
+      }),
     },
     observed: {
       status: row.status,
@@ -637,6 +643,37 @@ function listPreviousDecisions(
     }
   } catch {}
   return []
+}
+
+function previousDeliverableStatus(
+  db: Database.Database,
+  decisionId: number,
+  goalId: number | null,
+  projectPath: string | null,
+): string {
+  try {
+    if (goalId != null) {
+      const row = db.prepare(`
+        SELECT deliverable_status
+        FROM decisions
+        WHERE id < ? AND goal_id = ? AND deliverable_status IS NOT NULL
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+      `).get(decisionId, goalId) as { deliverable_status?: string | null } | undefined
+      return typeof row?.deliverable_status === 'string' ? row.deliverable_status : 'unknown'
+    }
+    if (projectPath) {
+      const row = db.prepare(`
+        SELECT deliverable_status
+        FROM decisions
+        WHERE id < ? AND worktree_path LIKE ? AND deliverable_status IS NOT NULL
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+      `).get(decisionId, `%${projectPath}%`) as { deliverable_status?: string | null } | undefined
+      return typeof row?.deliverable_status === 'string' ? row.deliverable_status : 'unknown'
+    }
+  } catch {}
+  return 'unknown'
 }
 
 function listFutureDecisions(

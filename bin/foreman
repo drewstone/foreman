@@ -21,6 +21,13 @@ Commands:
   replay-examples  Show replay examples (optional: --limit N --project foo --skill /evolve)
   replay-evaluate  Evaluate a dispatch policy on replay data against a baseline
   replay-promote   Evaluate a policy and optionally apply it when promotion passes
+  prompt-policy    Show active prompt policy and known candidates
+  prompt-evaluate  Evaluate an observed prompt policy against a baseline
+  prompt-promote   Evaluate and optionally apply a prompt policy
+  recommend        Answer what Drew should auto-research / optimize / loop next
+  recommend-list   List project recommendations without the question wrapper
+  recommend-explain Show the full recommendation explanation bundle
+  recommend-drilldown Show the evidence drilldown for one project
   policy           Show or set the active dispatch policy
   telemetry-import Import/backfill telemetry from local traces and session artifacts
   goals            List active goals
@@ -163,6 +170,149 @@ case "${1:-help}" in
     [ -n "$MIN_BAD_EXAMPLES" ] && BODY="$BODY, \"minBadExamples\":$MIN_BAD_EXAMPLES"
     BODY="$BODY}"
     curl -sf -X POST "$API/replay/promote" -H 'Content-Type: application/json' -d "$BODY" | python3 -m json.tool
+    ;;
+  prompt-policy)
+    json "$API/prompt-policy/policies"
+    ;;
+  prompt-evaluate)
+    shift
+    POLICY=""
+    BASELINE=""
+    PROJECT=""
+    SKILL=""
+    LIMIT="160"
+    while [[ $# -gt 0 ]]; do
+      case $1 in
+        --policy) POLICY="$2"; shift 2;;
+        --baseline) BASELINE="$2"; shift 2;;
+        --project) PROJECT="$2"; shift 2;;
+        --skill) SKILL="$2"; shift 2;;
+        --limit) LIMIT="$2"; shift 2;;
+        *) echo "Unknown option: $1"; exit 1;;
+      esac
+    done
+    [ -z "$POLICY" ] && { echo "--policy is required"; exit 1; }
+    QUERY="policy=$POLICY&limit=$LIMIT"
+    [ -n "$BASELINE" ] && QUERY="$QUERY&baseline=$BASELINE"
+    [ -n "$PROJECT" ] && QUERY="$QUERY&project=$PROJECT"
+    [ -n "$SKILL" ] && QUERY="$QUERY&skill=$SKILL"
+    json "$API/prompt-policy/evaluate?$QUERY"
+    ;;
+  prompt-promote)
+    shift
+    POLICY=""
+    BASELINE=""
+    PROJECT=""
+    SKILL=""
+    LIMIT="160"
+    APPLY="false"
+    FORCE="false"
+    while [[ $# -gt 0 ]]; do
+      case $1 in
+        --policy) POLICY="$2"; shift 2;;
+        --baseline) BASELINE="$2"; shift 2;;
+        --project) PROJECT="$2"; shift 2;;
+        --skill) SKILL="$2"; shift 2;;
+        --limit) LIMIT="$2"; shift 2;;
+        --apply) APPLY="true"; shift;;
+        --force) FORCE="true"; shift;;
+        *) echo "Unknown option: $1"; exit 1;;
+      esac
+    done
+    [ -z "$POLICY" ] && { echo "--policy is required"; exit 1; }
+    BODY="{\"policy\":\"$POLICY\",\"limit\":$LIMIT,\"apply\":$APPLY,\"force\":$FORCE"
+    [ -n "$BASELINE" ] && BODY="$BODY, \"baseline\":\"$BASELINE\""
+    [ -n "$PROJECT" ] && BODY="$BODY, \"project\":\"$PROJECT\""
+    [ -n "$SKILL" ] && BODY="$BODY, \"skill\":\"$SKILL\""
+    BODY="$BODY}"
+    curl -sf -X POST "$API/prompt-policy/promote" -H 'Content-Type: application/json' -d "$BODY" | python3 -m json.tool
+    ;;
+  recommend)
+    shift
+    LIMIT="8"
+    WINDOW_DAYS="30"
+    FOCUS="all"
+    PROJECTS=()
+    while [[ $# -gt 0 ]]; do
+      case $1 in
+        --project) PROJECTS+=("$2"); shift 2;;
+        --focus) FOCUS="$2"; shift 2;;
+        --window-days) WINDOW_DAYS="$2"; shift 2;;
+        --limit) LIMIT="$2"; shift 2;;
+        *) echo "Unknown option: $1"; exit 1;;
+      esac
+    done
+    QUERY="limit=$LIMIT&window_days=$WINDOW_DAYS&focus=$FOCUS"
+    for PROJECT in "${PROJECTS[@]}"; do
+      QUERY="$QUERY&project=$PROJECT"
+    done
+    json "$API/recommendations/question?$QUERY"
+    ;;
+  recommend-list)
+    shift
+    LIMIT="8"
+    WINDOW_DAYS="30"
+    FOCUS="all"
+    PROJECTS=()
+    while [[ $# -gt 0 ]]; do
+      case $1 in
+        --project) PROJECTS+=("$2"); shift 2;;
+        --focus) FOCUS="$2"; shift 2;;
+        --window-days) WINDOW_DAYS="$2"; shift 2;;
+        --limit) LIMIT="$2"; shift 2;;
+        *) echo "Unknown option: $1"; exit 1;;
+      esac
+    done
+    QUERY="limit=$LIMIT&window_days=$WINDOW_DAYS&focus=$FOCUS"
+    for PROJECT in "${PROJECTS[@]}"; do
+      QUERY="$QUERY&project=$PROJECT"
+    done
+    json "$API/recommendations/projects?$QUERY"
+    ;;
+  recommend-explain)
+    shift
+    LIMIT="8"
+    WINDOW_DAYS="30"
+    FOCUS="all"
+    PROJECTS=()
+    while [[ $# -gt 0 ]]; do
+      case $1 in
+        --project) PROJECTS+=("$2"); shift 2;;
+        --focus) FOCUS="$2"; shift 2;;
+        --window-days) WINDOW_DAYS="$2"; shift 2;;
+        --limit) LIMIT="$2"; shift 2;;
+        *) echo "Unknown option: $1"; exit 1;;
+      esac
+    done
+    QUERY="limit=$LIMIT&window_days=$WINDOW_DAYS&focus=$FOCUS"
+    for PROJECT in "${PROJECTS[@]}"; do
+      QUERY="$QUERY&project=$PROJECT"
+    done
+    json "$API/recommendations/explain?$QUERY"
+    ;;
+  recommend-drilldown)
+    shift
+    PROJECT=""
+    LIMIT="8"
+    WINDOW_DAYS="30"
+    FOCUS="all"
+    PROJECTS=()
+    while [[ $# -gt 0 ]]; do
+      case $1 in
+        --project) PROJECT="$2"; PROJECTS+=("$2"); shift 2;;
+        --scope-project) PROJECTS+=("$2"); shift 2;;
+        --focus) FOCUS="$2"; shift 2;;
+        --window-days) WINDOW_DAYS="$2"; shift 2;;
+        --limit) LIMIT="$2"; shift 2;;
+        *) echo "Unknown option: $1"; exit 1;;
+      esac
+    done
+    [ -z "$PROJECT" ] && { echo "--project is required"; exit 1; }
+    QUERY="project=$PROJECT&limit=$LIMIT&window_days=$WINDOW_DAYS&focus=$FOCUS"
+    for SCOPE_PROJECT in "${PROJECTS[@]}"; do
+      QUERY="$QUERY&project=$SCOPE_PROJECT"
+    done
+    json "$API/recommendations/drilldown?$QUERY"
     ;;
   policy)
     shift
