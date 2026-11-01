@@ -61,7 +61,7 @@ export interface TangleSandboxEvidenceOptions {
   commands?: TangleCommandArtifactSpec[];
 }
 
-export function createTangleSandboxClient(config: SandboxClientConfig): Sandbox {
+export function createSandboxClient(config: SandboxClientConfig): Sandbox {
   return new Sandbox(config);
 }
 
@@ -296,7 +296,7 @@ function createClientFromOptions(
   if (!options.clientConfig) {
     throw new Error('createTangleSandboxWorkerAdapter requires either client or clientConfig');
   }
-  return createTangleSandboxClient(options.clientConfig);
+  return createSandboxClient(options.clientConfig);
 }
 
 function wrapTangleClient(client: Sandbox): SandboxClientLike {
